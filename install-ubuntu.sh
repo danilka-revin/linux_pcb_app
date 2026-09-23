@@ -32,12 +32,80 @@ if [ "$(id -u)" -eq 0 ] && [ -n "${SUDO_USER:-}" ]; then
   err "не запускайте установку через sudo: программа ставится в вашу домашнюю папку.
   Выполните без sudo:  bash install-ubuntu.sh"
 fi
-command -v node >/dev/null || err "Node.js не найден. Установите Node.js 18 или новее — шаг 3 в INSTALL_UBUNTU.md"
-command -v npm  >/dev/null || err "npm не найден. Выполните:  sudo apt install -y npm   (подробнее — шаг 3 в INSTALL_UBUNTU.md)"
+# Node.js + npm нужны для сборки и запуска. Если их нет или Node.js старее 18,
+# установим актуальный LTS автоматически. npm-пакеты приложения ставятся ниже через npm ci.
+node_is_ready() {
+  command -v node >/dev/null 2>&1 && command -v npm >/dev/null 2>&1 || return 1
+  local major
+  major=$(node -p 'Number(process.versions.node.split(".")[0])' 2>/dev/null) || return 1
+  [[ "$major" =~ ^[0-9]+$ ]] && [ "$major" -ge 18 ]
+}
 
-NODE_MAJOR=$(node -e 'console.log(process.versions.node.split(".")[0])')
-[ "$NODE_MAJOR" -ge 18 ] || err "нужен Node.js 18 или новее, а установлен $(node -v). Обновите Node.js — шаг 3 в INSTALL_UBUNTU.md"
-NODE_BIN="$(command -v node)"
+install_nodejs() {
+  command -v apt-get >/dev/null 2>&1 || err "не найден apt-get. Установите Node.js 18+ и npm вручную, затем повторите установку."
+  if [ "$(id -u)" -ne 0 ]; then
+    command -v sudo >/dev/null 2>&1 || err "для автоматической установки Node.js нужен sudo. Установите Node.js 18+ и npm вручную, затем повторите установку."
+    say "Для установки Node.js 24 LTS система попросит пароль администратора"
+    sudo -v || err "не удалось получить права администратора для установки Node.js"
+  fi
+
+  # NodeSource предоставляет актуальный Node.js с npm; apt-get запускается с sudo,
+  # но сама программа и ярлык по-прежнему устанавливаются в домашнюю папку.
+  if command -v curl >/dev/null 2>&1; then
+    if [ "$(id -u)" -eq 0 ]; then
+      apt-get update
+      apt-get install -y ca-certificates gnupg
+    else
+      sudo apt-get update
+      sudo apt-get install -y ca-certificates gnupg
+    fi
+  else
+    if [ "$(id -u)" -eq 0 ]; then
+      apt-get update
+      apt-get install -y ca-certificates curl gnupg
+    else
+      sudo apt-get update
+      sudo apt-get install -y ca-certificates curl gnupg
+    fi
+  fi
+
+  local setup_script
+  setup_script=$(mktemp)
+  if ! curl -fsSL https://deb.nodesource.com/setup_24.x -o "$setup_script"; then
+    rm -f "$setup_script"
+    err "не удалось скачать установщик Node.js. Проверьте интернет и повторите установку."
+  fi
+  if [ "$(id -u)" -eq 0 ]; then
+    if ! bash "$setup_script" || ! apt-get install -y nodejs; then
+      rm -f "$setup_script"
+      err "не удалось установить Node.js через apt. Проверьте сообщения выше и повторите установку."
+    fi
+  else
+    if ! sudo -E bash "$setup_script" || ! sudo apt-get install -y nodejs; then
+      rm -f "$setup_script"
+      err "не удалось установить Node.js через apt. Проверьте сообщения выше и повторите установку."
+    fi
+  fi
+  rm -f "$setup_script"
+  hash -r
+
+  # После apt выбираем системную версию, даже если в PATH раньше стоял старый Node.js из nvm.
+  if [ -x /usr/bin/node ]; then
+    NODE_BIN=/usr/bin/node
+    PATH="/usr/bin:$PATH"
+    export PATH
+  else
+    NODE_BIN="$(command -v node || true)"
+  fi
+  node_is_ready || err "автоматическая установка Node.js не завершилась успешно. Установите Node.js 18+ и npm вручную."
+}
+
+if node_is_ready; then
+  NODE_BIN="$(command -v node)"
+else
+  say "Загрузка необходимых компонентов: Node.js 24 LTS и npm"
+  install_nodejs
+fi
 
 say "Установка зависимостей"
 cd "$SRC_DIR"
@@ -102,8 +170,10 @@ EOF
 } > "$BIN_DIR/$APP_ID"
 chmod +x "$BIN_DIR/$APP_ID"
 
-say "Установка ярлыка приложения (.desktop)"
-cat > "$DESKTOP_DIR/$APP_ID.desktop" <<EOF
+say "Создание ярлыка приложения"
+write_desktop_entry() {
+  local entry_path="$1"
+  cat > "$entry_path" <<EOF
 [Desktop Entry]
 Type=Application
 Version=1.0
@@ -114,13 +184,36 @@ GenericName[ru]=Редактор печатных плат
 Comment=Sprint-Layout compatible PCB editor (lay6/lmk)
 Comment[ru]=Редактор печатных плат, совместимый со Sprint-Layout (.lay6, .lmk)
 Exec="$BIN_DIR/$APP_ID"
+TryExec=$BIN_DIR/$APP_ID
 Icon=$APP_DIR/icon.svg
 Terminal=false
 Categories=Development;Engineering;Electronics;
 Keywords=pcb;плата;sprint;layout;lay6;lmk;ЛУТ;gerber;
 StartupNotify=true
 EOF
-chmod +x "$DESKTOP_DIR/$APP_ID.desktop"
+  chmod +x "$entry_path"
+}
+
+# Ярлык в меню приложений — работает и если у пользователя нет папки «Рабочий стол».
+write_desktop_entry "$DESKTOP_DIR/$APP_ID.desktop"
+
+# Для удобства добавляем копию на Рабочий стол, если эта папка есть в системе.
+if command -v xdg-user-dir >/dev/null 2>&1; then
+  USER_DESKTOP=$(xdg-user-dir DESKTOP 2>/dev/null || true)
+else
+  USER_DESKTOP="$HOME/Desktop"
+fi
+# Некоторые окружения возвращают HOME, если рабочий стол отключён — не кладём ярлык туда.
+if [ "$USER_DESKTOP" = "$HOME" ]; then USER_DESKTOP=""; fi
+if [ -n "$USER_DESKTOP" ]; then
+  mkdir -p "$USER_DESKTOP"
+  write_desktop_entry "$USER_DESKTOP/$APP_ID.desktop"
+  # GNOME требует пометить вручную созданный ярлык как доверенный; необязательная команда.
+  if command -v gio >/dev/null 2>&1; then
+    gio set "$USER_DESKTOP/$APP_ID.desktop" metadata::trusted true >/dev/null 2>&1 || true
+  fi
+  echo "  • Ярлык также добавлен на Рабочий стол."
+fi
 
 # обновить кеш меню, если утилита есть (не критично)
 if command -v update-desktop-database >/dev/null; then
