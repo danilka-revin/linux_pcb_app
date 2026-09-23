@@ -25,6 +25,7 @@ export interface Pad extends Base {
   shape: PadShape;
   size: number;   // диаметр / сторона, мм
   drill: number;  // диаметр отверстия, мм (0 = без отверстия)
+  noPlate?: boolean; // без металлизации отверстия (типично для самодельных плат Sprint-Layout)
 }
 
 /** Планарная (SMD) площадка — только на одном слое меди */

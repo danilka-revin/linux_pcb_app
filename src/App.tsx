@@ -1054,6 +1054,26 @@ export default function App() {
       });
     }
 
+    // автотрассировка: зоны зазора вокруг отверстий (ближе дорожка не подойдёт)
+    if (tool === 'route' && defs.rtHoleClear > 0) {
+      ctx.save();
+      ctx.strokeStyle = 'rgba(255,180,60,.45)';
+      ctx.lineWidth = 1;
+      ctx.setLineDash([3, 3]);
+      for (const e of expandDoc(doc.entities)) {
+        let r = 0;
+        if (e.kind === 'pad' && e.drill > 0) r = e.size / 2;
+        else if (e.kind === 'via') r = e.size / 2;
+        else if (e.kind === 'hole') r = e.d / 2;
+        else continue;
+        const q = toPx(e.x, e.y);
+        const rr = (r + defs.rtHoleClear) * view.s;
+        if (q.px < -rr || q.py < -rr || q.px > size.w + rr || q.py > size.h + rr) continue;
+        ctx.beginPath(); ctx.arc(q.px, q.py, rr, 0, Math.PI * 2); ctx.stroke();
+      }
+      ctx.restore();
+    }
+
     // автотрассировка: первая точка и резиновая линия
     if (tool === 'route' && routeA) {
       const a = toPx(routeA.x, routeA.y);

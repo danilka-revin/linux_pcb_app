@@ -134,3 +134,28 @@ console.log('AUTOROUTE HOLES OK');
   console.log('5: малый зазор —', small.msg, '| большой —', big.msg);
 }
 console.log('AUTOROUTE GAP OK');
+
+// 6) реальная плата Sprint-Layout: неметаллизированные площадки с кольцом — это площадки,
+//    к ним можно трассировать с соблюдением зазоров
+{
+  const { readFileSync } = await import('node:fs');
+  const { lay6ToDoc } = await import('../src/pcb/lay6');
+  const { doc } = lay6ToDoc(readFileSync('test/fixtures/test1.lay6'));
+  const flat = expandDoc(doc.entities);
+  const pads = flat.filter((e) => e.kind === 'pad') as M.Pad[];
+  assert(pads.length === 180, 'test1: площадок ' + pads.length);
+  assert(flat.filter((e) => e.kind === 'hole').length === 4, 'test1: крепёжных отверстий 4');
+  const shapes = flat.flatMap(copperShapes);
+  const freeP = pads.filter((p) => !shapes.some((s) => s.id !== p.id && !s.drilled && shapeDist(s, p.x, p.y) < p.size / 2));
+  const opt = { ...O, trackW: 0.3, clearance: 0.2, holeClear: 0.2, viaSize: 1.2, viaDrill: 0.6, step: 0.25 };
+  let ok = 0;
+  for (let i = 0; i < 3; i++) {
+    const A = pickEndpoint(doc.entities, freeP[i], 0.05)!, B = pickEndpoint(doc.entities, freeP[freeP.length - 1 - i], 0.05)!;
+    const r = autoroute(doc.entities, doc.w, doc.h, A, B, opt);
+    assert(r.ok && r.drc === 0, 'test1 трасса ' + i + ': ' + r.msg);
+    checkEntry(r.ents, A.x, A.y, 'test1 A'); checkEntry(r.ents, B.x, B.y, 'test1 B');
+    ok++;
+  }
+  console.log('6: test1.lay6 — проложено', ok, 'трасс без нарушений зазоров');
+}
+console.log('AUTOROUTE REAL OK');
