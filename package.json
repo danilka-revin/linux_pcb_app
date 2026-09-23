@@ -1,0 +1,27 @@
+{
+  "name": "linux-pcb-app",
+  "private": true,
+  "version": "0.1.0",
+  "type": "module",
+  "scripts": {
+    "dev": "vite",
+    "build": "tsc --noEmit && vite build",
+    "preview": "vite preview",
+    "test:smoke": "esbuild test/smoke.ts --bundle --platform=node --format=esm --outfile=node_modules/.cache/smoke.mjs --log-level=warning && node node_modules/.cache/smoke.mjs",
+    "test:ssr": "esbuild test/ssr.tsx --bundle --platform=node --format=esm --outfile=node_modules/.cache/ssr.mjs --log-level=warning && node node_modules/.cache/ssr.mjs",
+    "test:lay6": "esbuild test/lay6rt.ts --bundle --platform=node --format=esm --outfile=node_modules/.cache/lay6rt.mjs --log-level=warning && node node_modules/.cache/lay6rt.mjs",
+    "test": "npm run test:smoke && npm run test:ssr && npm run test:lay6",
+    "start": "node scripts/server.mjs"
+  },
+  "dependencies": {
+    "react": "^18.3.1",
+    "react-dom": "^18.3.1"
+  },
+  "devDependencies": {
+    "@types/react": "^18.3.12",
+    "@types/react-dom": "^18.3.1",
+    "@vitejs/plugin-react": "^4.3.4",
+    "typescript": "^5.6.3",
+    "vite": "^6.3.5"
+  }
+}
