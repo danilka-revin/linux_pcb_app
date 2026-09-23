@@ -65,6 +65,7 @@ const DEFAULT_DEFS: Defs = {
   textLayer: 's1',
   rtW: 0.8,
   rtClear: 0.4,
+  rtHoleClear: 0.6,
   rtStep: 0.635,
   rtViaCost: 8,
   rtTopMul: 1.5,
@@ -598,7 +599,7 @@ export default function App() {
     let newPad: M.Pad | null = null;
     if (!end) {
       if (!defs.rtAutoPad) { setRouteMsg({ msg: 'Кликните по площадке, переходу или SMD', ok: false }); return; }
-      if (clearanceAt(doc.entities, sp.x, sp.y, defs.padSize / 2) < defs.rtClear) {
+      if (clearanceAt(doc.entities, sp.x, sp.y, defs.padSize / 2) < Math.max(defs.rtClear, defs.rtHoleClear)) {
         setRouteMsg({ msg: 'Здесь нельзя поставить площадку: слишком близко к другой меди', ok: false });
         return;
       }
@@ -614,7 +615,7 @@ export default function App() {
       return;
     }
     const r = autoroute(base.entities, base.w, base.h, routeA, end, {
-      trackW: defs.rtW, clearance: defs.rtClear, viaSize: defs.viaSize, viaDrill: defs.viaDrill,
+      trackW: defs.rtW, clearance: defs.rtClear, holeClear: defs.rtHoleClear, viaSize: defs.viaSize, viaDrill: defs.viaDrill,
       step: defs.rtStep, viaCost: defs.rtViaCost, topMul: defs.rtTopMul,
       bottomEntry: defs.rtBottomEntry, allowTop: defs.rtAllowTop, angle: defs.rtAngle,
     });

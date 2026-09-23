@@ -17,7 +17,8 @@ export type Cu = 'k1' | 'k2';
 
 export interface RouteOpts {
   trackW: number;      // ширина дорожки, мм
-  clearance: number;   // зазор до чужой меди, мм
+  clearance: number;   // зазор до чужих дорожек и прочей меди, мм
+  holeClear?: number;  // зазор до чужих отверстий (площадки, переходы, крепёжные), мм; по умолч. = clearance
   viaSize: number;     // диаметр площадки перехода, мм
   viaDrill: number;    // сверло перехода, мм
   step: number;        // шаг сетки трассировки, мм
@@ -58,6 +59,7 @@ interface Shape {
   poly?: Pt[];                                // залитая область (r = 0)
   bb: [number, number, number, number];
   hole?: boolean;                             // неметаллизированное отверстие
+  drilled?: boolean;                          // объект с отверстием (площадка/переход/отверстие)
 }
 
 function segDist(px: number, py: number, x1: number, y1: number, x2: number, y2: number): number {
@@ -131,8 +133,10 @@ function mkShape(id: string, layers: Cu[], segs: [number, number, number, number
     x1 = Math.min(x1, g[0], g[2]); y1 = Math.min(y1, g[1], g[3]);
     x2 = Math.max(x2, g[0], g[2]); y2 = Math.max(y2, g[1], g[3]);
   }
-  return { id, layers, segs, r, poly, bb: [x1 - r, y1 - r, x2 + r, y2 + r], hole };
+  return { id, layers, segs, r, poly, bb: [x1 - r, y1 - r, x2 + r, y2 + r], hole, drilled: hole };
 }
+
+const drilled = (ss: Shape[]): Shape[] => { ss.forEach((x) => { x.drilled = true; }); return ss; };
 
 function boxPoly(cx: number, cy: number, hw: number, hh: number): Pt[] {
   return [
@@ -145,6 +149,17 @@ function boxPoly(cx: number, cy: number, hw: number, hh: number): Pt[] {
 export function copperShapes(e: Entity): Shape[] {
   switch (e.kind) {
     case 'pad': {
+      const sh = padShapes(e);
+      return e.drill > 0 ? drilled(sh) : sh;
+    }
+    case 'via':
+      return drilled([mkShape(e.id, ['k1', 'k2'], [[e.x, e.y, e.x, e.y]], e.size / 2)]);
+    default:
+      return otherShapes(e);
+  }
+}
+
+function padShapes(e: Extract<Entity, { kind: 'pad' }>): Shape[] {
       if (e.shape === 'square') {
         const p = boxPoly(e.x, e.y, e.size / 2, e.size / 2);
         return [mkShape(e.id, ['k1', 'k2'], polySegs(p), 0, p)];
@@ -159,9 +174,10 @@ export function copperShapes(e: Entity): Shape[] {
         return [mkShape(e.id, ['k1', 'k2'], polySegs(p), 0, p)];
       }
       return [mkShape(e.id, ['k1', 'k2'], [[e.x, e.y, e.x, e.y]], e.size / 2)];
-    }
-    case 'via':
-      return [mkShape(e.id, ['k1', 'k2'], [[e.x, e.y, e.x, e.y]], e.size / 2)];
+}
+
+function otherShapes(e: Entity): Shape[] {
+  switch (e.kind) {
     case 'hole':
       return [mkShape(e.id, ['k1', 'k2'], [[e.x, e.y, e.x, e.y]], e.d / 2, undefined, true)];
     case 'smd': {
@@ -315,7 +331,7 @@ interface Attempt {
 function search(
   o: RouteOpts, A: RouteEnd, B: RouteEnd,
   obst: Shape[], netShapes: Shape[], bounds: [number, number, number, number], margin: number,
-): Attempt | null {
+): Attempt | 'blockA' | 'blockB' | null {
   const st = o.step;
   const edge = o.edge ?? o.clearance;
   const ix0 = Math.ceil(bounds[0] / st), iy0 = Math.ceil(bounds[1] / st);
@@ -327,11 +343,16 @@ function search(
   const Y = (j: number): number => (iy0 + j) * st;
 
   // поле расстояний до чужой меди на каждом слое + до отверстий
+  // dist — до дорожек/прочей меди, distH — до объектов с отверстиями
   const dist = [new Float32Array(N).fill(1e9), new Float32Array(N).fill(1e9)];
+  const distH = [new Float32Array(N).fill(1e9), new Float32Array(N).fill(1e9)];
   const viaBlock = new Uint8Array(N);
+  const hc = o.holeClear ?? o.clearance;
   const trackNeed = o.clearance + o.trackW / 2 + margin;
   const viaNeed = o.clearance + o.viaSize / 2 + margin;
-  const R = Math.max(trackNeed, viaNeed) + st;
+  const trackNeedH = hc + o.trackW / 2 + margin;
+  const viaNeedH = hc + o.viaSize / 2 + margin;
+  const R = Math.max(trackNeed, viaNeed, trackNeedH, viaNeedH) + st;
   const cellRange = (bb: [number, number, number, number], r: number) => ({
     i1: Math.max(0, Math.floor((bb[0] - r) / st) - ix0), i2: Math.min(W - 1, Math.ceil((bb[2] + r) / st) - ix0),
     j1: Math.max(0, Math.floor((bb[1] - r) / st) - iy0), j2: Math.min(H - 1, Math.ceil((bb[3] + r) / st) - iy0),
@@ -344,22 +365,24 @@ function search(
         const d = shapeDist(s, X(i), y);
         if (d > R) continue;
         const c = j * W + i;
+        const f = s.drilled ? distH : dist;
         for (const l of s.layers) {
           const li = l === 'k1' ? 0 : 1;
-          if (d < dist[li][c]) dist[li][c] = d;
+          if (d < f[li][c]) f[li][c] = d;
         }
       }
     }
   }
   // переходы не ставить на собственные площадки цепи и вплотную к ним
   for (const s of netShapes) {
-    const need = o.viaSize / 2 + o.clearance;
+    const need = o.viaSize / 2 + Math.max(o.clearance, hc);
     const { i1, i2, j1, j2 } = cellRange(s.bb, need + st);
     for (let j = j1; j <= j2; j++) for (let i = i1; i <= i2; i++)
       if (shapeDist(s, X(i), Y(j)) < need) viaBlock[j * W + i] = 1;
   }
-  const free = (li: number, c: number): boolean => dist[li][c] >= trackNeed;
-  const viaOk = (c: number): boolean => !viaBlock[c] && dist[0][c] >= viaNeed && dist[1][c] >= viaNeed;
+  const free = (li: number, c: number): boolean => dist[li][c] >= trackNeed && distH[li][c] >= trackNeedH;
+  const viaOk = (c: number): boolean => !viaBlock[c] &&
+    dist[0][c] >= viaNeed && dist[1][c] >= viaNeed && distH[0][c] >= viaNeedH && distH[1][c] >= viaNeedH;
   const inEdge = (i: number, j: number, need: number): boolean => {
     const x = X(i), y = Y(j);
     return x - bounds[0] >= need && bounds[2] - x >= need && y - bounds[1] >= need && bounds[3] - y >= need;
@@ -402,19 +425,42 @@ function search(
     }
     return out;
   };
+  // короткий подвод «узел сетки → центр площадки» тоже должен соблюдать зазоры
+  const stubOk = (li: number, x: number, y: number, P: RouteEnd): boolean => {
+    const l: Cu = li ? 'k2' : 'k1';
+    const seg: [number, number, number, number] = [x, y, P.x, P.y];
+    for (const s of obst) {
+      if (!s.layers.includes(l)) continue;
+      const need = (s.drilled ? hc : o.clearance) + o.trackW / 2 + s.r;
+      if (s.bb[0] - need > Math.max(x, P.x) || s.bb[2] + need < Math.min(x, P.x) ||
+        s.bb[1] - need > Math.max(y, P.y) || s.bb[3] + need < Math.min(y, P.y)) continue;
+      if (s.poly && inPoly(s.poly, x, y)) return false;
+      for (const g of s.segs) if (segSegDist(seg, g) < need - 1e-6) return false;
+    }
+    return true;
+  };
   const startCells = nodesNear(A);
   const goalCells = new Set(nodesNear(B));
   for (const c of startCells) {
     const i = c % W, j = (c / W) | 0;
     for (const l of entA) {
       const li = l === 'k1' ? 0 : 1;
-      if (!free(li, c)) continue;
+      if (!free(li, c) || !stubOk(li, X(i), Y(j), A)) continue;
       const g0 = Math.hypot(X(i) - A.x, Y(j) - A.y) * mul[li];
       const k = key(li, c, 8);
       if (g0 < g[k]) { g[k] = g0; heap.push(k, g0 + hr(X(i), Y(j))); }
     }
   }
   const goalLi = new Set(entB.map((l) => (l === 'k1' ? 0 : 1)));
+  if (!heap.size) return 'blockA';
+  {
+    let any = false;
+    for (const c of goalCells) {
+      const i = c % W, j = (c / W) | 0;
+      for (const li of goalLi) if (free(li, c) && stubOk(li, X(i), Y(j), B)) any = true;
+    }
+    if (!any) return 'blockB';
+  }
 
   let found = -1;
   let iter = 0;
@@ -430,7 +476,7 @@ function search(
     const c = lc - li * N;
     const i = c % W, j = (c - i) / W;
     // цель
-    if (goalLi.has(li) && goalCells.has(c)) { found = k; break; }
+    if (goalLi.has(li) && goalCells.has(c) && stubOk(li, X(i), Y(j), B)) { found = k; break; }
     // ходы по слою
     for (const nd of dirs) {
       let tc = 0;
@@ -538,9 +584,10 @@ function drcCount(o: RouteOpts, ents: Entity[], obst: Shape[]): number {
     for (const s of copperShapes(e)) {
       for (const ob of obst) {
         if (!s.layers.some((l) => ob.layers.includes(l))) continue;
-        if (ob.bb[0] > s.bb[2] + o.clearance || ob.bb[2] < s.bb[0] - o.clearance ||
-          ob.bb[1] > s.bb[3] + o.clearance || ob.bb[3] < s.bb[1] - o.clearance) continue;
-        if (shapeShapeDist(s, ob) < o.clearance - 1e-3) bad++;
+        const cl = ob.drilled || s.drilled ? (o.holeClear ?? o.clearance) : o.clearance;
+        if (ob.bb[0] > s.bb[2] + cl || ob.bb[2] < s.bb[0] - cl ||
+          ob.bb[1] > s.bb[3] + cl || ob.bb[3] < s.bb[1] - cl) continue;
+        if (shapeShapeDist(s, ob) < cl - 1e-3) bad++;
       }
     }
   }
@@ -588,6 +635,10 @@ export function autoroute(
   let firstFound: { ents: Entity[]; length: number; vias: number; drc: number } | null = null;
   for (const margin of [0, o.step * 0.3, o.step * 0.6]) {
     const at = search(o, A, B, obst, netShapes, bounds, margin);
+    if (at === 'blockA' || at === 'blockB') {
+      if (margin === 0) return fail(`${at === 'blockA' ? 'Первая' : 'Вторая'} точка слишком близко к чужой дорожке или отверстию — нельзя подвести дорожку с заданным зазором`);
+      continue;
+    }
     if (!at) {
       if (margin === 0) break; // без запаса не нашлось — дальше тем более
       continue;

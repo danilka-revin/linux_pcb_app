@@ -56,7 +56,8 @@ export interface Defs {
   textLayer: 's1' | 's2';
   // автотрассировка
   rtW: number;          // ширина дорожки
-  rtClear: number;      // зазор
+  rtClear: number;      // зазор до дорожек/меди
+  rtHoleClear: number;  // зазор до площадок с отверстием, переходов, отверстий
   rtStep: number;       // шаг сетки трассировки
   rtViaCost: number;    // цена перехода, мм
   rtTopMul: number;     // штраф длины на верхнем слое
@@ -369,7 +370,8 @@ export function PropsPanel({
             {routeInfo?.picking === 'b' ? 'Шаг 2: кликните вторую точку' : 'Шаг 1: кликните первую точку'}
           </div>
           <NI label="Ширина дорожки, мм" value={defs.rtW} min={0.1} on={(v) => setDefs({ rtW: v })} />
-          <NI label="Зазор, мм" value={defs.rtClear} min={0.1} on={(v) => setDefs({ rtClear: v })} />
+          <NI label="Зазор до дорожек, мм" value={defs.rtClear} min={0.1} on={(v) => setDefs({ rtClear: v })} />
+          <NI label="Зазор до отверстий, мм" value={defs.rtHoleClear} min={0.1} on={(v) => setDefs({ rtHoleClear: v })} />
           <SI label="Шаг сетки трассировки" value={String(defs.rtStep)}
             options={[['0.25', '0.25 мм (точно, медленно)'], ['0.3175', '0.3175 мм (1/8″)'], ['0.5', '0.5 мм'], ['0.635', '0.635 мм (1/4″)'], ['1', '1 мм'], ['1.27', '1.27 мм (быстро)']]}
             on={(v) => setDefs({ rtStep: parseFloat(v) })} />
@@ -401,7 +403,9 @@ export function PropsPanel({
           )}
           <div className="hint">
             Приоритет — нижний слой (сторона пайки). Верх используется только для обхода
-            препятствий, с переходами. Чужая медь обходится с заданным зазором.
+            препятствий, с переходами. Чужие дорожки обходятся с «зазором до дорожек»,
+            чужие площадки с отверстиями, переходы и крепёжные отверстия — с «зазором до отверстий»
+            (считается от края медного пятачка / края отверстия).
             <span className="kbd">Esc</span>/ПКМ — сбросить первую точку, <span className="kbd">Ctrl+Z</span> — отменить дорожку.
           </div>
         </div>

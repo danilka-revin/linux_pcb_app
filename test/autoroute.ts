@@ -2,7 +2,7 @@
 import * as M from '../src/pcb/model';
 import { LIB } from '../src/pcb/library';
 import { libBBox, expandDoc } from '../src/pcb/expand';
-import { autoroute, pickEndpoint, copperShapes, type RouteOpts } from '../src/pcb/autoroute';
+import { autoroute, pickEndpoint, copperShapes, shapeDist, type RouteOpts } from '../src/pcb/autoroute';
 
 const assert = (c: boolean, m: string): void => { if (!c) { console.error('FAIL:', m); process.exit(1); } };
 const O: RouteOpts = {
@@ -80,3 +80,57 @@ function checkEntry(ents: M.Entity[], x: number, y: number, name: string): void 
   console.log('3:', r.msg, `(${Date.now() - t0} мс)`);
 }
 console.log('AUTOROUTE OK');
+
+// 4) обход отверстий и дорожек с заданными зазорами
+{
+  const doc = M.newBoard(60, 40);
+  doc.entities.push(
+    { id: 'a', kind: 'pad', x: 10, y: 20, shape: 'round', size: 1.9, drill: 0.9 },
+    { id: 'b', kind: 'pad', x: 50, y: 20, shape: 'round', size: 1.9, drill: 0.9 },
+    { id: 'h', kind: 'hole', x: 25, y: 20, d: 3 },                                     // крепёжное
+    { id: 'v', kind: 'via', x: 35, y: 20, size: 1.8, drill: 0.8 },                     // чужой переход
+    { id: 'p', kind: 'pad', x: 42, y: 20, shape: 'round', size: 2, drill: 1 },         // чужая площадка
+    { id: 't', kind: 'track', pts: [{ x: 30, y: 14 }, { x: 30, y: 26 }], w: 0.6, layer: 'k2' }, // чужая дорожка
+  );
+  const holeClear = 1.5, clearance = 0.5;
+  const A = pickEndpoint(doc.entities, { x: 10, y: 20 }, 0.3)!;
+  const B = pickEndpoint(doc.entities, { x: 50, y: 20 }, 0.3)!;
+  const r = autoroute(doc.entities, doc.w, doc.h, A, B, { ...O, clearance, holeClear, step: 0.5 });
+  assert(r.ok && r.drc === 0, 'обход: ' + r.msg);
+  const obst = expandDoc(doc.entities).filter((e) => e.id !== 'a' && e.id !== 'b').flatMap(copperShapes);
+  let minHole = Infinity, minTrack = Infinity;
+  for (const e of r.ents) for (const s of copperShapes(e)) for (const ob of obst) {
+    if (!s.layers.some((l) => ob.layers.includes(l))) continue;
+    // выборка точек по скелету новой меди
+    for (const g of s.segs) for (let t = 0; t <= 1; t += 0.005) {
+      const d = shapeDist(ob, g[0] + (g[2] - g[0]) * t, g[1] + (g[3] - g[1]) * t) - s.r;
+      if (ob.drilled) minHole = Math.min(minHole, d); else minTrack = Math.min(minTrack, d);
+    }
+  }
+  assert(minHole >= holeClear - 1e-3, 'зазор до отверстий ' + minHole.toFixed(3));
+  assert(minTrack >= clearance - 1e-3, 'зазор до дорожек ' + minTrack.toFixed(3));
+  checkEntry(r.ents, 10, 20, 'A'); checkEntry(r.ents, 50, 20, 'B');
+  console.log('4:', r.msg, `(до отверстий ${minHole.toFixed(2)} мм, до дорожек ${minTrack.toFixed(2)} мм)`);
+}
+console.log('AUTOROUTE HOLES OK');
+
+// 5) узкий проход между двумя переходами: малый зазор — прямо, большой — в обход
+{
+  const doc = M.newBoard(60, 40);
+  doc.entities.push(
+    { id: 'a', kind: 'pad', x: 10, y: 20, shape: 'round', size: 1.9, drill: 0.9 },
+    { id: 'b', kind: 'pad', x: 50, y: 20, shape: 'round', size: 1.9, drill: 0.9 },
+    // стена из переходов с одним просветом у y=20 (края пятачков на расстоянии 2.2 мм)
+    ...[0, 2, 4, 6, 8, 10, 12, 14, 16, 18, 22, 24, 26, 28, 30, 32, 34, 36, 38, 40].map((y) => (
+      { id: 'w' + y, kind: 'via', x: 30, y, size: 1.8, drill: 0.8 } as M.Entity)),
+  );
+  const A = pickEndpoint(doc.entities, { x: 10, y: 20 }, 0.3)!;
+  const B = pickEndpoint(doc.entities, { x: 50, y: 20 }, 0.3)!;
+  const base = { ...O, step: 0.25, allowTop: false, clearance: 0.3 };
+  const small = autoroute(doc.entities, doc.w, doc.h, A, B, { ...base, holeClear: 0.4 });
+  assert(small.ok && small.drc === 0, 'узкий проход, малый зазор: ' + small.msg);
+  const big = autoroute(doc.entities, doc.w, doc.h, A, B, { ...base, holeClear: 1.2 });
+  assert(!big.ok, 'узкий проход при большом зазоре должен быть закрыт: ' + big.msg);
+  console.log('5: малый зазор —', small.msg, '| большой —', big.msg);
+}
+console.log('AUTOROUTE GAP OK');
