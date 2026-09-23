@@ -12,6 +12,7 @@ import { productionFiles } from './pcb/gerber';
 import { autoroute, clearanceAt, pickEndpoint, endpointOf, type RouteEnd } from './pcb/autoroute';
 import { copperComponents, type NetRouteResult } from './pcb/netroute';
 import { NetsPanel, NET_COLORS } from './ui/nets';
+import { InventoryDialog } from './ui/inventory';
 import { download, makeZip } from './pcb/zip';
 import { Ic } from './ui/icons';
 import {
@@ -140,7 +141,7 @@ export default function App() {
   }, [doc, tool, routeMode]);
   const [routeA, setRouteA] = useState<RouteEnd | null>(null);
   const [routeMsg, setRouteMsg] = useState<{ msg: string; ok: boolean | null }>({ msg: '', ok: null });
-  const [dialog, setDialog] = useState<'new' | 'export' | 'panelize' | 'about' | null>(null);
+  const [dialog, setDialog] = useState<'new' | 'export' | 'panelize' | 'about' | 'inventory' | null>(null);
 
   const past = useRef<M.Doc[]>([]);
   const future = useRef<M.Doc[]>([]);
@@ -1298,6 +1299,7 @@ export default function App() {
           {tb('save', 'Сохранить проект (Ctrl+S)', saveFile)}
           {tb('gerber', 'Экспорт Gerber/PNG (Ctrl+E)', () => setDialog('export'))}
           {tb('panel', 'Размножить плату (панелизация)', () => setDialog('panelize'))}
+          {tb('inventory', 'Перечень площадок и отверстий', () => setDialog('inventory'))}
         </div>
         <div className="tb-group">
           {tb('undo', 'Отменить (Ctrl+Z)', undo, { disabled: !past.current.length })}
@@ -1358,6 +1360,7 @@ export default function App() {
               <div className="hint" style={{ padding: '0 12px 10px' }}>
                 Плата: {M.fmt(doc.w)} × {M.fmt(doc.h)} мм<br />
                 Элементов: {doc.entities.length} · Выделено: {sel.size}
+                <button className="btn inventory-open" onClick={() => setDialog('inventory')}>Площадки и отверстия…</button>
               </div>
             </>
           ) : (
@@ -1467,6 +1470,7 @@ export default function App() {
       {dialog === 'panelize' && (
         <PanelizeDialog defX={doc.w + 2} defY={doc.h + 2} onOk={(c, r, gx, gy) => { panelize(c, r, gx, gy); setDialog(null); }} onClose={() => setDialog(null)} />
       )}
+      {dialog === 'inventory' && <InventoryDialog doc={doc} onClose={() => setDialog(null)} />}
       {dialog === 'about' && <AboutDialog onClose={() => setDialog(null)} />}
     </>
   );
