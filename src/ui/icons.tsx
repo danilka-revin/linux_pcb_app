@@ -10,6 +10,7 @@ const R = (x: number, y: number, w: number, h: number, rx = 0): ReactNode =>
 export const ICONS: Record<string, ReactNode> = {
   select: <>{P('M4 3v17.5l4.6-4.5 2.6 4.8 3-1.4-2.5-4.7 5.8-1.2z')}</>,
   track: <>{P('M4 19h6l6-11h4')}{C(4, 19, 1.7, true)}{C(20, 8, 1.7, true)}</>,
+  route: <>{P('M4 18h5l3-5h3l3-5h2')}{C(4, 18, 1.8, true)}{C(20, 8, 1.8, true)}{P('M13 4l1 2 2 .5-1.5 1.5.3 2-1.8-1-1.8 1 .3-2L10.5 6.5l2-.5z')}</>,
   pad: <>{C(12, 12, 7.5)}{C(12, 12, 2, true)}</>,
   smd: <>{R(4, 8.5, 16, 7, 1)}{P('M8.5 8.5v7M15.5 8.5v7')}</>,
   via: <>{C(12, 12, 8)}{C(12, 12, 4)}</>,

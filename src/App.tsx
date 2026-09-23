@@ -9,6 +9,7 @@ import {
 import { LIB } from './pcb/library';
 import { COLORS, drawDoc, drawEnt, renderPrint, toWorld, type View } from './pcb/render';
 import { productionFiles } from './pcb/gerber';
+import { autoroute, clearanceAt, pickEndpoint, type RouteEnd } from './pcb/autoroute';
 import { download, makeZip } from './pcb/zip';
 import { Ic } from './ui/icons';
 import {
@@ -62,6 +63,15 @@ const DEFAULT_DEFS: Defs = {
   textRot: 0,
   textMirror: false,
   textLayer: 's1',
+  rtW: 0.8,
+  rtClear: 0.4,
+  rtStep: 0.635,
+  rtViaCost: 8,
+  rtTopMul: 1.5,
+  rtBottomEntry: true,
+  rtAllowTop: true,
+  rtAngle: '45',
+  rtAutoPad: true,
 };
 
 function loadDoc(): M.Doc {
@@ -110,6 +120,8 @@ export default function App() {
   const [placeSide, setPlaceSide] = useState<'top' | 'bottom'>('top');
   const [pasteTpl, setPasteTpl] = useState<M.Entity[] | null>(null);
   const [leftTab, setLeftTab] = useState<'layers' | 'lib'>('layers');
+  const [routeA, setRouteA] = useState<RouteEnd | null>(null);
+  const [routeMsg, setRouteMsg] = useState<{ msg: string; ok: boolean | null }>({ msg: '', ok: null });
   const [dialog, setDialog] = useState<'new' | 'export' | 'panelize' | 'about' | null>(null);
 
   const past = useRef<M.Doc[]>([]);
@@ -298,13 +310,14 @@ export default function App() {
   }, [draft, addEnts, activeCu]);
 
   const finishOrCancel = useCallback(() => {
+    if (routeA) { setRouteA(null); setRouteMsg({ msg: '', ok: null }); return; }
     if (draft?.t === 'track') { commitTrack(); return; }
     if (draft?.t === 'poly') { commitPoly(); return; }
     if (draft) { setDraft(null); return; }
     if (pasteTpl) { setPasteTpl(null); return; }
     if (placeLib) { setPlaceLib(null); return; }
     if (sel.size) { setSel(new Set()); }
-  }, [draft, commitTrack, commitPoly, pasteTpl, placeLib, sel.size]);
+  }, [draft, commitTrack, commitPoly, pasteTpl, placeLib, sel.size, routeA]);
 
   const setTool = useCallback((t: ToolId2) => {
     if (t !== tool) { finishOrCancel(); setToolRaw(t); }
@@ -577,6 +590,48 @@ export default function App() {
     addEnts([comp]);
   }, [placeLib, placeRot, placeSide, addEnts, macros]);
 
+  // ---------------- автотрассировка ----------------
+  const routeClick = useCallback((w: M.Pt, sp: M.Pt) => {
+    const tol = 3 / view.s + 0.05;
+    let end = pickEndpoint(doc.entities, w, tol);
+    let base = doc;
+    let newPad: M.Pad | null = null;
+    if (!end) {
+      if (!defs.rtAutoPad) { setRouteMsg({ msg: 'Кликните по площадке, переходу или SMD', ok: false }); return; }
+      if (clearanceAt(doc.entities, sp.x, sp.y, defs.padSize / 2) < defs.rtClear) {
+        setRouteMsg({ msg: 'Здесь нельзя поставить площадку: слишком близко к другой меди', ok: false });
+        return;
+      }
+      newPad = { id: M.uid(), kind: 'pad', x: sp.x, y: sp.y, shape: defs.padShape, size: defs.padSize, drill: defs.padDrill };
+      base = M.cloneDoc(doc);
+      base.entities.push(newPad);
+      end = { x: newPad.x, y: newPad.y, layers: ['k2', 'k1'], r: newPad.size / 2, entId: newPad.id, tht: newPad.drill > 0 };
+    }
+    if (!routeA) {
+      if (newPad) commit(base);
+      setRouteA(end);
+      setRouteMsg({ msg: 'Первая точка: ' + M.fmt(end.x) + '; ' + M.fmt(end.y) + ' — выберите вторую', ok: null });
+      return;
+    }
+    const r = autoroute(base.entities, base.w, base.h, routeA, end, {
+      trackW: defs.rtW, clearance: defs.rtClear, viaSize: defs.viaSize, viaDrill: defs.viaDrill,
+      step: defs.rtStep, viaCost: defs.rtViaCost, topMul: defs.rtTopMul,
+      bottomEntry: defs.rtBottomEntry, allowTop: defs.rtAllowTop, angle: defs.rtAngle,
+    });
+    if (!r.ok) {
+      if (newPad) commit(base); // площадку всё равно оставляем
+      setRouteMsg({ msg: r.msg, ok: false });
+      setRouteA(null);
+      return;
+    }
+    const nd = M.cloneDoc(base);
+    nd.entities.push(...r.ents);
+    commit(nd);
+    setSel(new Set(r.ents.map((x) => x.id)));
+    setRouteMsg({ msg: r.msg, ok: r.drc === 0 });
+    setRouteA(null);
+  }, [view.s, doc, defs, routeA, commit]);
+
   const onPointerDown = (e: React.PointerEvent<HTMLCanvasElement>) => {
     const { px, py } = getPos(e);
     if (e.button === 1) {
@@ -689,6 +744,7 @@ export default function App() {
         break;
       }
       case 'comp': addComp(sp); break;
+      case 'route': routeClick(w, sp); break;
     }
   };
 
@@ -805,6 +861,7 @@ export default function App() {
       case 'Digit6': setTool('line'); break;
       case 'Digit7': setTool('text'); break;
       case 'Digit8': setTool('ruler'); break;
+      case 'Digit9': setTool('route'); break;
       case 'ArrowLeft': nudge(-defs.grid, 0); e.preventDefault(); break;
       case 'ArrowRight': nudge(defs.grid, 0); e.preventDefault(); break;
       case 'ArrowUp': nudge(0, defs.grid); e.preventDefault(); break;
@@ -996,6 +1053,18 @@ export default function App() {
       });
     }
 
+    // автотрассировка: первая точка и резиновая линия
+    if (tool === 'route' && routeA) {
+      const a = toPx(routeA.x, routeA.y);
+      ctx.strokeStyle = COLORS.sel;
+      ctx.lineWidth = 2;
+      ctx.beginPath(); ctx.arc(a.px, a.py, Math.max(routeA.r * view.s + 4, 8), 0, Math.PI * 2); ctx.stroke();
+      ctx.setLineDash([6, 5]);
+      ctx.lineWidth = 1;
+      ctx.beginPath(); ctx.moveTo(a.px, a.py); ctx.lineTo(mouse.px, mouse.py); ctx.stroke();
+      ctx.setLineDash([]);
+    }
+
     // фантомы размещения
     const ghost = (ent: M.Entity) => drawEnt(ctx, view, ent, { alpha: 0.55, hidden: new Set() });
     if (!sel.size && !drag.current) {
@@ -1104,7 +1173,7 @@ export default function App() {
           {tb('redo', 'Повторить (Ctrl+Y)', redo, { disabled: !future.current.length })}
         </div>
         <div className="tb-group">
-          {TOOLS.map((t) => tb(t.icon, `${t.name}${t.id === 'track' ? ' (2)' : ''}`, () => setTool(t.id), { active: tool === t.id && !(t.id === 'comp' && !placeLib) }))}
+          {TOOLS.map((t) => tb(t.icon, `${t.name}${t.id === 'track' ? ' (2)' : t.id === 'route' ? ' (9)' : ''}`, () => setTool(t.id), { active: tool === t.id && !(t.id === 'comp' && !placeLib) }))}
         </div>
         <div className="tb-group">
           <select
@@ -1213,6 +1282,7 @@ export default function App() {
             placeLib={placeLib} placeRot={placeRot} placeSide={placeSide}
             setPlaceRot={setPlaceRot} setPlaceSide={setPlaceSide} cancelPlace={() => setPlaceLib(null)}
             textRot={defs.textRot} setTextRot={(r) => setDefs({ textRot: r })}
+            routeInfo={{ ...routeMsg, picking: routeA ? 'b' : 'a' }}
           />
         </div>
       </div>

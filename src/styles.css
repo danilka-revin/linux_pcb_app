@@ -188,3 +188,7 @@ canvas { position: absolute; inset: 0; cursor: crosshair; display: block; }
 ::-webkit-scrollbar-thumb { background: #2b3a33; border-radius: 5px; border: 2px solid var(--surface); }
 ::-webkit-scrollbar-thumb:hover { background: #3a4c42; }
 ::-webkit-scrollbar-track { background: transparent; }
+
+.route-msg { margin: 10px 0 0; padding: 6px 8px; border-radius: 6px; font-size: 12px; background: rgba(255,255,255,.05); color: #cdd3db; }
+.route-msg.ok { background: rgba(61,200,120,.12); color: #7be0a6; }
+.route-msg.bad { background: rgba(229,72,77,.14); color: #ff9a9d; }

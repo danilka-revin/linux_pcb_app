@@ -127,7 +127,7 @@ export interface Doc {
 
 export const LAYERS: { id: LayerId; ru: string; short: string; color: string }[] = [
   { id: 'k1', ru: 'Верхняя медь', short: 'K1', color: '#e5484d' },
-  { id: 'k2', ru: 'Нижняя медь', short: 'K2', color: '#3d8bfd' },
+  { id: 'k2', ru: 'Нижняя медь', short: 'K2', color: '#35c46a' },
   { id: 's1', ru: 'Шелкография верх', short: 'Ш1', color: '#e8c93e' },
   { id: 's2', ru: 'Шелкография низ', short: 'Ш2', color: '#a8b0b8' },
   { id: 'outline', ru: 'Контур платы', short: 'Контур', color: '#e9ecf1' },
