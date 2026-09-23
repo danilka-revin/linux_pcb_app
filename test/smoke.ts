@@ -3,7 +3,9 @@ import * as M from '../src/pcb/model';
 import { LIB } from '../src/pcb/library';
 import { expandComp, expandDoc, libBBox } from '../src/pcb/expand';
 import { gerberLayer, excellon, productionFiles } from '../src/pcb/gerber';
-import { makeZip } from '../src/pcb/zip';
+import { makeZip, unzip } from '../src/pcb/zip';
+import { lmkToEnts } from '../src/pcb/lay6';
+import { readFileSync } from 'node:fs';
 import { textPolylines } from '../src/pcb/strokefont';
 import { zOrdered } from '../src/pcb/render';
 
@@ -75,5 +77,24 @@ console.log('hit track:', M.hitEnt(doc.entities[1] as M.Entity, { x: 12, y: 5.2 
   const firstFoot = zd.findIndex(isFoot);
   const lastNonFoot = [...zd.keys()].filter((i) => !isFoot(zd[i])).pop() ?? -1;
   assert(firstFoot >= 0 && firstFoot > lastNonFoot, 'z-order: все пяточки после прочих элементов (first=' + firstFoot + ', lastOther=' + lastNonFoot + ')');
+}
+// архив макросов: ZIP с .lmk — deflate и store, вложенные имена, регистр расширения
+{
+  const files = await unzip(readFileSync('test/fixtures/macros.zip'));
+  assert(files.size === 4, 'zip: 4 файла, получено ' + files.size);
+  const lmks = [...files.keys()].filter((n) => n.toLowerCase().endsWith('.lmk'));
+  assert(lmks.length === 3, 'zip: 3 .lmk (остальные проигнорированы), получено ' + lmks.length);
+  const r71 = lmkToEnts(files.get('R71.lmk')!);
+  assert(r71.ents.length === 3, 'zip: R71.lmk — 3 примитива, получено ' + r71.ents.length);
+  const led = lmkToEnts(files.get('macros/LED_red.lMK')!);
+  assert(led.ents.length === 2, 'zip: вложенный файл с верхним регистром .lMK — 2 примитива, получено ' + led.ents.length);
+  const st = lmkToEnts(files.get('macros/store_pad.lmk')!);
+  assert(st.ents.length === 2, 'zip: store-сжатие — 2 примитива, получено ' + st.ents.length);
+  // round-trip бинарных данных через наш же writer (store)
+  const bin = new Uint8Array([1, 2, 250, 0]);
+  const back = await unzip(await makeZip([{ name: 'a/b.bin', data: bin }]).arrayBuffer());
+  const bd = back.get('a/b.bin')!;
+  assert(bd.length === 4 && bd[0] === 1 && bd[2] === 250 && bd[3] === 0, 'zip: бинарный round-trip (store)');
+  console.log('ZIP-архив макросов: deflate + store, вложенные пути — OK');
 }
 console.log('SMOKE OK');

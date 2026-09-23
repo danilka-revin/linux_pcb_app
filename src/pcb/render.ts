@@ -21,6 +21,7 @@ export const COLORS = {
   holeFill: '#070d0a',
   holeRing: 'rgba(233,236,241,.32)',
   sel: '#d5ff45',
+  probe: '#ffd23f',
   grid: '#22302a',
   axes: '#34453c',
 };

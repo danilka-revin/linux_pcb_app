@@ -13,7 +13,7 @@ import { autoroute, clearanceAt, pickEndpoint, endpointOf, type RouteEnd } from 
 import { copperComponents, type NetRouteResult } from './pcb/netroute';
 import { NetsPanel, NET_COLORS } from './ui/nets';
 import { InventoryDialog } from './ui/inventory';
-import { download, makeZip } from './pcb/zip';
+import { download, makeZip, unzip } from './pcb/zip';
 import { Ic } from './ui/icons';
 import {
   LayersPanel, LibraryPanel, PropsPanel, TOOLS,
@@ -24,6 +24,13 @@ import {
 } from './ui/dialogs';
 
 type ToolId2 = ToolId;
+
+/** Русские формы множественного числа: [1, 2, 5] → «1 дорожка», «2 дорожки», «5 дорожек» */
+function plur(n: number, w: [string, string, string]): string {
+  const a = Math.abs(n) % 100, d = Math.abs(n) % 10;
+  const f = a > 10 && a < 20 ? 2 : d === 1 ? 0 : d >= 2 && d <= 4 ? 1 : 2;
+  return `${n} ${w[f]}`;
+}
 
 type Draft =
   | { t: 'track'; pts: { x: number; y: number; layer: 'k1' | 'k2' }[] }
@@ -144,6 +151,18 @@ export default function App() {
   const [dialog, setDialog] = useState<'new' | 'export' | 'panelize' | 'about' | 'inventory' | null>(null);
   // версия сборки (сервер отдаёт /version из dist/version.json)
   const [appVer, setAppVer] = useState<string | null>(null);
+  // «Тест цепи»: подсвеченная электрическая цепь (все связные пятки и дорожки)
+  const [probe, setProbe] = useState<{
+    entId: string; ents: Set<string>;
+    pads: number; smd: number; vias: number; tracks: number;
+  } | null>(null);
+  // связность меди пересчитывается только в режиме «Тест цепи»
+  const probeData = useMemo(() => {
+    if (tool !== 'probe') return null;
+    return { flat: expandDoc(doc.entities), comp: copperComponents(doc.entities) };
+  }, [doc, tool]);
+  // если инструмент сменили напрямую (установка компонента, импорт макроса) — подсветку снять
+  useEffect(() => { if (tool !== 'probe') setProbe(null); }, [tool]);
   useEffect(() => {
     fetch('/version')
       .then((r) => r.json())
@@ -159,6 +178,7 @@ export default function App() {
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const fileRef = useRef<HTMLInputElement>(null);
   const lmkFileRef = useRef<HTMLInputElement>(null);
+  const lmkZipRef = useRef<HTMLInputElement>(null);
   const fitted = useRef(false);
   const selRef = useRef(sel);
   selRef.current = sel;
@@ -346,8 +366,9 @@ export default function App() {
     if (draft) { setDraft(null); return; }
     if (pasteTpl) { setPasteTpl(null); return; }
     if (placeLib) { setPlaceLib(null); return; }
+    if (probe) { setProbe(null); return; }
     if (sel.size) { setSel(new Set()); }
-  }, [draft, commitTrack, commitPoly, pasteTpl, placeLib, sel.size, routeA, activeNet, routeMode, tool]);
+  }, [draft, commitTrack, commitPoly, pasteTpl, placeLib, probe, sel.size, routeA, activeNet, routeMode, tool]);
 
   const setTool = useCallback((t: ToolId2) => {
     if (t !== tool) { finishOrCancel(); setToolRaw(t); }
@@ -536,6 +557,42 @@ export default function App() {
         alert('Не удалось импортировать макрос .lmk: неверный формат файла.');
       }
     });
+  }, [persistMacros]);
+
+  // Пакетный импорт: ZIP-архив с макросами Sprint-Layout (.lmk)
+  const importLmkZip = useCallback(async (f: File) => {
+    let count = 0;
+    let last: string | null = null;
+    const warns: string[] = [];
+    try {
+      const files = await unzip(await f.arrayBuffer());
+      const lmks = [...files.entries()].filter(([n]) => n.toLowerCase().endsWith('.lmk'));
+      if (!lmks.length) {
+        alert('В архиве не найдено ни одного файла .lmk.');
+        return;
+      }
+      for (const [n, data] of lmks) {
+        const base = n.split(/[\\/]/).pop() || n;
+        const name = base.replace(/\.lmk$/i, '');
+        try {
+          if (!hasLay6Magic(data)) throw new Error('формат');
+          const { ents, warnings } = lmkToEnts(data);
+          if (!ents.length) throw new Error('пустой макрос');
+          for (const w of warnings) warns.push(`${base}: ${w}`);
+          persistMacros((prev) => addUserMacro(prev, makeMacro(name, ents)));
+          count++;
+          last = name;
+        } catch (e) {
+          warns.push(`${base}: ${e instanceof Error ? e.message : 'ошибка'}`);
+        }
+      }
+      const ok = count ? `Импортировано макросов: ${count}` : 'Ни один макрос не импортирован.';
+      alert(warns.length ? `${ok}\n\nЗамечания:\n• ${warns.slice(0, 10).join('\n• ')}` : ok);
+      if (last) { setPlaceLib('u:' + last); setToolRaw('comp'); }
+    } catch (e) {
+      alert('Не удалось открыть архив: ' + (e instanceof Error ? e.message : 'неверный формат') +
+        '\nОжидается ZIP с файлами .lmk.');
+    }
   }, [persistMacros]);
 
   const exportGerber = useCallback(() => {
@@ -835,6 +892,34 @@ export default function App() {
       }
       case 'comp': addComp(sp); break;
       case 'route': routeClick(w, sp); break;
+      case 'probe': {
+        // «Тест цепи»: подсветить всю электрически связанную медь под курсором
+        const hitId = hitAt(w);
+        if (!hitId) { setProbe(null); break; }
+        const pd = probeData;
+        if (!pd) break;
+        // компоненты: id подэлементов вида «compId:idx»
+        const keys = new Set<string>();
+        for (const s of pd.flat) {
+          if (s.id !== hitId && !s.id.startsWith(hitId + ':')) continue;
+          const k = pd.comp.get(s.id);
+          if (k) keys.add(k);
+        }
+        if (!keys.size) { setProbe(null); break; } // клик не по меди (шелкография, текст…)
+        const ents = new Set<string>();
+        let pads = 0, smd = 0, vias = 0, tracks = 0;
+        for (const e of pd.flat) {
+          const k = pd.comp.get(e.id);
+          if (!k || !keys.has(k)) continue;
+          ents.add(e.id);
+          if (e.kind === 'pad') pads++;
+          else if (e.kind === 'smd') smd++;
+          else if (e.kind === 'via') vias++;
+          else if (e.kind === 'track') tracks++;
+        }
+        setProbe({ entId: hitId, ents, pads, smd, vias, tracks });
+        break;
+      }
     }
   };
 
@@ -956,6 +1041,7 @@ export default function App() {
       case 'Digit7': setTool('text'); break;
       case 'Digit8': setTool('ruler'); break;
       case 'Digit9': setTool('route'); break;
+      case 'Digit0': setTool('probe'); break;
       case 'ArrowLeft': nudge(-defs.grid, 0); e.preventDefault(); break;
       case 'ArrowRight': nudge(defs.grid, 0); e.preventDefault(); break;
       case 'ArrowUp': nudge(0, defs.grid); e.preventDefault(); break;
@@ -1040,6 +1126,16 @@ export default function App() {
         ctx.strokeRect(Math.min(p1.px, p2.px) - 2.5, Math.min(p1.py, p2.py) - 2.5,
           Math.abs(p2.px - p1.px) + 5, Math.abs(p2.py - p1.py) + 5);
         ctx.setLineDash([]);
+      }
+      ctx.restore();
+    }
+
+    // «Тест цепи»: подсветка всей электрической цепи
+    if (probe && probeData) {
+      ctx.save();
+      for (const e of probeData.flat) {
+        if (!probe.ents.has(e.id)) continue;
+        drawEnt(ctx, view, e, { tint: COLORS.probe, alpha: 0.55, hidden: new Set() });
       }
       ctx.restore();
     }
@@ -1314,7 +1410,7 @@ export default function App() {
           {tb('redo', 'Повторить (Ctrl+Y)', redo, { disabled: !future.current.length })}
         </div>
         <div className="tb-group">
-          {TOOLS.map((t) => tb(t.icon, `${t.name}${t.id === 'track' ? ' (2)' : t.id === 'route' ? ' (9)' : ''}`, () => setTool(t.id), { active: tool === t.id && !(t.id === 'comp' && !placeLib) }))}
+          {TOOLS.map((t) => tb(t.icon, `${t.name}${t.id === 'track' ? ' (2)' : t.id === 'route' ? ' (9)' : t.id === 'probe' ? ' (0)' : ''}`, () => setTool(t.id), { active: tool === t.id && !(t.id === 'comp' && !placeLib) }))}
         </div>
         <div className="tb-group">
           <select
@@ -1379,6 +1475,7 @@ export default function App() {
               onPickUser={(n) => { setPlaceLib('u:' + n); setToolRaw('comp'); }}
               onDelUser={(n) => { persistMacros((prev) => prev.filter((m) => m.name !== n)); if (placeLib === 'u:' + n) setPlaceLib(null); }}
               onImportLmk={() => lmkFileRef.current?.click()}
+              onImportZip={() => lmkZipRef.current?.click()}
             />
           )}
         </div>
@@ -1409,6 +1506,15 @@ export default function App() {
             onChange={(e) => {
               const f = e.target.files?.[0];
               if (f) importLmkFile(f);
+              e.target.value = '';
+            }}
+          />
+          <input
+            ref={lmkZipRef} type="file" accept=".zip,application/zip"
+            style={{ display: 'none' }}
+            onChange={(e) => {
+              const f = e.target.files?.[0];
+              if (f) importLmkZip(f);
               e.target.value = '';
             }}
           />
@@ -1456,6 +1562,11 @@ export default function App() {
         </span>
         {view.mir && <span><b>вид снизу</b></span>}
         <span className="sp" />
+        {probe && (
+          <span className="probe-info" title="Электрическая цепь под курсором (инструмент «Тест цепи»)">
+            ⚡ цепь: {plur(probe.pads, ['площадка', 'площадки', 'площадок'])} · {plur(probe.smd, ['SMD', 'SMD', 'SMD'])} · {plur(probe.vias, ['переход', 'перехода', 'переходов'])} · {plur(probe.tracks, ['дорожка', 'дорожки', 'дорожек'])}
+          </span>
+        )}
         <span>{toolMeta.name}: {toolMeta.hint}</span>
         <span className="lg"><span className="pulse" />локально · офлайн</span>
       </div>
