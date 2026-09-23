@@ -393,29 +393,84 @@ export function layObjToEnts(o: LayObj, warns: string[]): M.Entity[] {
     }
     case LAY_TYPE.TEXT: {
       if (!o.text.trim() && !o.children.length) return [];
-      // геометрия высоты — из векторных глифов, если есть
-      let size = o.out > 0 ? o.out / 2 : 2.54;
-      let th = o.inn > 0 ? o.inn / 2 : 0.3;
-      let minY = Infinity, maxY = -Infinity;
+      // Sprint-Layout: якорь (x, y) — начало базовой линии первой строки,
+      // out — высота текста, thzise — поворот ПО часовой стрелке (наш — против),
+      // thermobarier — зеркало. Толщина штриха — из lineWidth векторных глифов.
+      const rot = ((360 - importRotation(o.thzise)) % 360 + 360) % 360;
+      const a = (rot * Math.PI) / 180;
+      const ca = Math.cos(a), sa = Math.sin(a);
+      const mirror = !!o.thermobarier;
+      const layerId: M.LayerId = layer === 'outline' ? 's1' : layer;
+      // глифы в локальных координатах текста: базовая линия — в начале, вверх — +y
+      const lps: M.Pt[] = [];
       let lwSum = 0, lwCnt = 0;
       const scan = (c: LayObj) => {
-        for (const p of c.points) { minY = Math.min(minY, p.y); maxY = Math.max(maxY, p.y); }
+        for (const p of c.points) {
+          const dx = p.x - o.x, dy = p.y - o.y;
+          let lx = dx * ca + dy * sa;
+          const ly = -dx * sa + dy * ca;
+          if (mirror) lx = -lx;
+          lps.push({ x: lx, y: ly });
+        }
         if (c.lineWidthRaw > 0) { lwSum += c.lineWidthRaw / 10000; lwCnt++; }
         c.children.forEach(scan);
       };
       o.children.forEach(scan);
-      if (isFinite(maxY) && maxY > minY) size = maxY - minY;
-      if (lwCnt) th = lwSum / lwCnt;
-      // поворот текста в lay6 — по часовой стрелке (наш — против)
-      const rot = ((360 - importRotation(o.thzise)) % 360 + 360) % 360;
-      return [{
-        id: M.uid(), kind: 'text',
-        x: o.x, y: isFinite(minY) ? minY : o.y, // базовая линия ≈ низ глифов
-        size, th, rot,
-        text: o.text || '?',
-        mirror: !!o.thermobarier,
-        layer: layer === 'outline' ? 's1' : layer,
-      }];
+      const lwAvg = lwCnt ? lwSum / lwCnt : 0;
+      let size = o.out > 0 ? o.out / 2 : 2.54;
+      if (!(o.out > 0)) {
+        // высоты в заголовке нет — оценка из глифов: верх первой строки + половина штриха
+        let topY = 0;
+        for (const p of lps) topY = Math.max(topY, p.y);
+        if (topY > 0.05) size = Math.min(Math.max(topY + lwAvg / 2, 0.3), 20);
+      }
+      const th = lwAvg > 0.01 ? lwAvg : o.inn / 2 >= 0.03 ? o.inn / 2 : size * 0.15;
+      const toWorld = (lx: number, ly: number): M.Pt => ({
+        x: o.x + lx * ca - ly * sa,
+        y: o.y + lx * sa + ly * ca,
+      });
+      const mkText = (t: string, lx: number, ly: number): M.Entity => {
+        const p = toWorld(lx, ly);
+        return { id: M.uid(), kind: 'text', x: p.x, y: p.y, size, th, rot, text: t, mirror, layer: layerId };
+      };
+      const lines = (o.text || '').split('\n');
+      const nonEmpty = lines.map((t, i) => ({ t, i })).filter((l) => l.t.trim() !== '');
+      if (!nonEmpty.length) {
+        // текста нет: объект хранит векторные фигурки (например, маркеры контакта 1) —
+        // импортируем их как линии, как их рисует Sprint
+        const ents: M.Entity[] = [];
+        const add = (c: LayObj) => {
+          if (c.points.length >= 2)
+            ents.push(...polylineToEnts(c.points, c.lineWidthRaw / 10000, layerId, warns));
+          c.children.forEach(add);
+        };
+        o.children.forEach(add);
+        return ents.length ? ents : [mkText('?', 0, 0)];
+      }
+      if (nonEmpty.length === 1 || !lps.length) {
+        // одна строка (или глифов нет): строки с межстрочным 1.2× высоты
+        return nonEmpty.map((l) => mkText(l.t, 0, -l.i * size * 1.2));
+      }
+      // несколько строк: базовая линия и начало x каждой строки — из кластеров глифов
+      let minLy = Infinity, maxLy = -Infinity;
+      for (const p of lps) { minLy = Math.min(minLy, p.y); maxLy = Math.max(maxLy, p.y); }
+      const n = nonEmpty.length;
+      const range = maxLy - minLy;
+      // межстрочный = (размах глифов − кап-высота первой строки) / (N−1)
+      const spacing = range > 0.8 * size
+        ? Math.min(Math.max((range - 0.89 * size) / (n - 1), 0.9 * size), 1.8 * size)
+        : 1.2 * size;
+      const minXs: number[] = new Array(n).fill(Infinity);
+      for (const p of lps) {
+        let jb = 0, db = Infinity;
+        for (let j = 0; j < n; j++) {
+          const d = Math.abs(p.y + j * spacing - 0.4 * size);
+          if (d < db) { db = d; jb = j; }
+        }
+        if (p.x < minXs[jb]) minXs[jb] = p.x;
+      }
+      return nonEmpty.map((l, j) =>
+        mkText(l.t, isFinite(minXs[j]) && isFinite(minXs[0]) ? minXs[j] - minXs[0] : 0, -j * spacing));
     }
     default:
       warns.push(`Неизвестный тип объекта: ${o.type}`);
