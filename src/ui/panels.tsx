@@ -10,11 +10,12 @@ import { Ic } from './icons';
 
 export type ToolId =
   | 'select' | 'track' | 'pad' | 'smd' | 'via' | 'hole' | 'line' | 'rect'
-  | 'circle' | 'fill' | 'text' | 'ruler' | 'comp' | 'route';
+  | 'circle' | 'fill' | 'text' | 'ruler' | 'comp' | 'route' | 'probe';
 
 export const TOOLS: { id: ToolId; name: string; icon: string; hint: string }[] = [
   { id: 'select', name: 'Выбор', icon: 'select', hint: 'ЛКМ — выбрать/двигать · рамка — выделить · Del — удалить · R — повернуть · M — другая сторона' },
   { id: 'route', name: 'Автотрассировка', icon: 'route', hint: 'Две точки или группы соединений — выберите режим справа · вход в отверстия по низу (K2)' },
+  { id: 'probe', name: 'Тест цепи', icon: 'probe', hint: 'ЛКМ по дорожке, площадке, переходу или SMD — подсветить всю электрическую цепь · клик мимо — снять' },
   { id: 'track', name: 'Дорожка', icon: 'track', hint: 'ЛКМ — точки излома · ПКМ/Esc — закончить · L — сменить слой с переходом' },
   { id: 'pad', name: 'Площадка', icon: 'pad', hint: 'ЛКМ — поставить площадку (с обеих сторон, с металлизацией)' },
   { id: 'smd', name: 'SMD-площадка', icon: 'smd', hint: 'ЛКМ — поставить планарную площадку на активном слое меди' },
@@ -114,7 +115,7 @@ export function LayersPanel({
 // ---------- библиотека ----------
 export function LibraryPanel({
   picked, onPick,
-  macros, onPickUser, onDelUser, onImportLmk,
+  macros, onPickUser, onDelUser, onImportLmk, onImportZip,
 }: {
   picked: string | null;
   onPick: (key: string) => void;
@@ -122,6 +123,7 @@ export function LibraryPanel({
   onPickUser: (name: string) => void;
   onDelUser: (name: string) => void;
   onImportLmk: () => void;
+  onImportZip: () => void;
 }) {
   const [q, setQ] = useState('');
   const list = useMemo(() => {
@@ -143,8 +145,12 @@ export function LibraryPanel({
         <div>
           <div className="cat">
             Мои макросы (.lmk)
-            <button className="btn tiny" style={{ float: 'right' }} onClick={onImportLmk}
-              title="Импортировать макрос Sprint-Layout (.lmk) в библиотеку">Импорт…</button>
+            <span style={{ float: 'right', display: 'inline-flex', gap: 4 }}>
+              <button className="btn tiny" onClick={onImportLmk}
+                title="Импортировать макрос Sprint-Layout (.lmk) в библиотеку">Импорт…</button>
+              <button className="btn tiny" onClick={onImportZip}
+                title="Импортировать ZIP-архив с макросами Sprint-Layout (.lmk) в библиотеку">Архив…</button>
+            </span>
           </div>
           {myMacros.length === 0 && (
             <div className="lib-hint">Пусто. Импортируйте .lmk или сохраните выделенное как макрос (правый клик → «В макрос»).</div>

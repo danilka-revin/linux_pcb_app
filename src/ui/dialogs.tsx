@@ -153,7 +153,7 @@ export function PanelizeDialog({
   );
 }
 
-export function AboutDialog({ onClose }: { onClose: () => void }) {
+export function AboutDialog({ version, onClose }: { version: string | null; onClose: () => void }) {
   return (
     <Modal
       title="О программе"
@@ -163,6 +163,11 @@ export function AboutDialog({ onClose }: { onClose: () => void }) {
       <p>
         <b>ЛайАут</b> — редактор разводки печатных плат для Linux в духе Sprint-Layout.
         Работает в браузере, данные хранятся локально, тёмная тема по умолчанию.
+      </p>
+      <p style={{ fontSize: 12, opacity: 0.85 }}>
+        {version
+          ? `Версия сборки: ${version}. Обновления подтягиваются из GitHub автоматически при запуске.`
+          : 'Версия: разработка (сборка без метки). Обновления подтягиваются из GitHub автоматически при запуске.'}
       </p>
       <ul>
         <li>Дорожки с углами 45°/90°/свободно, автопереходы при смене слоя (клавиша L)</li>
