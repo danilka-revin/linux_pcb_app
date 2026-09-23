@@ -142,6 +142,14 @@ export default function App() {
   const [routeA, setRouteA] = useState<RouteEnd | null>(null);
   const [routeMsg, setRouteMsg] = useState<{ msg: string; ok: boolean | null }>({ msg: '', ok: null });
   const [dialog, setDialog] = useState<'new' | 'export' | 'panelize' | 'about' | 'inventory' | null>(null);
+  // версия сборки (сервер отдаёт /version из dist/version.json)
+  const [appVer, setAppVer] = useState<string | null>(null);
+  useEffect(() => {
+    fetch('/version')
+      .then((r) => r.json())
+      .then((v) => setAppVer(v && (v.short || v.sha) ? `${v.short}${v.built ? ' от ' + new Date(v.built).toLocaleDateString('ru-RU') : ''}` : null))
+      .catch(() => setAppVer(null));
+  }, []);
 
   const past = useRef<M.Doc[]>([]);
   const future = useRef<M.Doc[]>([]);
@@ -1471,7 +1479,7 @@ export default function App() {
         <PanelizeDialog defX={doc.w + 2} defY={doc.h + 2} onOk={(c, r, gx, gy) => { panelize(c, r, gx, gy); setDialog(null); }} onClose={() => setDialog(null)} />
       )}
       {dialog === 'inventory' && <InventoryDialog doc={doc} onClose={() => setDialog(null)} />}
-      {dialog === 'about' && <AboutDialog onClose={() => setDialog(null)} />}
+      {dialog === 'about' && <AboutDialog version={appVer} onClose={() => setDialog(null)} />}
     </>
   );
 }

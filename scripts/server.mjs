@@ -46,6 +46,17 @@ createServer(async (req, res) => {
       res.end('{"ok":true}');
       return;
     }
+    if (url.pathname === '/version') {
+      try {
+        const v = JSON.parse(await readFile(join(ROOT, 'version.json')));
+        res.writeHead(200, { 'content-type': 'application/json' });
+        res.end(JSON.stringify({ ok: true, ...v }));
+      } catch {
+        res.writeHead(200, { 'content-type': 'application/json' });
+        res.end('{"ok":true,"sha":"dev"}');
+      }
+      return;
+    }
     let path = normalize(decodeURIComponent(url.pathname)).replace(/^([/\\])+/, '');
     if (!path || path.endsWith('/')) path = join(path, 'index.html');
     const full = join(ROOT, path);

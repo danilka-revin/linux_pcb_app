@@ -220,11 +220,26 @@ export function drawEnt(
   ctx.restore();
 }
 
+/** Площадки и переходы («пяточки») — всегда верхним слоем,
+ *  чтобы залитые полигоны/дорожки, созданные позже, их не закрывали */
+function isFoot(e: Entity): boolean {
+  return e.kind === 'pad' || e.kind === 'via';
+}
+
+export function zOrdered(doc: Doc): Entity[] {
+  const under: Entity[] = [], over: Entity[] = [];
+  for (const e of doc.entities) {
+    const subs = e.kind === 'comp' ? expandComp(e) : [e];
+    for (const s of subs) (isFoot(s) ? over : under).push(s);
+  }
+  return [...under, ...over];
+}
+
 /** Документ целиком */
 export function drawDoc(
   ctx: CanvasRenderingContext2D, v: View, doc: Doc, hidden: Set<LayerId>,
 ): void {
-  for (const e of doc.entities) drawEnt(ctx, v, e, { hidden });
+  for (const e of zOrdered(doc)) drawEnt(ctx, v, e, { hidden });
 }
 
 /** Печатный вид 1:1 для ЛУТ/фотошаблона (чёрным по белому) */
@@ -256,7 +271,8 @@ export function renderPrint(
   const passes = new Set<string>([layer]);
   if (layer === 'k1' || layer === 'k2') passes.add('both');
   if (drillMarks) passes.add('holes');
-  for (const e of doc.entities)
+  // тот же порядок, что и в редакторе: площадки/переходы поверх залитой меди
+  for (const e of zOrdered(doc))
     drawEnt(ctx, v, e, { tint: '#000000', passes, drillMarks });
   return cv;
 }

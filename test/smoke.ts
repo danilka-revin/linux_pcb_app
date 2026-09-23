@@ -5,6 +5,7 @@ import { expandComp, expandDoc, libBBox } from '../src/pcb/expand';
 import { gerberLayer, excellon, productionFiles } from '../src/pcb/gerber';
 import { makeZip } from '../src/pcb/zip';
 import { textPolylines } from '../src/pcb/strokefont';
+import { zOrdered } from '../src/pcb/render';
 
 const assert = (c: boolean, m: string): void => { if (!c) { console.error('FAIL:', m); process.exit(1); } };
 
@@ -64,5 +65,15 @@ console.log('hit track:', M.hitEnt(doc.entities[1] as M.Entity, { x: 12, y: 5.2 
   assert(Math.abs(pad.x - 10) < 1e-9 && Math.abs(pad.y - 9) < 1e-9, 'embedded: координата пада ' + pad.x + ',' + pad.y);
   const tx = ex.find((e) => e.kind === 'text') as M.TextE;
   assert(tx.rot === 60 && tx.mirror === true && tx.layer === 's2', 'embedded: текст (rot/mirror/слой): ' + tx.rot + '/' + tx.mirror + '/' + tx.layer);
+}
+// z-порядок: площадки и переходы всегда поверх остального (их не должна закрывать
+// залитая медь, созданная позже — например, при автотрассировке)
+{
+  const isFoot = (e: M.Entity) => e.kind === 'pad' || e.kind === 'via';
+  const zd = zOrdered(doc);
+  assert(zd.length === flat.length, 'z-order: число элементов сохранено ' + zd.length);
+  const firstFoot = zd.findIndex(isFoot);
+  const lastNonFoot = [...zd.keys()].filter((i) => !isFoot(zd[i])).pop() ?? -1;
+  assert(firstFoot >= 0 && firstFoot > lastNonFoot, 'z-order: все пяточки после прочих элементов (first=' + firstFoot + ', lastOther=' + lastNonFoot + ')');
 }
 console.log('SMOKE OK');
