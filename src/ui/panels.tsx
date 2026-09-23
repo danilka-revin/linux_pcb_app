@@ -14,7 +14,7 @@ export type ToolId =
 
 export const TOOLS: { id: ToolId; name: string; icon: string; hint: string }[] = [
   { id: 'select', name: 'Выбор', icon: 'select', hint: 'ЛКМ — выбрать/двигать · рамка — выделить · Del — удалить · R — повернуть · M — другая сторона' },
-  { id: 'route', name: 'Автотрассировка', icon: 'route', hint: 'ЛКМ — первая площадка (или пустое место → новая площадка) · ЛКМ — вторая · дорожка проложится сама, вход в отверстия — по низу (K2)' },
+  { id: 'route', name: 'Автотрассировка', icon: 'route', hint: 'Две точки или группы соединений — выберите режим справа · вход в отверстия по низу (K2)' },
   { id: 'track', name: 'Дорожка', icon: 'track', hint: 'ЛКМ — точки излома · ПКМ/Esc — закончить · L — сменить слой с переходом' },
   { id: 'pad', name: 'Площадка', icon: 'pad', hint: 'ЛКМ — поставить площадку (с обеих сторон, с металлизацией)' },
   { id: 'smd', name: 'SMD-площадка', icon: 'smd', hint: 'ЛКМ — поставить планарную площадку на активном слое меди' },
@@ -300,7 +300,7 @@ export function PropsPanel({
   selEnts, patchEnt, doRotate, doMirror, doDuplicate, doDelete,
   doc, setDocSize,
   placeLib, placeRot, placeSide, setPlaceRot, setPlaceSide, cancelPlace,
-  textRot, setTextRot, routeInfo,
+  textRot, setTextRot, routeInfo, routeGroups,
 }: {
   tool: ToolId;
   defs: Defs;
@@ -318,11 +318,12 @@ export function PropsPanel({
   cancelPlace: () => void;
   textRot: number;
   setTextRot: (r: number) => void;
+  routeGroups?: boolean;
   routeInfo?: { msg: string; ok: boolean | null; picking: 'a' | 'b' };
 }) {
   void fmt;
   // --- выделенные элементы ---
-  if (selEnts.length > 0) {
+  if (selEnts.length > 0 && tool !== 'route') {
     const one = selEnts.length === 1 ? selEnts[0] : null;
     return (
       <div className="props">
@@ -367,7 +368,7 @@ export function PropsPanel({
         <div className="props">
           <h3>Автотрассировка</h3>
           <div className="sub">
-            {routeInfo?.picking === 'b' ? 'Шаг 2: кликните вторую точку' : 'Шаг 1: кликните первую точку'}
+            {routeGroups ? 'Параметры для всех групп' : routeInfo?.picking === 'b' ? 'Шаг 2: кликните вторую точку' : 'Шаг 1: кликните первую точку'}
           </div>
           <NI label="Ширина дорожки, мм" value={defs.rtW} min={0.1} on={(v) => setDefs({ rtW: v })} />
           <NI label="Зазор до дорожек, мм" value={defs.rtClear} min={0.1} on={(v) => setDefs({ rtClear: v })} />
@@ -377,7 +378,7 @@ export function PropsPanel({
             on={(v) => setDefs({ rtStep: parseFloat(v) })} />
           <SI label="Углы" value={defs.rtAngle} options={[['45', '45°'], ['90', '90°']]} on={(v) => setDefs({ rtAngle: v as '45' | '90' })} />
           <label className="chk" title="Сторона пайки — низ: к отверстию площадки дорожка всегда подходит по K2">
-            <input type="checkbox" checked={defs.rtBottomEntry} onChange={(e) => setDefs({ rtBottomEntry: e.target.checked })} />
+            <input type="checkbox" disabled={routeGroups} checked={routeGroups || defs.rtBottomEntry} onChange={(e) => setDefs({ rtBottomEntry: e.target.checked })} />
             В отверстия входить только по низу (K2)
           </label>
           <label className="chk" title="Разрешить уходить на верх (K1) через переходные отверстия">
@@ -390,7 +391,7 @@ export function PropsPanel({
             <NI label="Цена перехода (мм пути)" value={defs.rtViaCost} min={0} on={(v) => setDefs({ rtViaCost: v })} />
             <NI label="Штраф длины на верху, ×" value={defs.rtTopMul} min={1} on={(v) => setDefs({ rtTopMul: v })} />
           </>)}
-          <label className="chk" title="Клик в пустое место создаёт площадку с отверстием (место под перемычку/джампер)">
+          {!routeGroups && <><label className="chk" title="Клик в пустое место создаёт площадку с отверстием (место под перемычку/джампер)">
             <input type="checkbox" checked={defs.rtAutoPad} onChange={(e) => setDefs({ rtAutoPad: e.target.checked })} />
             В пустом месте ставить площадку
           </label>
@@ -398,6 +399,7 @@ export function PropsPanel({
             <NI label="Площадка: размер, мм" value={defs.padSize} min={0.3} on={(v) => setDefs({ padSize: v })} />
             <NI label="Площадка: отверстие, мм" value={defs.padDrill} min={0} on={(v) => setDefs({ padDrill: v })} />
           </>)}
+          </>}
           {routeInfo?.msg && (
             <div className={'route-msg ' + (routeInfo.ok === false ? 'bad' : routeInfo.ok ? 'ok' : '')}>{routeInfo.msg}</div>
           )}
@@ -407,7 +409,7 @@ export function PropsPanel({
             чужие площадки с отверстиями, переходы и крепёжные отверстия — с «зазором до отверстий»
             (считается от края медного пятачка / края отверстия). Оранжевый пунктир на плате —
             граница зоны вокруг отверстий, ближе которой дорожка не пройдёт.
-            <span className="kbd">Esc</span>/ПКМ — сбросить первую точку, <span className="kbd">Ctrl+Z</span> — отменить дорожку.
+            <span className="kbd">Esc</span>/ПКМ — {routeGroups ? 'закончить набор группы' : 'сбросить первую точку'}, <span className="kbd">Ctrl+Z</span> — отменить {routeGroups ? 'всю разводку' : 'дорожку'}.
           </div>
         </div>
       );

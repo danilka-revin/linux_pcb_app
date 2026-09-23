@@ -119,11 +119,19 @@ export interface Comp extends Base {
 export type Entity =
   | Pad | Smd | Track | Via | Hole | LineE | Circ | RectE | TextE | Poly | Comp;
 
+/** Группа электрически связанных площадок; ссылки на ID развёрнутых примитивов. */
+export interface Net {
+  id: string;
+  name: string;
+  pads: string[];
+}
+
 export interface Doc {
   name: string;
   w: number; // ширина платы, мм
   h: number; // высота платы, мм
   entities: Entity[];
+  nets?: Net[]; // сохраняются в проекте JSON, не в Sprint-Layout
 }
 
 export const LAYERS: { id: LayerId; ru: string; short: string; color: string }[] = [

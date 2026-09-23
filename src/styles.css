@@ -192,3 +192,17 @@ canvas { position: absolute; inset: 0; cursor: crosshair; display: block; }
 .route-msg { margin: 10px 0 0; padding: 6px 8px; border-radius: 6px; font-size: 12px; background: rgba(255,255,255,.05); color: #cdd3db; }
 .route-msg.ok { background: rgba(61,200,120,.12); color: #7be0a6; }
 .route-msg.bad { background: rgba(229,72,77,.14); color: #ff9a9d; }
+
+.route-modes { display: flex; gap: 6px; padding-bottom: 0; }
+.nets-panel { border-bottom: 1px solid var(--line); }
+.net-list { max-height: 280px; overflow: auto; display: grid; gap: 4px; margin: 10px 0; }
+.net-row { display: flex; gap: 4px; align-items: center; border: 1px solid var(--line); border-radius: 6px; padding: 4px; }
+.net-row.active { border-color: var(--accent); background: var(--accent-btn); }
+.net-pick { display: flex; align-items: center; gap: 8px; flex: 1; min-width: 0; text-align: left; color: var(--text); padding: 5px; }
+.net-pick span { overflow-wrap: anywhere; }
+.net-pick small { display: block; color: var(--muted); font-size: 11px; margin-top: 3px; }
+.net-members { max-height: 160px; overflow: auto; margin-top: 6px; }
+.net-members > div { display: flex; align-items: center; justify-content: space-between; gap: 5px; padding: 3px 0; font-size: 11px; }
+.net-members span { overflow-wrap: anywhere; }
+.net-run { width: 100%; margin-top: 12px; }
+.route-msg { white-space: pre-line; }

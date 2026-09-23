@@ -9,7 +9,9 @@ import {
 import { LIB } from './pcb/library';
 import { COLORS, drawDoc, drawEnt, renderPrint, toWorld, type View } from './pcb/render';
 import { productionFiles } from './pcb/gerber';
-import { autoroute, clearanceAt, pickEndpoint, type RouteEnd } from './pcb/autoroute';
+import { autoroute, clearanceAt, pickEndpoint, endpointOf, type RouteEnd } from './pcb/autoroute';
+import { copperComponents, type NetRouteResult } from './pcb/netroute';
+import { NetsPanel, NET_COLORS } from './ui/nets';
 import { download, makeZip } from './pcb/zip';
 import { Ic } from './ui/icons';
 import {
@@ -121,6 +123,21 @@ export default function App() {
   const [placeSide, setPlaceSide] = useState<'top' | 'bottom'>('top');
   const [pasteTpl, setPasteTpl] = useState<M.Entity[] | null>(null);
   const [leftTab, setLeftTab] = useState<'layers' | 'lib'>('layers');
+  const [routeMode, setRouteMode] = useState<'pair' | 'nets'>('pair');
+  const [activeNet, setActiveNet] = useState<string | null>(null);
+  const [routing, setRouting] = useState<string | null>(null);
+  const routeWorker = useRef<Worker | null>(null);
+  const docRef = useRef(doc);
+  docRef.current = doc;
+  useEffect(() => () => routeWorker.current?.terminate(), []);
+  const netGeometry = useMemo(() => {
+    const ends = new Map<string, RouteEnd>();
+    if (tool === 'route' && routeMode === 'nets') for (const e of expandDoc(doc.entities)) {
+      const end = endpointOf(e);
+      if (end) ends.set(e.id, end);
+    }
+    return { ends, comp: ends.size ? copperComponents(doc.entities) : new Map<string, string>() };
+  }, [doc, tool, routeMode]);
   const [routeA, setRouteA] = useState<RouteEnd | null>(null);
   const [routeMsg, setRouteMsg] = useState<{ msg: string; ok: boolean | null }>({ msg: '', ok: null });
   const [dialog, setDialog] = useState<'new' | 'export' | 'panelize' | 'about' | null>(null);
@@ -159,6 +176,7 @@ export default function App() {
     setDoc(prev);
     pruneSel(prev);
     setDraft(null);
+    setRouteA(null); setRouteMsg({ msg: '', ok: null });
   }, [doc, pruneSel]);
 
   const redo = useCallback(() => {
@@ -168,6 +186,7 @@ export default function App() {
     setDoc(next);
     pruneSel(next);
     setDraft(null);
+    setRouteA(null); setRouteMsg({ msg: '', ok: null });
   }, [doc, pruneSel]);
 
   // ---------------- автосохранение ----------------
@@ -311,6 +330,7 @@ export default function App() {
   }, [draft, addEnts, activeCu]);
 
   const finishOrCancel = useCallback(() => {
+    if (tool === 'route' && routeMode === 'nets' && activeNet) { setActiveNet(null); return; }
     if (routeA) { setRouteA(null); setRouteMsg({ msg: '', ok: null }); return; }
     if (draft?.t === 'track') { commitTrack(); return; }
     if (draft?.t === 'poly') { commitPoly(); return; }
@@ -318,10 +338,11 @@ export default function App() {
     if (pasteTpl) { setPasteTpl(null); return; }
     if (placeLib) { setPlaceLib(null); return; }
     if (sel.size) { setSel(new Set()); }
-  }, [draft, commitTrack, commitPoly, pasteTpl, placeLib, sel.size, routeA]);
+  }, [draft, commitTrack, commitPoly, pasteTpl, placeLib, sel.size, routeA, activeNet, routeMode, tool]);
 
   const setTool = useCallback((t: ToolId2) => {
     if (t !== tool) { finishOrCancel(); setToolRaw(t); }
+    if (t === 'route') setSel(new Set());
   }, [tool, finishOrCancel]);
 
   // ---------------- операции с выделением ----------------
@@ -592,9 +613,68 @@ export default function App() {
   }, [placeLib, placeRot, placeSide, addEnts, macros]);
 
   // ---------------- автотрассировка ----------------
+  const changeNets = (nets: M.Net[]) => {
+    commit({ ...doc, nets });
+    setRouteMsg({ msg: '', ok: null });
+  };
+  const cancelRouting = () => {
+    routeWorker.current?.terminate();
+    routeWorker.current = null;
+    setRouting(null);
+    setRouteMsg({ msg: 'Трассировка отменена. Плата не изменена.', ok: null });
+  };
+  const routeAll = () => {
+    if (routeWorker.current) return;
+    setRouteA(null);
+    setActiveNet(null);
+    setRouting('Подготовка трассировки…');
+    const snapshot = doc;
+    try {
+      const worker = new Worker(new URL('./pcb/netroute.worker.ts', import.meta.url), { type: 'module' });
+      routeWorker.current = worker;
+      const finish = () => { worker.terminate(); routeWorker.current = null; setRouting(null); };
+      worker.onerror = () => { if (routeWorker.current !== worker) return; finish(); setRouteMsg({ msg: 'Ошибка запуска трассировки. Плата не изменена.', ok: false }); };
+      worker.onmessage = (event: MessageEvent) => {
+        if (routeWorker.current !== worker) return;
+        if (event.data.type === 'progress') { setRouting(event.data.text); return; }
+        finish();
+        if (event.data.type === 'error') { setRouteMsg({ msg: event.data.text, ok: false }); return; }
+        if (docRef.current !== snapshot) { setRouteMsg({ msg: 'Плата была изменена во время расчёта. Запустите трассировку ещё раз.', ok: false }); return; }
+        const r = event.data.result as NetRouteResult;
+        if (r.errors.length) { setRouteMsg({ msg: r.errors.join('\n'), ok: false }); return; }
+        if (r.ents.length) commit({ ...snapshot, entities: [...snapshot.entities, ...r.ents] });
+        setSel(new Set());
+        const summary = r.missing ? `Осталось связей: ${r.missing}. ` : 'Все группы соединены. ';
+        const details = r.unresolved.map((n) => `«${n.name}»: ${n.missing}`).join('; ');
+        setRouteMsg({ msg: `${summary}Добавлено: ${r.length.toFixed(1)} мм, переходов: ${r.vias}. Проверено вариантов: ${r.attempts}.` + (details ? `\nНе разведены: ${details}. Проверьте ширину, зазоры и шаг сетки или разрешите верхний слой.` : ''), ok: r.missing === 0 });
+      };
+      worker.postMessage({ doc: snapshot, opts: {
+        trackW: defs.rtW, clearance: defs.rtClear, holeClear: defs.rtHoleClear,
+        viaSize: defs.viaSize, viaDrill: defs.viaDrill, step: defs.rtStep,
+        viaCost: defs.rtViaCost, topMul: defs.rtTopMul, bottomEntry: true,
+        allowTop: defs.rtAllowTop, angle: defs.rtAngle,
+      } });
+    } catch {
+      routeWorker.current?.terminate(); routeWorker.current = null; setRouting(null);
+      setRouteMsg({ msg: 'Не удалось запустить фоновую трассировку. Плата не изменена.', ok: false });
+    }
+  };
   const routeClick = useCallback((w: M.Pt, sp: M.Pt) => {
     const tol = 3 / view.s + 0.05;
     let end = pickEndpoint(doc.entities, w, tol);
+    if (routeMode === 'nets') {
+      const nets = doc.nets ?? [];
+      const net = nets.find((n) => n.id === activeNet);
+      if (!net) { setRouteMsg({ msg: 'Создайте или выберите группу справа, затем кликните её площадки.', ok: null }); return; }
+      if (!end?.entId) { setRouteMsg({ msg: 'Кликните по площадке с медью, SMD или переходу. Крепёжное отверстие не является контактом.', ok: false }); return; }
+      const id = end.entId;
+      const owner = nets.find((n) => n.id !== net.id && n.pads.includes(id));
+      if (owner) { setRouteMsg({ msg: `Эта площадка уже в группе «${owner.name}». Сначала уберите её оттуда.`, ok: false }); return; }
+      const pads = net.pads.includes(id) ? net.pads.filter((p) => p !== id) : [...net.pads, id];
+      commit({ ...doc, nets: nets.map((n) => n.id === net.id ? { ...n, pads } : n) });
+      setRouteMsg({ msg: `«${net.name}»: ${pads.length} площадок. Добавьте остальные или создайте следующую группу.`, ok: null });
+      return;
+    }
     let base = doc;
     let newPad: M.Pad | null = null;
     if (!end) {
@@ -631,7 +711,7 @@ export default function App() {
     setSel(new Set(r.ents.map((x) => x.id)));
     setRouteMsg({ msg: r.msg, ok: r.drc === 0 });
     setRouteA(null);
-  }, [view.s, doc, defs, routeA, commit]);
+  }, [view.s, doc, defs, routeA, commit, routeMode, activeNet]);
 
   const onPointerDown = (e: React.PointerEvent<HTMLCanvasElement>) => {
     const { px, py } = getPos(e);
@@ -811,6 +891,10 @@ export default function App() {
 
   // ---------------- клавиатура ----------------
   const keyHandler = useCallback((e: KeyboardEvent) => {
+    if (routeWorker.current) {
+      if (e.code === 'Escape') { routeWorker.current.terminate(); routeWorker.current = null; setRouting(null); setRouteMsg({ msg: 'Трассировка отменена. Плата не изменена.', ok: null }); }
+      e.preventDefault(); return;
+    }
     if (dialog) return;
     const t = e.target as HTMLElement;
     if (t && (t.tagName === 'INPUT' || t.tagName === 'TEXTAREA' || t.tagName === 'SELECT' || t.isContentEditable)) return;
@@ -1074,6 +1158,32 @@ export default function App() {
       ctx.restore();
     }
 
+    // Цветные группы и воздушные связи; это подсказки, не медь.
+    if (tool === 'route' && routeMode === 'nets') {
+      ctx.save();
+      ctx.font = '11px sans-serif';
+      (doc.nets ?? []).forEach((net, i) => {
+        const points = net.pads.map((id) => netGeometry.ends.get(id)).filter((p): p is RouteEnd => !!p);
+        ctx.strokeStyle = ctx.fillStyle = NET_COLORS[i % NET_COLORS.length];
+        ctx.globalAlpha = activeNet && activeNet !== net.id ? 0.45 : 0.95;
+        ctx.lineWidth = activeNet === net.id ? 2 : 1;
+        ctx.setLineDash([4, 5]);
+        const first = points[0];
+        if (first) for (const p of points.slice(1)) {
+          if (netGeometry.comp.get(first.entId!) === netGeometry.comp.get(p.entId!)) continue;
+          const a = toPx(first.x, first.y), b = toPx(p.x, p.y);
+          ctx.beginPath(); ctx.moveTo(a.px, a.py); ctx.lineTo(b.px, b.py); ctx.stroke();
+        }
+        ctx.setLineDash([]);
+        for (const p of points) {
+          const q = toPx(p.x, p.y), r = Math.max(6, p.r * view.s + 3);
+          ctx.beginPath(); ctx.arc(q.px, q.py, r, 0, Math.PI * 2); ctx.stroke();
+          ctx.fillText(net.name, q.px + r + 3, q.py - r);
+        }
+      });
+      ctx.restore();
+    }
+
     // автотрассировка: первая точка и резиновая линия
     if (tool === 'route' && routeA) {
       const a = toPx(routeA.x, routeA.y);
@@ -1294,6 +1404,21 @@ export default function App() {
         </div>
 
         <div className="side right">
+          {tool === 'route' && <>
+            <div className="props route-modes">
+              <button className={'btn' + (routeMode === 'pair' ? ' primary' : '')} onClick={() => { setRouteMode('pair'); setRouteA(null); setSel(new Set()); setRouteMsg({ msg: '', ok: null }); }}>Две точки</button>
+              <button className={'btn' + (routeMode === 'nets' ? ' primary' : '')} onClick={() => { setRouteMode('nets'); setRouteA(null); setSel(new Set()); setRouteMsg({ msg: '', ok: null }); }}>Группы / вся плата</button>
+            </div>
+            {routeMode === 'nets' && <NetsPanel nets={doc.nets ?? []} active={activeNet} setActive={setActiveNet}
+              ends={netGeometry.ends} comp={netGeometry.comp} info={routeMsg} onChange={changeNets} onRoute={routeAll}
+              onNew={() => {
+                const id = M.uid();
+                const used = new Set((doc.nets ?? []).map((n) => n.name));
+                let i = 1; while (used.has(`Цепь ${i}`)) i++;
+                changeNets([...(doc.nets ?? []), { id, name: `Цепь ${i}`, pads: [] }]);
+                setActiveNet(id);
+              }} />}
+          </>}
           <PropsPanel
             tool={tool} defs={defs} setDefs={setDefs}
             activeCu={activeCu} setActiveCu={setActiveCu}
@@ -1303,7 +1428,8 @@ export default function App() {
             placeLib={placeLib} placeRot={placeRot} placeSide={placeSide}
             setPlaceRot={setPlaceRot} setPlaceSide={setPlaceSide} cancelPlace={() => setPlaceLib(null)}
             textRot={defs.textRot} setTextRot={(r) => setDefs({ textRot: r })}
-            routeInfo={{ ...routeMsg, picking: routeA ? 'b' : 'a' }}
+            routeGroups={routeMode === 'nets'}
+            routeInfo={{ ...routeMsg, msg: routeMode === 'nets' ? '' : routeMsg.msg, picking: routeA ? 'b' : 'a' }}
           />
         </div>
       </div>
@@ -1323,6 +1449,14 @@ export default function App() {
         <span className="lg"><span className="pulse" />локально · офлайн</span>
       </div>
 
+      {routing !== null && <div className="modal-bg" role="dialog" aria-modal="true" aria-labelledby="routing-title">
+        <div className="modal">
+          <h2 id="routing-title">Разводка всей платы</h2>
+          <p aria-live="polite">{routing}</p>
+          <p>Поиск выполняется в фоне. Готовый вариант будет добавлен одним действием; Ctrl+Z отменит всю разводку.</p>
+          <button className="btn" autoFocus onClick={cancelRouting}>Отменить (Esc)</button>
+        </div>
+      </div>}
       {dialog === 'new' && <NewBoardDialog onOk={newBoardDlg} onClose={() => setDialog(null)} />}
       {dialog === 'export' && (
         <ExportDialog

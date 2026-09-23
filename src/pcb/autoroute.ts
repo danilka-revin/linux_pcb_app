@@ -237,7 +237,10 @@ export function pickEndpoint(entities: Entity[], p: Pt, tol: number): RouteEnd |
     }
   }
   if (!best) return null;
-  const e = best.e;
+  return endpointOf(best.e);
+}
+
+export function endpointOf(e: Entity): RouteEnd | null {
   if (e.kind === 'pad') {
     return { x: e.x, y: e.y, layers: ['k2', 'k1'], r: e.size / 2, entId: e.id, tht: e.drill > 0 };
   }
@@ -308,7 +311,7 @@ function boardBounds(entities: Entity[], w: number, h: number): [number, number,
 }
 
 /** Сбор цепи: всё, что электрически связано с примитивами-зёрнами */
-function netOf(shapes: Shape[], seeds: Set<string>): Set<string> {
+export function netOf(shapes: Shape[], seeds: Set<string>): Set<string> {
   const inNet = new Set<string>();
   const queue: Shape[] = [];
   for (const s of shapes) if (seeds.has(s.id)) { inNet.add(s.id); queue.push(s); }
@@ -597,10 +600,11 @@ function drcCount(o: RouteOpts, ents: Entity[], obst: Shape[]): number {
 /**
  * Проложить дорожку между A и B.
  * entities — текущие элементы документа (компоненты разворачиваются автоматически).
+ * ownIds — остальные площадки той же заданной цепи: к её меди можно примыкать.
  */
 export function autoroute(
   entities: Entity[], boardW: number, boardH: number,
-  A: RouteEnd, B: RouteEnd, o: RouteOpts,
+  A: RouteEnd, B: RouteEnd, o: RouteOpts, ownIds: string[] = [],
 ): RouteResult {
   const fail = (msg: string): RouteResult => ({ ok: false, ents: [], length: 0, vias: 0, msg, drc: 0 });
   if (Math.hypot(A.x - B.x, A.y - B.y) < 1e-6) return fail('Точки совпадают');
@@ -608,19 +612,20 @@ export function autoroute(
 
   const flat = expandDoc(entities);
   const shapes = flat.flatMap(copperShapes);
-  const seeds = new Set<string>();
+  const seeds = new Set<string>(ownIds);
   if (A.entId) seeds.add(A.entId);
   if (B.entId) seeds.add(B.entId);
   const net = netOf(shapes, seeds);
   const obst = shapes.filter((s) => !net.has(s.id));
   // пайка снизу: сверху к собственной выводной площадке дорожка подходить не должна
   if (o.bottomEntry) {
-    for (const P of [A, B]) {
+    const ownEnds = flat.filter((e) => net.has(e.id) && e.kind === 'pad').map(endpointOf).filter((e): e is RouteEnd => !!e);
+    for (const P of ownEnds) {
       if (!P.tht || !P.entId) continue;
       for (const s of shapes) if (s.id === P.entId) obst.push({ ...s, layers: ['k1'], id: s.id + '#top' });
     }
   }
-  const netShapes = shapes.filter((s) => net.has(s.id) && (s.id === A.entId || s.id === B.entId));
+  const netShapes = shapes.filter((s) => net.has(s.id) && (s.drilled || s.id === A.entId || s.id === B.entId));
 
   let bounds = boardBounds(entities, boardW, boardH);
   const pad = 2;
