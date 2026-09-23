@@ -188,3 +188,48 @@ canvas { position: absolute; inset: 0; cursor: crosshair; display: block; }
 ::-webkit-scrollbar-thumb { background: #2b3a33; border-radius: 5px; border: 2px solid var(--surface); }
 ::-webkit-scrollbar-thumb:hover { background: #3a4c42; }
 ::-webkit-scrollbar-track { background: transparent; }
+
+.route-msg { margin: 10px 0 0; padding: 6px 8px; border-radius: 6px; font-size: 12px; background: rgba(255,255,255,.05); color: #cdd3db; }
+.route-msg.ok { background: rgba(61,200,120,.12); color: #7be0a6; }
+.route-msg.bad { background: rgba(229,72,77,.14); color: #ff9a9d; }
+
+.route-modes { display: flex; gap: 6px; padding-bottom: 0; }
+.nets-panel { border-bottom: 1px solid var(--line); }
+.net-list { max-height: 280px; overflow: auto; display: grid; gap: 4px; margin: 10px 0; }
+.net-row { display: flex; gap: 4px; align-items: center; border: 1px solid var(--line); border-radius: 6px; padding: 4px; }
+.net-row.active { border-color: var(--accent); background: var(--accent-btn); }
+.net-pick { display: flex; align-items: center; gap: 8px; flex: 1; min-width: 0; text-align: left; color: var(--text); padding: 5px; }
+.net-pick span { overflow-wrap: anywhere; }
+.net-pick small { display: block; color: var(--muted); font-size: 11px; margin-top: 3px; }
+.net-members { max-height: 160px; overflow: auto; margin-top: 6px; }
+.net-members > div { display: flex; align-items: center; justify-content: space-between; gap: 5px; padding: 3px 0; font-size: 11px; }
+.net-members span { overflow-wrap: anywhere; }
+.net-run { width: 100%; margin-top: 12px; }
+.route-msg { white-space: pre-line; }
+
+/* Перечень типоразмеров площадок и сверловки */
+.inventory-open { display: block; width: 100%; margin-top: 10px; }
+.modal.inventory-modal { width: 740px; }
+.inventory-board { overflow-wrap: anywhere; }
+.inventory-totals { display: grid; grid-template-columns: repeat(4, 1fr); gap: 8px; margin: 16px 0; }
+.inventory-totals > div { padding: 12px; border: 1px solid var(--line); border-radius: 8px; background: var(--surface-2); }
+.inventory-totals b { display: block; font-size: 23px; color: var(--accent); font-variant-numeric: tabular-nums; }
+.inventory-totals span { display: block; margin-top: 4px; color: var(--muted); font-size: 11px; }
+.inventory-tabs { display: flex; flex-wrap: wrap; gap: 8px; margin: 18px 0 12px; }
+.inventory-table-wrap { overflow: auto; max-height: 45vh; border: 1px solid var(--line); border-radius: 8px; }
+.inventory-table { width: 100%; border-collapse: collapse; font-size: 12px; font-variant-numeric: tabular-nums; }
+.inventory-table th, .inventory-table td { padding: 11px 12px; text-align: right; border-bottom: 1px solid var(--line); }
+.inventory-table th:first-child { text-align: left; }
+.inventory-table thead th { position: sticky; top: 0; background: var(--surface-2); color: var(--muted); font-size: 11px; z-index: 1; }
+.inventory-table tbody th { font-weight: 500; }
+.inventory-table small { display: block; font-size: 11px; color: var(--muted); font-weight: 400; line-height: 1.6; }
+.inventory-table td { white-space: nowrap; }
+.inventory-table .inventory-qty { font-weight: 700; color: var(--accent); }
+.inventory-table tfoot { background: var(--surface-2); }
+.inventory-table tr:last-child td, .inventory-table tr:last-child th { border-bottom: 0; }
+.inventory-empty { padding: 30px 12px; border: 1px dashed var(--line); border-radius: 8px; text-align: center; }
+.stock-shape { display: inline-block; width: 10px; height: 10px; margin-right: 7px; border: 2px solid var(--accent); vertical-align: -1px; }
+.stock-shape.round { border-radius: 50%; }
+.stock-shape.oct { clip-path: polygon(30% 0, 70% 0, 100% 30%, 100% 70%, 70% 100%, 30% 100%, 0 70%, 0 30%); background: var(--accent); }
+.stock-shape.smd { width: 14px; height: 8px; }
+@media (max-width: 600px) { .inventory-totals { grid-template-columns: repeat(2, 1fr); } }

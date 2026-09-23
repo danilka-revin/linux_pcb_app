@@ -10,10 +10,11 @@ import { Ic } from './icons';
 
 export type ToolId =
   | 'select' | 'track' | 'pad' | 'smd' | 'via' | 'hole' | 'line' | 'rect'
-  | 'circle' | 'fill' | 'text' | 'ruler' | 'comp';
+  | 'circle' | 'fill' | 'text' | 'ruler' | 'comp' | 'route';
 
 export const TOOLS: { id: ToolId; name: string; icon: string; hint: string }[] = [
   { id: 'select', name: 'Выбор', icon: 'select', hint: 'ЛКМ — выбрать/двигать · рамка — выделить · Del — удалить · R — повернуть · M — другая сторона' },
+  { id: 'route', name: 'Автотрассировка', icon: 'route', hint: 'Две точки или группы соединений — выберите режим справа · вход в отверстия по низу (K2)' },
   { id: 'track', name: 'Дорожка', icon: 'track', hint: 'ЛКМ — точки излома · ПКМ/Esc — закончить · L — сменить слой с переходом' },
   { id: 'pad', name: 'Площадка', icon: 'pad', hint: 'ЛКМ — поставить площадку (с обеих сторон, с металлизацией)' },
   { id: 'smd', name: 'SMD-площадка', icon: 'smd', hint: 'ЛКМ — поставить планарную площадку на активном слое меди' },
@@ -53,6 +54,17 @@ export interface Defs {
   textRot: number;
   textMirror: boolean;
   textLayer: 's1' | 's2';
+  // автотрассировка
+  rtW: number;          // ширина дорожки
+  rtClear: number;      // зазор до дорожек/меди
+  rtHoleClear: number;  // зазор до площадок с отверстием, переходов, отверстий
+  rtStep: number;       // шаг сетки трассировки
+  rtViaCost: number;    // цена перехода, мм
+  rtTopMul: number;     // штраф длины на верхнем слое
+  rtBottomEntry: boolean;
+  rtAllowTop: boolean;
+  rtAngle: '45' | '90';
+  rtAutoPad: boolean;   // в пустом месте ставить площадку (под джампер)
 }
 
 // ---------- панель слоёв ----------
@@ -288,7 +300,7 @@ export function PropsPanel({
   selEnts, patchEnt, doRotate, doMirror, doDuplicate, doDelete,
   doc, setDocSize,
   placeLib, placeRot, placeSide, setPlaceRot, setPlaceSide, cancelPlace,
-  textRot, setTextRot,
+  textRot, setTextRot, routeInfo, routeGroups,
 }: {
   tool: ToolId;
   defs: Defs;
@@ -306,10 +318,12 @@ export function PropsPanel({
   cancelPlace: () => void;
   textRot: number;
   setTextRot: (r: number) => void;
+  routeGroups?: boolean;
+  routeInfo?: { msg: string; ok: boolean | null; picking: 'a' | 'b' };
 }) {
   void fmt;
   // --- выделенные элементы ---
-  if (selEnts.length > 0) {
+  if (selEnts.length > 0 && tool !== 'route') {
     const one = selEnts.length === 1 ? selEnts[0] : null;
     return (
       <div className="props">
@@ -349,6 +363,56 @@ export function PropsPanel({
 
   // --- параметры активного инструмента ---
   switch (tool) {
+    case 'route':
+      return (
+        <div className="props">
+          <h3>Автотрассировка</h3>
+          <div className="sub">
+            {routeGroups ? 'Параметры для всех групп' : routeInfo?.picking === 'b' ? 'Шаг 2: кликните вторую точку' : 'Шаг 1: кликните первую точку'}
+          </div>
+          <NI label="Ширина дорожки, мм" value={defs.rtW} min={0.1} on={(v) => setDefs({ rtW: v })} />
+          <NI label="Зазор до дорожек, мм" value={defs.rtClear} min={0.1} on={(v) => setDefs({ rtClear: v })} />
+          <NI label="Зазор до отверстий, мм" value={defs.rtHoleClear} min={0.1} on={(v) => setDefs({ rtHoleClear: v })} />
+          <SI label="Шаг сетки трассировки" value={String(defs.rtStep)}
+            options={[['0.25', '0.25 мм (точно, медленно)'], ['0.3175', '0.3175 мм (1/8″)'], ['0.5', '0.5 мм'], ['0.635', '0.635 мм (1/4″)'], ['1', '1 мм'], ['1.27', '1.27 мм (быстро)']]}
+            on={(v) => setDefs({ rtStep: parseFloat(v) })} />
+          <SI label="Углы" value={defs.rtAngle} options={[['45', '45°'], ['90', '90°']]} on={(v) => setDefs({ rtAngle: v as '45' | '90' })} />
+          <label className="chk" title="Сторона пайки — низ: к отверстию площадки дорожка всегда подходит по K2">
+            <input type="checkbox" disabled={routeGroups} checked={routeGroups || defs.rtBottomEntry} onChange={(e) => setDefs({ rtBottomEntry: e.target.checked })} />
+            В отверстия входить только по низу (K2)
+          </label>
+          <label className="chk" title="Разрешить уходить на верх (K1) через переходные отверстия">
+            <input type="checkbox" checked={defs.rtAllowTop} onChange={(e) => setDefs({ rtAllowTop: e.target.checked })} />
+            Разрешить верх (K1) и переходы
+          </label>
+          {defs.rtAllowTop && (<>
+            <NI label="Переход: площадка, мм" value={defs.viaSize} min={0.3} on={(v) => setDefs({ viaSize: v })} />
+            <NI label="Переход: сверло, мм" value={defs.viaDrill} min={0.1} on={(v) => setDefs({ viaDrill: v })} />
+            <NI label="Цена перехода (мм пути)" value={defs.rtViaCost} min={0} on={(v) => setDefs({ rtViaCost: v })} />
+            <NI label="Штраф длины на верху, ×" value={defs.rtTopMul} min={1} on={(v) => setDefs({ rtTopMul: v })} />
+          </>)}
+          {!routeGroups && <><label className="chk" title="Клик в пустое место создаёт площадку с отверстием (место под перемычку/джампер)">
+            <input type="checkbox" checked={defs.rtAutoPad} onChange={(e) => setDefs({ rtAutoPad: e.target.checked })} />
+            В пустом месте ставить площадку
+          </label>
+          {defs.rtAutoPad && (<>
+            <NI label="Площадка: размер, мм" value={defs.padSize} min={0.3} on={(v) => setDefs({ padSize: v })} />
+            <NI label="Площадка: отверстие, мм" value={defs.padDrill} min={0} on={(v) => setDefs({ padDrill: v })} />
+          </>)}
+          </>}
+          {routeInfo?.msg && (
+            <div className={'route-msg ' + (routeInfo.ok === false ? 'bad' : routeInfo.ok ? 'ok' : '')}>{routeInfo.msg}</div>
+          )}
+          <div className="hint">
+            Приоритет — нижний слой (сторона пайки). Верх используется только для обхода
+            препятствий, с переходами. Чужие дорожки обходятся с «зазором до дорожек»,
+            чужие площадки с отверстиями, переходы и крепёжные отверстия — с «зазором до отверстий»
+            (считается от края медного пятачка / края отверстия). Оранжевый пунктир на плате —
+            граница зоны вокруг отверстий, ближе которой дорожка не пройдёт.
+            <span className="kbd">Esc</span>/ПКМ — {routeGroups ? 'закончить набор группы' : 'сбросить первую точку'}, <span className="kbd">Ctrl+Z</span> — отменить {routeGroups ? 'всю разводку' : 'дорожку'}.
+          </div>
+        </div>
+      );
     case 'track':
       return (
         <div className="props">

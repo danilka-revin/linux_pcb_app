@@ -325,13 +325,16 @@ export function layObjToEnts(o: LayObj, warns: string[]): M.Entity[] {
   const layer = oursLayer(o.layer);
   switch (o.type) {
     case LAY_TYPE.THT_PAD: {
-      if (!o.metalisation) {
+      // Без металлизации и без медного кольца — просто отверстие.
+      // Без металлизации, но с кольцом (out > inn) — обычная площадка самодельной платы.
+      if (!o.metalisation && !(o.out > o.inn + 0.05)) {
         const d = o.inn > 0 ? o.inn : o.out;
         return d > 0 ? [{ id: M.uid(), kind: 'hole', x: o.x, y: o.y, d }] : [];
       }
       return [{
         id: M.uid(), kind: 'pad', x: o.x, y: o.y,
         shape: thtShape(o.shape), size: o.out, drill: o.inn,
+        ...(o.metalisation ? {} : { noPlate: true }),
       }];
     }
     case LAY_TYPE.SMD_PAD: {
@@ -561,7 +564,7 @@ function entitiesToLay(ents: M.Entity[]): LayEmit[] {
         const drill = e.kind === 'pad' ? e.drill : e.drill;
         o.out = size; o.inn = drill;
         o.shape = e.kind === 'pad' ? (e.shape === 'oct' ? 2 : e.shape === 'square' ? 3 : 1) : 1;
-        o.metalisation = 1;
+        o.metalisation = e.kind === 'pad' && e.noPlate ? 0 : 1;
         o.layer = LAY_LAYER.C1;
         push(o);
         break;

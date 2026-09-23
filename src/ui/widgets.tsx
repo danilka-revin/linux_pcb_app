@@ -87,12 +87,13 @@ export function SI({
 
 /** Модальный диалог */
 export function Modal({
-  title, children, onClose, foot,
+  title, children, onClose, foot, className,
 }: {
   title: string;
   children: ReactNode;
   onClose: () => void;
   foot?: ReactNode;
+  className?: string;
 }) {
   useEffect(() => {
     const h = (e: KeyboardEvent) => { if (e.key === 'Escape') onClose(); };
@@ -101,7 +102,7 @@ export function Modal({
   }, [onClose]);
   return (
     <div className="modal-bg" onMouseDown={(e) => { if (e.target === e.currentTarget) onClose(); }}>
-      <div className="modal">
+      <div className={'modal' + (className ? ' ' + className : '')} role="dialog" aria-modal="true" aria-label={title}>
         <h2>{title}</h2>
         {children}
         {foot && <div className="foot">{foot}</div>}

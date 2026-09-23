@@ -9,6 +9,10 @@ import {
 import { LIB } from './pcb/library';
 import { COLORS, drawDoc, drawEnt, renderPrint, toWorld, type View } from './pcb/render';
 import { productionFiles } from './pcb/gerber';
+import { autoroute, clearanceAt, pickEndpoint, endpointOf, type RouteEnd } from './pcb/autoroute';
+import { copperComponents, type NetRouteResult } from './pcb/netroute';
+import { NetsPanel, NET_COLORS } from './ui/nets';
+import { InventoryDialog } from './ui/inventory';
 import { download, makeZip } from './pcb/zip';
 import { Ic } from './ui/icons';
 import {
@@ -62,6 +66,16 @@ const DEFAULT_DEFS: Defs = {
   textRot: 0,
   textMirror: false,
   textLayer: 's1',
+  rtW: 0.8,
+  rtClear: 0.4,
+  rtHoleClear: 0.6,
+  rtStep: 0.635,
+  rtViaCost: 8,
+  rtTopMul: 1.5,
+  rtBottomEntry: true,
+  rtAllowTop: true,
+  rtAngle: '45',
+  rtAutoPad: true,
 };
 
 function loadDoc(): M.Doc {
@@ -110,7 +124,24 @@ export default function App() {
   const [placeSide, setPlaceSide] = useState<'top' | 'bottom'>('top');
   const [pasteTpl, setPasteTpl] = useState<M.Entity[] | null>(null);
   const [leftTab, setLeftTab] = useState<'layers' | 'lib'>('layers');
-  const [dialog, setDialog] = useState<'new' | 'export' | 'panelize' | 'about' | null>(null);
+  const [routeMode, setRouteMode] = useState<'pair' | 'nets'>('pair');
+  const [activeNet, setActiveNet] = useState<string | null>(null);
+  const [routing, setRouting] = useState<string | null>(null);
+  const routeWorker = useRef<Worker | null>(null);
+  const docRef = useRef(doc);
+  docRef.current = doc;
+  useEffect(() => () => routeWorker.current?.terminate(), []);
+  const netGeometry = useMemo(() => {
+    const ends = new Map<string, RouteEnd>();
+    if (tool === 'route' && routeMode === 'nets') for (const e of expandDoc(doc.entities)) {
+      const end = endpointOf(e);
+      if (end) ends.set(e.id, end);
+    }
+    return { ends, comp: ends.size ? copperComponents(doc.entities) : new Map<string, string>() };
+  }, [doc, tool, routeMode]);
+  const [routeA, setRouteA] = useState<RouteEnd | null>(null);
+  const [routeMsg, setRouteMsg] = useState<{ msg: string; ok: boolean | null }>({ msg: '', ok: null });
+  const [dialog, setDialog] = useState<'new' | 'export' | 'panelize' | 'about' | 'inventory' | null>(null);
 
   const past = useRef<M.Doc[]>([]);
   const future = useRef<M.Doc[]>([]);
@@ -146,6 +177,7 @@ export default function App() {
     setDoc(prev);
     pruneSel(prev);
     setDraft(null);
+    setRouteA(null); setRouteMsg({ msg: '', ok: null });
   }, [doc, pruneSel]);
 
   const redo = useCallback(() => {
@@ -155,6 +187,7 @@ export default function App() {
     setDoc(next);
     pruneSel(next);
     setDraft(null);
+    setRouteA(null); setRouteMsg({ msg: '', ok: null });
   }, [doc, pruneSel]);
 
   // ---------------- автосохранение ----------------
@@ -298,16 +331,19 @@ export default function App() {
   }, [draft, addEnts, activeCu]);
 
   const finishOrCancel = useCallback(() => {
+    if (tool === 'route' && routeMode === 'nets' && activeNet) { setActiveNet(null); return; }
+    if (routeA) { setRouteA(null); setRouteMsg({ msg: '', ok: null }); return; }
     if (draft?.t === 'track') { commitTrack(); return; }
     if (draft?.t === 'poly') { commitPoly(); return; }
     if (draft) { setDraft(null); return; }
     if (pasteTpl) { setPasteTpl(null); return; }
     if (placeLib) { setPlaceLib(null); return; }
     if (sel.size) { setSel(new Set()); }
-  }, [draft, commitTrack, commitPoly, pasteTpl, placeLib, sel.size]);
+  }, [draft, commitTrack, commitPoly, pasteTpl, placeLib, sel.size, routeA, activeNet, routeMode, tool]);
 
   const setTool = useCallback((t: ToolId2) => {
     if (t !== tool) { finishOrCancel(); setToolRaw(t); }
+    if (t === 'route') setSel(new Set());
   }, [tool, finishOrCancel]);
 
   // ---------------- операции с выделением ----------------
@@ -577,6 +613,107 @@ export default function App() {
     addEnts([comp]);
   }, [placeLib, placeRot, placeSide, addEnts, macros]);
 
+  // ---------------- автотрассировка ----------------
+  const changeNets = (nets: M.Net[]) => {
+    commit({ ...doc, nets });
+    setRouteMsg({ msg: '', ok: null });
+  };
+  const cancelRouting = () => {
+    routeWorker.current?.terminate();
+    routeWorker.current = null;
+    setRouting(null);
+    setRouteMsg({ msg: 'Трассировка отменена. Плата не изменена.', ok: null });
+  };
+  const routeAll = () => {
+    if (routeWorker.current) return;
+    setRouteA(null);
+    setActiveNet(null);
+    setRouting('Подготовка трассировки…');
+    const snapshot = doc;
+    try {
+      const worker = new Worker(new URL('./pcb/netroute.worker.ts', import.meta.url), { type: 'module' });
+      routeWorker.current = worker;
+      const finish = () => { worker.terminate(); routeWorker.current = null; setRouting(null); };
+      worker.onerror = () => { if (routeWorker.current !== worker) return; finish(); setRouteMsg({ msg: 'Ошибка запуска трассировки. Плата не изменена.', ok: false }); };
+      worker.onmessage = (event: MessageEvent) => {
+        if (routeWorker.current !== worker) return;
+        if (event.data.type === 'progress') { setRouting(event.data.text); return; }
+        finish();
+        if (event.data.type === 'error') { setRouteMsg({ msg: event.data.text, ok: false }); return; }
+        if (docRef.current !== snapshot) { setRouteMsg({ msg: 'Плата была изменена во время расчёта. Запустите трассировку ещё раз.', ok: false }); return; }
+        const r = event.data.result as NetRouteResult;
+        if (r.errors.length) { setRouteMsg({ msg: r.errors.join('\n'), ok: false }); return; }
+        if (r.ents.length) commit({ ...snapshot, entities: [...snapshot.entities, ...r.ents] });
+        setSel(new Set());
+        const summary = r.missing ? `Осталось связей: ${r.missing}. ` : 'Все группы соединены. ';
+        const details = r.unresolved.map((n) => `«${n.name}»: ${n.missing}`).join('; ');
+        setRouteMsg({ msg: `${summary}Добавлено: ${r.length.toFixed(1)} мм, переходов: ${r.vias}. Проверено вариантов: ${r.attempts}.` + (details ? `\nНе разведены: ${details}. Проверьте ширину, зазоры и шаг сетки или разрешите верхний слой.` : ''), ok: r.missing === 0 });
+      };
+      worker.postMessage({ doc: snapshot, opts: {
+        trackW: defs.rtW, clearance: defs.rtClear, holeClear: defs.rtHoleClear,
+        viaSize: defs.viaSize, viaDrill: defs.viaDrill, step: defs.rtStep,
+        viaCost: defs.rtViaCost, topMul: defs.rtTopMul, bottomEntry: true,
+        allowTop: defs.rtAllowTop, angle: defs.rtAngle,
+      } });
+    } catch {
+      routeWorker.current?.terminate(); routeWorker.current = null; setRouting(null);
+      setRouteMsg({ msg: 'Не удалось запустить фоновую трассировку. Плата не изменена.', ok: false });
+    }
+  };
+  const routeClick = useCallback((w: M.Pt, sp: M.Pt) => {
+    const tol = 3 / view.s + 0.05;
+    let end = pickEndpoint(doc.entities, w, tol);
+    if (routeMode === 'nets') {
+      const nets = doc.nets ?? [];
+      const net = nets.find((n) => n.id === activeNet);
+      if (!net) { setRouteMsg({ msg: 'Создайте или выберите группу справа, затем кликните её площадки.', ok: null }); return; }
+      if (!end?.entId) { setRouteMsg({ msg: 'Кликните по площадке с медью, SMD или переходу. Крепёжное отверстие не является контактом.', ok: false }); return; }
+      const id = end.entId;
+      const owner = nets.find((n) => n.id !== net.id && n.pads.includes(id));
+      if (owner) { setRouteMsg({ msg: `Эта площадка уже в группе «${owner.name}». Сначала уберите её оттуда.`, ok: false }); return; }
+      const pads = net.pads.includes(id) ? net.pads.filter((p) => p !== id) : [...net.pads, id];
+      commit({ ...doc, nets: nets.map((n) => n.id === net.id ? { ...n, pads } : n) });
+      setRouteMsg({ msg: `«${net.name}»: ${pads.length} площадок. Добавьте остальные или создайте следующую группу.`, ok: null });
+      return;
+    }
+    let base = doc;
+    let newPad: M.Pad | null = null;
+    if (!end) {
+      if (!defs.rtAutoPad) { setRouteMsg({ msg: 'Кликните по площадке, переходу или SMD', ok: false }); return; }
+      if (clearanceAt(doc.entities, sp.x, sp.y, defs.padSize / 2) < Math.max(defs.rtClear, defs.rtHoleClear)) {
+        setRouteMsg({ msg: 'Здесь нельзя поставить площадку: слишком близко к другой меди', ok: false });
+        return;
+      }
+      newPad = { id: M.uid(), kind: 'pad', x: sp.x, y: sp.y, shape: defs.padShape, size: defs.padSize, drill: defs.padDrill };
+      base = M.cloneDoc(doc);
+      base.entities.push(newPad);
+      end = { x: newPad.x, y: newPad.y, layers: ['k2', 'k1'], r: newPad.size / 2, entId: newPad.id, tht: newPad.drill > 0 };
+    }
+    if (!routeA) {
+      if (newPad) commit(base);
+      setRouteA(end);
+      setRouteMsg({ msg: 'Первая точка: ' + M.fmt(end.x) + '; ' + M.fmt(end.y) + ' — выберите вторую', ok: null });
+      return;
+    }
+    const r = autoroute(base.entities, base.w, base.h, routeA, end, {
+      trackW: defs.rtW, clearance: defs.rtClear, holeClear: defs.rtHoleClear, viaSize: defs.viaSize, viaDrill: defs.viaDrill,
+      step: defs.rtStep, viaCost: defs.rtViaCost, topMul: defs.rtTopMul,
+      bottomEntry: defs.rtBottomEntry, allowTop: defs.rtAllowTop, angle: defs.rtAngle,
+    });
+    if (!r.ok) {
+      if (newPad) commit(base); // площадку всё равно оставляем
+      setRouteMsg({ msg: r.msg, ok: false });
+      setRouteA(null);
+      return;
+    }
+    const nd = M.cloneDoc(base);
+    nd.entities.push(...r.ents);
+    commit(nd);
+    setSel(new Set(r.ents.map((x) => x.id)));
+    setRouteMsg({ msg: r.msg, ok: r.drc === 0 });
+    setRouteA(null);
+  }, [view.s, doc, defs, routeA, commit, routeMode, activeNet]);
+
   const onPointerDown = (e: React.PointerEvent<HTMLCanvasElement>) => {
     const { px, py } = getPos(e);
     if (e.button === 1) {
@@ -689,6 +826,7 @@ export default function App() {
         break;
       }
       case 'comp': addComp(sp); break;
+      case 'route': routeClick(w, sp); break;
     }
   };
 
@@ -754,6 +892,10 @@ export default function App() {
 
   // ---------------- клавиатура ----------------
   const keyHandler = useCallback((e: KeyboardEvent) => {
+    if (routeWorker.current) {
+      if (e.code === 'Escape') { routeWorker.current.terminate(); routeWorker.current = null; setRouting(null); setRouteMsg({ msg: 'Трассировка отменена. Плата не изменена.', ok: null }); }
+      e.preventDefault(); return;
+    }
     if (dialog) return;
     const t = e.target as HTMLElement;
     if (t && (t.tagName === 'INPUT' || t.tagName === 'TEXTAREA' || t.tagName === 'SELECT' || t.isContentEditable)) return;
@@ -805,6 +947,7 @@ export default function App() {
       case 'Digit6': setTool('line'); break;
       case 'Digit7': setTool('text'); break;
       case 'Digit8': setTool('ruler'); break;
+      case 'Digit9': setTool('route'); break;
       case 'ArrowLeft': nudge(-defs.grid, 0); e.preventDefault(); break;
       case 'ArrowRight': nudge(defs.grid, 0); e.preventDefault(); break;
       case 'ArrowUp': nudge(0, defs.grid); e.preventDefault(); break;
@@ -996,6 +1139,64 @@ export default function App() {
       });
     }
 
+    // автотрассировка: зоны зазора вокруг отверстий (ближе дорожка не подойдёт)
+    if (tool === 'route' && defs.rtHoleClear > 0) {
+      ctx.save();
+      ctx.strokeStyle = 'rgba(255,180,60,.45)';
+      ctx.lineWidth = 1;
+      ctx.setLineDash([3, 3]);
+      for (const e of expandDoc(doc.entities)) {
+        let r = 0;
+        if (e.kind === 'pad' && e.drill > 0) r = e.size / 2;
+        else if (e.kind === 'via') r = e.size / 2;
+        else if (e.kind === 'hole') r = e.d / 2;
+        else continue;
+        const q = toPx(e.x, e.y);
+        const rr = (r + defs.rtHoleClear) * view.s;
+        if (q.px < -rr || q.py < -rr || q.px > size.w + rr || q.py > size.h + rr) continue;
+        ctx.beginPath(); ctx.arc(q.px, q.py, rr, 0, Math.PI * 2); ctx.stroke();
+      }
+      ctx.restore();
+    }
+
+    // Цветные группы и воздушные связи; это подсказки, не медь.
+    if (tool === 'route' && routeMode === 'nets') {
+      ctx.save();
+      ctx.font = '11px sans-serif';
+      (doc.nets ?? []).forEach((net, i) => {
+        const points = net.pads.map((id) => netGeometry.ends.get(id)).filter((p): p is RouteEnd => !!p);
+        ctx.strokeStyle = ctx.fillStyle = NET_COLORS[i % NET_COLORS.length];
+        ctx.globalAlpha = activeNet && activeNet !== net.id ? 0.45 : 0.95;
+        ctx.lineWidth = activeNet === net.id ? 2 : 1;
+        ctx.setLineDash([4, 5]);
+        const first = points[0];
+        if (first) for (const p of points.slice(1)) {
+          if (netGeometry.comp.get(first.entId!) === netGeometry.comp.get(p.entId!)) continue;
+          const a = toPx(first.x, first.y), b = toPx(p.x, p.y);
+          ctx.beginPath(); ctx.moveTo(a.px, a.py); ctx.lineTo(b.px, b.py); ctx.stroke();
+        }
+        ctx.setLineDash([]);
+        for (const p of points) {
+          const q = toPx(p.x, p.y), r = Math.max(6, p.r * view.s + 3);
+          ctx.beginPath(); ctx.arc(q.px, q.py, r, 0, Math.PI * 2); ctx.stroke();
+          ctx.fillText(net.name, q.px + r + 3, q.py - r);
+        }
+      });
+      ctx.restore();
+    }
+
+    // автотрассировка: первая точка и резиновая линия
+    if (tool === 'route' && routeA) {
+      const a = toPx(routeA.x, routeA.y);
+      ctx.strokeStyle = COLORS.sel;
+      ctx.lineWidth = 2;
+      ctx.beginPath(); ctx.arc(a.px, a.py, Math.max(routeA.r * view.s + 4, 8), 0, Math.PI * 2); ctx.stroke();
+      ctx.setLineDash([6, 5]);
+      ctx.lineWidth = 1;
+      ctx.beginPath(); ctx.moveTo(a.px, a.py); ctx.lineTo(mouse.px, mouse.py); ctx.stroke();
+      ctx.setLineDash([]);
+    }
+
     // фантомы размещения
     const ghost = (ent: M.Entity) => drawEnt(ctx, view, ent, { alpha: 0.55, hidden: new Set() });
     if (!sel.size && !drag.current) {
@@ -1098,13 +1299,14 @@ export default function App() {
           {tb('save', 'Сохранить проект (Ctrl+S)', saveFile)}
           {tb('gerber', 'Экспорт Gerber/PNG (Ctrl+E)', () => setDialog('export'))}
           {tb('panel', 'Размножить плату (панелизация)', () => setDialog('panelize'))}
+          {tb('inventory', 'Перечень площадок и отверстий', () => setDialog('inventory'))}
         </div>
         <div className="tb-group">
           {tb('undo', 'Отменить (Ctrl+Z)', undo, { disabled: !past.current.length })}
           {tb('redo', 'Повторить (Ctrl+Y)', redo, { disabled: !future.current.length })}
         </div>
         <div className="tb-group">
-          {TOOLS.map((t) => tb(t.icon, `${t.name}${t.id === 'track' ? ' (2)' : ''}`, () => setTool(t.id), { active: tool === t.id && !(t.id === 'comp' && !placeLib) }))}
+          {TOOLS.map((t) => tb(t.icon, `${t.name}${t.id === 'track' ? ' (2)' : t.id === 'route' ? ' (9)' : ''}`, () => setTool(t.id), { active: tool === t.id && !(t.id === 'comp' && !placeLib) }))}
         </div>
         <div className="tb-group">
           <select
@@ -1158,6 +1360,7 @@ export default function App() {
               <div className="hint" style={{ padding: '0 12px 10px' }}>
                 Плата: {M.fmt(doc.w)} × {M.fmt(doc.h)} мм<br />
                 Элементов: {doc.entities.length} · Выделено: {sel.size}
+                <button className="btn inventory-open" onClick={() => setDialog('inventory')}>Площадки и отверстия…</button>
               </div>
             </>
           ) : (
@@ -1204,6 +1407,21 @@ export default function App() {
         </div>
 
         <div className="side right">
+          {tool === 'route' && <>
+            <div className="props route-modes">
+              <button className={'btn' + (routeMode === 'pair' ? ' primary' : '')} onClick={() => { setRouteMode('pair'); setRouteA(null); setSel(new Set()); setRouteMsg({ msg: '', ok: null }); }}>Две точки</button>
+              <button className={'btn' + (routeMode === 'nets' ? ' primary' : '')} onClick={() => { setRouteMode('nets'); setRouteA(null); setSel(new Set()); setRouteMsg({ msg: '', ok: null }); }}>Группы / вся плата</button>
+            </div>
+            {routeMode === 'nets' && <NetsPanel nets={doc.nets ?? []} active={activeNet} setActive={setActiveNet}
+              ends={netGeometry.ends} comp={netGeometry.comp} info={routeMsg} onChange={changeNets} onRoute={routeAll}
+              onNew={() => {
+                const id = M.uid();
+                const used = new Set((doc.nets ?? []).map((n) => n.name));
+                let i = 1; while (used.has(`Цепь ${i}`)) i++;
+                changeNets([...(doc.nets ?? []), { id, name: `Цепь ${i}`, pads: [] }]);
+                setActiveNet(id);
+              }} />}
+          </>}
           <PropsPanel
             tool={tool} defs={defs} setDefs={setDefs}
             activeCu={activeCu} setActiveCu={setActiveCu}
@@ -1213,6 +1431,8 @@ export default function App() {
             placeLib={placeLib} placeRot={placeRot} placeSide={placeSide}
             setPlaceRot={setPlaceRot} setPlaceSide={setPlaceSide} cancelPlace={() => setPlaceLib(null)}
             textRot={defs.textRot} setTextRot={(r) => setDefs({ textRot: r })}
+            routeGroups={routeMode === 'nets'}
+            routeInfo={{ ...routeMsg, msg: routeMode === 'nets' ? '' : routeMsg.msg, picking: routeA ? 'b' : 'a' }}
           />
         </div>
       </div>
@@ -1232,6 +1452,14 @@ export default function App() {
         <span className="lg"><span className="pulse" />локально · офлайн</span>
       </div>
 
+      {routing !== null && <div className="modal-bg" role="dialog" aria-modal="true" aria-labelledby="routing-title">
+        <div className="modal">
+          <h2 id="routing-title">Разводка всей платы</h2>
+          <p aria-live="polite">{routing}</p>
+          <p>Поиск выполняется в фоне. Готовый вариант будет добавлен одним действием; Ctrl+Z отменит всю разводку.</p>
+          <button className="btn" autoFocus onClick={cancelRouting}>Отменить (Esc)</button>
+        </div>
+      </div>}
       {dialog === 'new' && <NewBoardDialog onOk={newBoardDlg} onClose={() => setDialog(null)} />}
       {dialog === 'export' && (
         <ExportDialog
@@ -1242,6 +1470,7 @@ export default function App() {
       {dialog === 'panelize' && (
         <PanelizeDialog defX={doc.w + 2} defY={doc.h + 2} onOk={(c, r, gx, gy) => { panelize(c, r, gx, gy); setDialog(null); }} onClose={() => setDialog(null)} />
       )}
+      {dialog === 'inventory' && <InventoryDialog doc={doc} onClose={() => setDialog(null)} />}
       {dialog === 'about' && <AboutDialog onClose={() => setDialog(null)} />}
     </>
   );
