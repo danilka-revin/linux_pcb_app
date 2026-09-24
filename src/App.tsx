@@ -1,4 +1,4 @@
-// ЛайАут — редактор печатных плат для Linux (аналог Sprint-Layout, тёмная тема).
+// ЛайАут — редактор печатных плат для Linux и Windows (аналог Sprint-Layout, тёмная тема).
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import * as M from './pcb/model';
 import { expandComp, expandDoc, libBBox } from './pcb/expand';
@@ -1395,7 +1395,7 @@ export default function App() {
       <div className="toolbar">
         <div className="brand">
             <span className="brandmark">Л</span>
-            <span><b>Лай<em>Аут</em></b><small>PCB · LINUX · SPRINT-LAYOUT</small></span>
+            <span><b>Лай<em>Аут</em></b><small>PCB · LINUX · WINDOWS · SPRINT-LAYOUT</small></span>
           </div>
         <div className="tb-group">
           {tb('new', 'Новая плата', () => setDialog('new'))}
