@@ -809,7 +809,7 @@ export function docToLay6(doc: M.Doc, expanded: M.Entity[]): Uint8Array {
   // Trailer
   w.u32(0); // active tab
   w.fixstr(doc.name, 100);
-  w.fixstr('LayOut (linux_pcb_app)', 100);
+  w.fixstr('PSBees (linux_pcb_app)', 100);
   w.fixstr('', 100);
   w.u32(0); // comment len
 

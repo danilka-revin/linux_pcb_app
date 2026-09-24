@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-// Автообновление ЛайАут из GitHub при запуске.
+// Автообновление PSBees из GitHub при запуске.
 //
 //   node scripts/update.mjs --app-dir <каталог установленной программы>
 //

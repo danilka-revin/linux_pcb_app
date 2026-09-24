@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-// Окно ЛайАут на Windows (Electron): поднимает тот же локальный сервер,
+// Окно PSBees на Windows (Electron): поднимает тот же локальный сервер,
 // что и Linux-версия, и открывает интерфейс в собственном окне.
 import { app, BrowserWindow, Menu, dialog, shell } from 'electron';
 import { existsSync } from 'node:fs';
@@ -25,7 +25,7 @@ function createWindow(url) {
     backgroundColor: '#14161a',
     autoHideMenuBar: true,
     show: false,
-    title: 'ЛайАут — редактор печатных плат',
+    title: 'PSBees — редактор печатных плат',
     icon: existsSync(icon) ? icon : undefined,
     webPreferences: {
       sandbox: true,
@@ -64,9 +64,9 @@ if (!gotLock) {
     const root = distRoot();
     if (!existsSync(join(root, 'index.html'))) {
       dialog.showErrorBox(
-        'ЛайАут',
+        'PSBees',
         'Не найдена собранная программа (dist/index.html).\n'
-        + 'Соберите её командой npm run build или установите LayAut-Setup.exe.',
+        + 'Соберите её командой npm run build или установите PSBees-Setup.exe.',
       );
       app.quit();
       return;
@@ -80,7 +80,7 @@ if (!gotLock) {
       });
       await createWindow(url);
     } catch (e) {
-      dialog.showErrorBox('ЛайАут', 'Не удалось запустить локальный сервер:\n' + (e?.message || e));
+      dialog.showErrorBox('PSBees', 'Не удалось запустить локальный сервер:\n' + (e?.message || e));
       app.quit();
     }
   });

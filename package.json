@@ -1,11 +1,11 @@
 {
-  "name": "linux-pcb-app",
+  "name": "psbees",
   "private": true,
   "version": "0.1.0",
   "type": "module",
   "main": "electron/main.mjs",
-  "description": "ЛайАут — редактор печатных плат (Sprint-Layout .lay6/.lmk) для Linux и Windows",
-  "author": "ЛайАут",
+  "description": "PSBees — редактор печатных плат (Sprint-Layout .lay6/.lmk) для Linux и Windows",
+  "author": "PSBees",
   "homepage": "https://github.com/danilka-revin/linux_pcb_app",
   "repository": {
     "type": "git",
@@ -38,9 +38,9 @@
     "vite": "^6.3.5"
   },
   "build": {
-    "appId": "app.layaut.pcb",
-    "productName": "LayAut",
-    "copyright": "ЛайАут",
+    "appId": "app.psbees.pcb",
+    "productName": "PSBees",
+    "copyright": "PSBees",
     "electronVersion": "33.4.11",
     "asar": true,
     "npmRebuild": false,
@@ -60,7 +60,7 @@
     },
     "win": {
       "icon": "build/icon.ico",
-      "executableName": "LayAut",
+      "executableName": "PSBees",
       "target": [
         { "target": "nsis", "arch": ["x64"] },
         { "target": "portable", "arch": ["x64"] }
@@ -73,15 +73,15 @@
       "allowElevation": true,
       "createDesktopShortcut": true,
       "createStartMenuShortcut": true,
-      "shortcutName": "ЛайАут",
-      "uninstallDisplayName": "ЛайАут — редактор печатных плат",
+      "shortcutName": "PSBees",
+      "uninstallDisplayName": "PSBees — редактор печатных плат",
       "deleteAppDataOnUninstall": false,
-      "artifactName": "LayAut-Setup-${version}.${ext}",
+      "artifactName": "PSBees-Setup-${version}.${ext}",
       "installerLanguages": ["ru_RU", "en_US"],
       "language": "1049"
     },
     "portable": {
-      "artifactName": "LayAut-portable-${version}.${ext}"
+      "artifactName": "PSBees-portable-${version}.${ext}"
     }
   }
 }

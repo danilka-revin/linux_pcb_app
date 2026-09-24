@@ -161,7 +161,7 @@ export function AboutDialog({ version, onClose }: { version: string | null; onCl
       foot={<button className="btn primary" onClick={onClose}>Закрыть</button>}
     >
       <p>
-        <b>ЛайАут</b> — редактор разводки печатных плат для Linux и Windows в духе Sprint-Layout.
+        <b>PSBees</b> — редактор разводки печатных плат для Linux и Windows в духе Sprint-Layout.
         Данные хранятся локально, тёмная тема по умолчанию.
       </p>
       <p style={{ fontSize: 12, opacity: 0.85 }}>
@@ -169,7 +169,7 @@ export function AboutDialog({ version, onClose }: { version: string | null; onCl
           ? `Версия сборки: ${version}.`
           : 'Версия: разработка (сборка без метки).'}
         {' '}На Linux обновления подтягиваются из GitHub при запуске; на Windows
-        скачайте свежий установщик <code>LayAut-Setup.exe</code>.
+        скачайте свежий установщик <code>PSBees-Setup.exe</code>.
       </p>
       <ul>
         <li>Дорожки с углами 45°/90°/свободно, автопереходы при смене слоя (клавиша L)</li>

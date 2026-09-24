@@ -1,5 +1,5 @@
-// ЛайАут — редактор печатных плат для Linux и Windows (аналог Sprint-Layout, тёмная тема).
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+// PSBees — редактор печатных плат для Linux и Windows (аналог Sprint-Layout, тёмная тема).
+import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from 'react';
 import * as M from './pcb/model';
 import { expandComp, expandDoc, libBBox } from './pcb/expand';
 import { lay6ToDoc, docToLay6, lmkToEnts, entsToLmk, hasLay6Magic } from './pcb/lay6';
@@ -22,8 +22,37 @@ import {
 import {
   AboutDialog, ExportDialog, NewBoardDialog, PanelizeDialog, type ExportPngOpts,
 } from './ui/dialogs';
+import { UiBuilderDialog, useUpdater } from './ui/updater';
 
 type ToolId2 = ToolId;
+
+/** Логотип-оса (стиль Betaflight) — миниатюра для шапки. */
+function WaspMark({ size = 30 }: { size?: number }) {
+  return (
+    <svg width={size} height={size} viewBox="0 0 128 128" aria-hidden="true">
+      <rect x="8" y="8" width="112" height="112" rx="20" fill="#141a24" stroke="#2a3a52" strokeWidth="4" />
+      <path d="M58 50 L26 24 L14 32 L50 58 Z" fill="#a7d3ff" opacity="0.9" />
+      <path d="M70 50 L102 24 L114 32 L78 58 Z" fill="#a7d3ff" opacity="0.9" />
+      <path d="M54 60 L30 57 L24 66 L50 68 Z" fill="#8fc3f0" opacity="0.8" />
+      <path d="M74 60 L98 57 L104 66 L78 68 Z" fill="#8fc3f0" opacity="0.8" />
+      <g stroke="#e6b93e" strokeWidth="2.2" strokeLinecap="round" fill="none">
+        <path d="M54 56 L40 62 M74 56 L88 62" />
+        <path d="M50 64 L37 72 M78 64 L91 72" />
+        <path d="M54 78 L42 88 M74 78 L86 88" />
+      </g>
+      <ellipse cx="64" cy="84" rx="13" ry="16" fill="#ffd53f" />
+      <rect x="53" y="75" width="22" height="5" rx="2" fill="#1b2230" />
+      <rect x="51" y="85" width="26" height="5" rx="2" fill="#1b2230" />
+      <rect x="54" y="94" width="20" height="4" rx="2" fill="#1b2230" />
+      <path d="M62.5 99 L65.5 99 L64 107 Z" fill="#232c3d" />
+      <ellipse cx="64" cy="58" rx="11" ry="9" fill="#232c3d" stroke="#ffd53f" strokeWidth="2" />
+      <path d="M61 34 L55 21 M67 34 L73 21" stroke="#ffd53f" strokeWidth="2.6" strokeLinecap="round" fill="none" />
+      <circle cx="64" cy="43" r="9" fill="#ffd53f" />
+      <circle cx="60.5" cy="40.5" r="1.8" fill="#141a24" />
+      <circle cx="67.5" cy="40.5" r="1.8" fill="#141a24" />
+    </svg>
+  );
+}
 
 /** Русские формы множественного числа: [1, 2, 5] → «1 дорожка», «2 дорожки», «5 дорожек» */
 function plur(n: number, w: [string, string, string]): string {
@@ -47,6 +76,81 @@ type Drag =
 
 const AUTOSAVE_KEY = 'lauaut.autosave';
 const DEFS_KEY = 'lauaut.defs';
+const UI_KEY = 'lauaut.ui';
+
+/** Группы кнопок тулбара, настраиваемые конструктором интерфейса. */
+const GROUP_DEFS: { id: string; label: string }[] = [
+  { id: 'file', label: 'Файл' },
+  { id: 'undo', label: 'Отмена / повтор' },
+  { id: 'tools', label: 'Инструменты' },
+  { id: 'grid', label: 'Сетка и углы' },
+  { id: 'layer', label: 'Слой K1 / K2' },
+  { id: 'view', label: 'Вид' },
+  { id: 'about', label: 'Кнопка „Обновить“ и «О программе»' },
+];
+const GROUP_ORDER: string[] = GROUP_DEFS.map((g) => g.id);
+const GROUP_NAMES: Record<string, string> = Object.fromEntries(GROUP_DEFS.map((g) => [g.id, g.label]));
+
+/** Вкладки левой колонки: «Слои» и «Библиотека». */
+const LEFT_TABS: { id: LeftTabId; label: string }[] = [
+  { id: 'layers', label: 'Слои' },
+  { id: 'lib', label: 'Библиотека' },
+];
+type LeftTabId = 'layers' | 'lib';
+const LEFT_TAB_NAMES: Record<string, string> = Object.fromEntries(LEFT_TABS.map((t) => [t.id, t.label]));
+
+/** Настройки боковых колонок. */
+interface SidesConf {
+  /** ширина левой колонки, px */
+  leftW: number;
+  /** ширина правой колонки, px */
+  rightW: number;
+  /** какие вкладки есть в левой колонке (порядок = порядок вкладок) */
+  leftTabs: LeftTabId[];
+  /** показывать ли правую колонку («Свойства») */
+  showRight: boolean;
+}
+
+/** Сохранённая конфигурация интерфейса. */
+interface UiState {
+  /** порядок групп тулбара */
+  ids: string[];
+  /** скрытые группы тулбара */
+  hidden: string[];
+  /** боковые панели */
+  sides?: SidesConf;
+}
+
+const DEFAULT_SIDES: SidesConf = { leftW: 250, rightW: 274, leftTabs: ['layers', 'lib'], showRight: true };
+const normalizeSides = (s?: Partial<SidesConf>): SidesConf => ({
+  leftW: s?.leftW ?? DEFAULT_SIDES.leftW,
+  rightW: s?.rightW ?? DEFAULT_SIDES.rightW,
+  leftTabs: (s?.leftTabs ?? DEFAULT_SIDES.leftTabs).filter((t) => LEFT_TABS.some((x) => x.id === t)),
+  showRight: s?.showRight ?? DEFAULT_SIDES.showRight,
+});
+
+function loadUi(): UiState {
+  try {
+    const raw = localStorage.getItem(UI_KEY);
+    if (raw) {
+      const d = JSON.parse(raw);
+      if (d && Array.isArray(d.ids) && Array.isArray(d.hidden)) {
+        return {
+          ids: d.ids.filter((id: string) => GROUP_DEFS.some((g) => g.id === id)),
+          hidden: d.hidden.filter((id: string) => GROUP_DEFS.some((g) => g.id === id)),
+          sides: normalizeSides(d.sides),
+        };
+      }
+    }
+  } catch { /* ignore */ }
+  return { ids: [], hidden: [], sides: normalizeSides() };
+}
+
+const SAVE_UI = (c: UiState) => {
+  try { localStorage.setItem(UI_KEY, JSON.stringify(c)); } catch { /* ignore */ }
+};
+
+const clampW = (w: number) => Math.max(160, Math.min(650, Math.round(w) || 250));
 
 const DEFAULT_DEFS: Defs = {
   grid: 1.27,
@@ -148,9 +252,16 @@ export default function App() {
   }, [doc, tool, routeMode]);
   const [routeA, setRouteA] = useState<RouteEnd | null>(null);
   const [routeMsg, setRouteMsg] = useState<{ msg: string; ok: boolean | null }>({ msg: '', ok: null });
-  const [dialog, setDialog] = useState<'new' | 'export' | 'panelize' | 'about' | 'inventory' | null>(null);
+  const [dialog, setDialog] = useState<'new' | 'export' | 'panelize' | 'about' | 'inventory' | 'uib' | null>(null);
+  const [uiConf, setUiConf] = useState<UiState>(loadUi);
+  // сохраняем конфигурацию интерфейса сразу (не autosave через таймаут)
+  const persistUi = useCallback((c: UiState) => {
+    setUiConf(c);
+    SAVE_UI(c);
+  }, []);
   // версия сборки (сервер отдаёт /version из dist/version.json)
   const [appVer, setAppVer] = useState<string | null>(null);
+  const upd = useUpdater(appVer);
   // «Тест цепи»: подсвеченная электрическая цепь (все связные пятки и дорожки)
   const [probe, setProbe] = useState<{
     entId: string; ents: Set<string>;
@@ -1389,96 +1500,179 @@ export default function App() {
     </button>
   );
 
+  // ---------------- группы тулбара (конструктор интерфейса) ----------------
+  const tbGroups: Record<string, ReactNode> = {
+    file: (
+      <div className="tb-group" key="file">
+        {tb('new', 'Новая плата', () => setDialog('new'))}
+        {tb('open', 'Открыть проект (Ctrl+O)', () => fileRef.current?.click())}
+        {tb('save', 'Сохранить проект (Ctrl+S)', saveFile)}
+        {tb('gerber', 'Экспорт Gerber/PNG (Ctrl+E)', () => setDialog('export'))}
+        {tb('panel', 'Размножить плату (панелизация)', () => setDialog('panelize'))}
+        {tb('inventory', 'Перечень площадок и отверстий', () => setDialog('inventory'))}
+      </div>
+    ),
+    undo: (
+      <div className="tb-group" key="undo">
+        {tb('undo', 'Отменить (Ctrl+Z)', undo, { disabled: !past.current.length })}
+        {tb('redo', 'Повторить (Ctrl+Y)', redo, { disabled: !future.current.length })}
+      </div>
+    ),
+    tools: (
+      <div className="tb-group" key="tools">
+        {TOOLS.map((t) => tb(t.icon, `${t.name}${t.id === 'track' ? ' (2)' : t.id === 'route' ? ' (9)' : t.id === 'probe' ? ' (0)' : ''}`, () => setTool(t.id), { active: tool === t.id && !(t.id === 'comp' && !placeLib) }))}
+      </div>
+    ),
+    grid: (
+      <div className="tb-group" key="grid">
+        <select
+          className="tb-sel" title="Шаг сетки, мм"
+          value={String(defs.grid)}
+          onChange={(e) => setDefs({ grid: parseFloat(e.target.value) })}
+        >
+          {[0.25, 0.5, 0.635, 1.0, 1.27, 2.54, 5.08].map((g) => (
+            <option key={g} value={g}>Сетка {g}</option>
+          ))}
+        </select>
+        <button
+          className="tb-btn"
+          title={`Углы прокладки: ${defs.angle === '45' ? '45°' : defs.angle === '90' ? '90°' : 'свободно'}`}
+          onClick={() => setDefs({ angle: defs.angle === '45' ? '90' : defs.angle === '90' ? 'free' : '45' })}
+        >
+          <Ic n={defs.angle === '45' ? 'angle45' : defs.angle === '90' ? 'angle90' : 'anglefree'} />
+        </button>
+      </div>
+    ),
+    layer: (
+      <div className="tb-group" key="layer">
+        <button className={'tb-btn cu' + (activeCu === 'k1' ? ' active' : '')}
+          style={{ borderColor: COLORS.k1, color: activeCu === 'k1' ? '#fff' : COLORS.k1 }}
+          title="Активный слой: верхняя медь (L)" onClick={() => setActiveCu('k1')}>K1</button>
+        <button className={'tb-btn cu' + (activeCu === 'k2' ? ' active' : '')}
+          style={{ borderColor: COLORS.k2, color: activeCu === 'k2' ? '#fff' : COLORS.k2 }}
+          title="Активный слой: нижняя медь (L)" onClick={() => setActiveCu('k2')}>K2</button>
+      </div>
+    ),
+    view: (
+      <div className="tb-group" key="view">
+        {tb('zoomin', 'Приблизить (+)', () => zoomAt(size.w / 2, size.h / 2, 1.3))}
+        {tb('zoomout', 'Отдалить (−)', () => zoomAt(size.w / 2, size.h / 2, 1 / 1.3))}
+        {tb('fit', 'Показать всю плату (F)', () => fit())}
+        {tb('mirror', view.mir ? 'Вид снизу — включён' : 'Вид сверху / переключить на вид снизу',
+          () => setView((v) => ({ ...v, mir: !v.mir })), { active: view.mir })}
+      </div>
+    ),
+    about: (
+      <div className="tb-group" key="about">
+        {tb('uib', 'Конструктор интерфейса', () => setDialog('uib'))}
+        {upd.Button}
+        {tb('about', 'О программе', () => setDialog('about'))}
+      </div>
+    ),
+  };
+
+  // порядок групп тулбара: сохранённый в localStorage, иначе порядок по умолчанию
+  const uiOrder = (uiConf.ids.length ? uiConf.ids : GROUP_ORDER)
+    .filter((id) => GROUP_DEFS.some((g) => g.id === id));
+  const uiHidden = new Set(uiConf.hidden);
+  const toShow = uiOrder.filter((id) => !uiHidden.has(id));
+
+  // ---------------- боковые колонки (конструктор интерфейса) ----------------
+  const sidesConf = normalizeSides(uiConf.sides);
+  const leftTabs: LeftTabId[] = sidesConf.leftTabs.length ? sidesConf.leftTabs : ['layers', 'lib'];
+  // активная вкладка левой колонки: выбранная вручную, если она видна; иначе первая
+  const activeLeft: LeftTabId = leftTabs.includes(leftTab) ? leftTab : leftTabs[0];
+
+  const renderLayersPane = () => (
+    <>
+      <LayersPanel
+        activeCu={activeCu} setActiveCu={setActiveCu}
+        hidden={hidden} toggleHidden={toggleHidden} counts={counts}
+      />
+      <div style={{ flex: 1 }} />
+      <div className="hint" style={{ padding: '0 12px 10px' }}>
+        Плата: {M.fmt(doc.w)} × {M.fmt(doc.h)} мм<br />
+        Элементов: {doc.entities.length} · Выделено: {sel.size}
+        <button className="btn inventory-open" onClick={() => setDialog('inventory')}>Площадки и отверстия…</button>
+      </div>
+    </>
+  );
+  const renderLibPane = () => (
+    <LibraryPanel
+      picked={placeLib}
+      onPick={(k) => { setPlaceLib(k); setToolRaw('comp'); }}
+      macros={macros}
+      onPickUser={(n) => { setPlaceLib('u:' + n); setToolRaw('comp'); }}
+      onDelUser={(n) => { persistMacros((prev) => prev.filter((m) => m.name !== n)); if (placeLib === 'u:' + n) setPlaceLib(null); }}
+      onImportLmk={() => lmkFileRef.current?.click()}
+      onImportZip={() => lmkZipRef.current?.click()}
+    />
+  );
+
+  const leftColumn = (
+    <div className="side" style={{ width: clampW(sidesConf.leftW) }}>
+      <div className="pane-full">
+        {leftTabs.length > 1 && (
+          <div className="tabs">
+            {leftTabs.map((t) => (
+              <button key={t} className={activeLeft === t ? 'on' : ''} onClick={() => setLeftTab(t)}>
+                {t === 'layers' ? 'Слои' : 'Библиотека'}
+              </button>
+            ))}
+          </div>
+        )}
+        {activeLeft === 'layers' ? renderLayersPane() : renderLibPane()}
+      </div>
+    </div>
+  );
+
+  const rightColumn = (
+    <div className="side right" style={{ width: clampW(sidesConf.rightW) }}>
+      <div className="pane-full">
+        {tool === 'route' && <>
+          <div className="props route-modes">
+            <button className={'btn' + (routeMode === 'pair' ? ' primary' : '')} onClick={() => { setRouteMode('pair'); setRouteA(null); setSel(new Set()); setRouteMsg({ msg: '', ok: null }); }}>Две точки</button>
+            <button className={'btn' + (routeMode === 'nets' ? ' primary' : '')} onClick={() => { setRouteMode('nets'); setRouteA(null); setSel(new Set()); setRouteMsg({ msg: '', ok: null }); }}>Группы / вся плата</button>
+          </div>
+          {routeMode === 'nets' && <NetsPanel nets={doc.nets ?? []} active={activeNet} setActive={setActiveNet}
+            ends={netGeometry.ends} comp={netGeometry.comp} info={routeMsg} onChange={changeNets} onRoute={routeAll}
+            onNew={() => {
+              const id = M.uid();
+              const used = new Set((doc.nets ?? []).map((n) => n.name));
+              let i = 1; while (used.has(`Цепь ${i}`)) i++;
+              changeNets([...(doc.nets ?? []), { id, name: `Цепь ${i}`, pads: [] }]);
+              setActiveNet(id);
+            }} />}
+        </>}
+        <PropsPanel
+          tool={tool} defs={defs} setDefs={setDefs}
+          activeCu={activeCu} setActiveCu={setActiveCu}
+          selEnts={selEnts} patchEnt={patchEnt}
+          doRotate={rotateSel} doMirror={mirrorSel} doDuplicate={duplicateSel} doDelete={deleteSel}
+          doc={doc} setDocSize={setDocSize}
+          placeLib={placeLib} placeRot={placeRot} placeSide={placeSide}
+          setPlaceRot={setPlaceRot} setPlaceSide={setPlaceSide} cancelPlace={() => setPlaceLib(null)}
+          textRot={defs.textRot} setTextRot={(r) => setDefs({ textRot: r })}
+          routeGroups={routeMode === 'nets'}
+          routeInfo={{ ...routeMsg, msg: routeMode === 'nets' ? '' : routeMsg.msg, picking: routeA ? 'b' : 'a' }}
+        />
+      </div>
+    </div>
+  );
+
   // ---------------- разметка ----------------
   return (
     <>
       <div className="toolbar">
         <div className="brand">
-            <span className="brandmark">Л</span>
-            <span><b>Лай<em>Аут</em></b><small>PCB · LINUX · WINDOWS · SPRINT-LAYOUT</small></span>
+            <span className="brandmark"><WaspMark /></span>
+            <span><b>PS<em>Bees</em></b><small>PCB · LINUX · WINDOWS · SPRINT-LAYOUT</small></span>
           </div>
-        <div className="tb-group">
-          {tb('new', 'Новая плата', () => setDialog('new'))}
-          {tb('open', 'Открыть проект (Ctrl+O)', () => fileRef.current?.click())}
-          {tb('save', 'Сохранить проект (Ctrl+S)', saveFile)}
-          {tb('gerber', 'Экспорт Gerber/PNG (Ctrl+E)', () => setDialog('export'))}
-          {tb('panel', 'Размножить плату (панелизация)', () => setDialog('panelize'))}
-          {tb('inventory', 'Перечень площадок и отверстий', () => setDialog('inventory'))}
-        </div>
-        <div className="tb-group">
-          {tb('undo', 'Отменить (Ctrl+Z)', undo, { disabled: !past.current.length })}
-          {tb('redo', 'Повторить (Ctrl+Y)', redo, { disabled: !future.current.length })}
-        </div>
-        <div className="tb-group">
-          {TOOLS.map((t) => tb(t.icon, `${t.name}${t.id === 'track' ? ' (2)' : t.id === 'route' ? ' (9)' : t.id === 'probe' ? ' (0)' : ''}`, () => setTool(t.id), { active: tool === t.id && !(t.id === 'comp' && !placeLib) }))}
-        </div>
-        <div className="tb-group">
-          <select
-            className="tb-sel" title="Шаг сетки, мм"
-            value={String(defs.grid)}
-            onChange={(e) => setDefs({ grid: parseFloat(e.target.value) })}
-          >
-            {[0.25, 0.5, 0.635, 1.0, 1.27, 2.54, 5.08].map((g) => (
-              <option key={g} value={g}>Сетка {g}</option>
-            ))}
-          </select>
-          <button
-            className="tb-btn"
-            title={`Углы прокладки: ${defs.angle === '45' ? '45°' : defs.angle === '90' ? '90°' : 'свободно'}`}
-            onClick={() => setDefs({ angle: defs.angle === '45' ? '90' : defs.angle === '90' ? 'free' : '45' })}
-          >
-            <Ic n={defs.angle === '45' ? 'angle45' : defs.angle === '90' ? 'angle90' : 'anglefree'} />
-          </button>
-        </div>
-        <div className="tb-group">
-          <button className={'tb-btn cu' + (activeCu === 'k1' ? ' active' : '')}
-            style={{ borderColor: COLORS.k1, color: activeCu === 'k1' ? '#fff' : COLORS.k1 }}
-            title="Активный слой: верхняя медь (L)" onClick={() => setActiveCu('k1')}>K1</button>
-          <button className={'tb-btn cu' + (activeCu === 'k2' ? ' active' : '')}
-            style={{ borderColor: COLORS.k2, color: activeCu === 'k2' ? '#fff' : COLORS.k2 }}
-            title="Активный слой: нижняя медь (L)" onClick={() => setActiveCu('k2')}>K2</button>
-        </div>
-        <div className="tb-group">
-          {tb('zoomin', 'Приблизить (+)', () => zoomAt(size.w / 2, size.h / 2, 1.3))}
-          {tb('zoomout', 'Отдалить (−)', () => zoomAt(size.w / 2, size.h / 2, 1 / 1.3))}
-          {tb('fit', 'Показать всю плату (F)', () => fit())}
-          {tb('mirror', view.mir ? 'Вид снизу — включён' : 'Вид сверху / переключить на вид снизу',
-            () => setView((v) => ({ ...v, mir: !v.mir })), { active: view.mir })}
-          {tb('about', 'О программе', () => setDialog('about'))}
-        </div>
+        {toShow.map((id) => tbGroups[id])}
       </div>
 
       <div className="main">
-        <div className="side">
-          <div className="tabs">
-            <button className={leftTab === 'layers' ? 'on' : ''} onClick={() => setLeftTab('layers')}>Слои</button>
-            <button className={leftTab === 'lib' ? 'on' : ''} onClick={() => setLeftTab('lib')}>Библиотека</button>
-          </div>
-          {leftTab === 'layers' ? (
-            <>
-              <LayersPanel
-                activeCu={activeCu} setActiveCu={setActiveCu}
-                hidden={hidden} toggleHidden={toggleHidden} counts={counts}
-              />
-              <div style={{ flex: 1 }} />
-              <div className="hint" style={{ padding: '0 12px 10px' }}>
-                Плата: {M.fmt(doc.w)} × {M.fmt(doc.h)} мм<br />
-                Элементов: {doc.entities.length} · Выделено: {sel.size}
-                <button className="btn inventory-open" onClick={() => setDialog('inventory')}>Площадки и отверстия…</button>
-              </div>
-            </>
-          ) : (
-            <LibraryPanel
-              picked={placeLib}
-              onPick={(k) => { setPlaceLib(k); setToolRaw('comp'); }}
-              macros={macros}
-              onPickUser={(n) => { setPlaceLib('u:' + n); setToolRaw('comp'); }}
-              onDelUser={(n) => { persistMacros((prev) => prev.filter((m) => m.name !== n)); if (placeLib === 'u:' + n) setPlaceLib(null); }}
-              onImportLmk={() => lmkFileRef.current?.click()}
-              onImportZip={() => lmkZipRef.current?.click()}
-            />
-          )}
-        </div>
+        {leftColumn}
 
         <div className="canvas-wrap" ref={wrapRef}>
           <canvas
@@ -1520,35 +1714,7 @@ export default function App() {
           />
         </div>
 
-        <div className="side right">
-          {tool === 'route' && <>
-            <div className="props route-modes">
-              <button className={'btn' + (routeMode === 'pair' ? ' primary' : '')} onClick={() => { setRouteMode('pair'); setRouteA(null); setSel(new Set()); setRouteMsg({ msg: '', ok: null }); }}>Две точки</button>
-              <button className={'btn' + (routeMode === 'nets' ? ' primary' : '')} onClick={() => { setRouteMode('nets'); setRouteA(null); setSel(new Set()); setRouteMsg({ msg: '', ok: null }); }}>Группы / вся плата</button>
-            </div>
-            {routeMode === 'nets' && <NetsPanel nets={doc.nets ?? []} active={activeNet} setActive={setActiveNet}
-              ends={netGeometry.ends} comp={netGeometry.comp} info={routeMsg} onChange={changeNets} onRoute={routeAll}
-              onNew={() => {
-                const id = M.uid();
-                const used = new Set((doc.nets ?? []).map((n) => n.name));
-                let i = 1; while (used.has(`Цепь ${i}`)) i++;
-                changeNets([...(doc.nets ?? []), { id, name: `Цепь ${i}`, pads: [] }]);
-                setActiveNet(id);
-              }} />}
-          </>}
-          <PropsPanel
-            tool={tool} defs={defs} setDefs={setDefs}
-            activeCu={activeCu} setActiveCu={setActiveCu}
-            selEnts={selEnts} patchEnt={patchEnt}
-            doRotate={rotateSel} doMirror={mirrorSel} doDuplicate={duplicateSel} doDelete={deleteSel}
-            doc={doc} setDocSize={setDocSize}
-            placeLib={placeLib} placeRot={placeRot} placeSide={placeSide}
-            setPlaceRot={setPlaceRot} setPlaceSide={setPlaceSide} cancelPlace={() => setPlaceLib(null)}
-            textRot={defs.textRot} setTextRot={(r) => setDefs({ textRot: r })}
-            routeGroups={routeMode === 'nets'}
-            routeInfo={{ ...routeMsg, msg: routeMode === 'nets' ? '' : routeMsg.msg, picking: routeA ? 'b' : 'a' }}
-          />
-        </div>
+        {sidesConf.showRight && rightColumn}
       </div>
 
       <div className="status">
@@ -1590,7 +1756,23 @@ export default function App() {
         <PanelizeDialog defX={doc.w + 2} defY={doc.h + 2} onOk={(c, r, gx, gy) => { panelize(c, r, gx, gy); setDialog(null); }} onClose={() => setDialog(null)} />
       )}
       {dialog === 'inventory' && <InventoryDialog doc={doc} onClose={() => setDialog(null)} />}
+      {dialog === 'uib' && (
+        <UiBuilderDialog
+          ids={uiOrder}
+          names={GROUP_NAMES}
+          hidden={uiConf.hidden}
+          sideTabs={sidesConf.leftTabs}
+          sideNames={LEFT_TAB_NAMES}
+          leftW={sidesConf.leftW}
+          rightW={sidesConf.rightW}
+          showRight={sidesConf.showRight}
+          onChange={(next) => persistUi({ ...uiConf, ids: next.ids, hidden: next.hidden })}
+          onSides={(next) => persistUi({ ...uiConf, sides: next })}
+          onClose={() => setDialog(null)}
+        />
+      )}
       {dialog === 'about' && <AboutDialog version={appVer} onClose={() => setDialog(null)} />}
+      {upd.Dialog}
     </>
   );
 }

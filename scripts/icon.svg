@@ -1,8 +1,36 @@
+<?xml version="1.0" encoding="UTF-8"?>
 <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 128 128">
-  <rect x="4" y="4" width="120" height="120" rx="18" fill="#141a24" stroke="#2a3a52" stroke-width="4"/>
-  <path d="M24 96 L56 64 L56 40 H72" stroke="#3d8bfd" stroke-width="8" fill="none" stroke-linecap="round" stroke-linejoin="round"/>
-  <path d="M48 104 L88 64" stroke="#e5484d" stroke-width="8" fill="none" stroke-linecap="round"/>
-  <circle cx="24" cy="96" r="10" fill="none" stroke="#ffb648" stroke-width="6"/>
-  <circle cx="104" cy="40" r="10" fill="none" stroke="#ffb648" stroke-width="6"/>
-  <circle cx="104" cy="104" r="7" fill="#41d98d"/>
+  <!-- PSBees: стилизованная оса (в духе Betaflight) на тёмной карточке -->
+  <rect x="8" y="8" width="112" height="112" rx="20" fill="#141a24" stroke="#2a3a52" stroke-width="4"/>
+
+  <!-- крылья -->
+  <path d="M58 50 L26 24 L14 32 L50 58 Z" fill="#a7d3ff" opacity="0.9"/>
+  <path d="M70 50 L102 24 L114 32 L78 58 Z" fill="#a7d3ff" opacity="0.9"/>
+  <path d="M54 60 L30 57 L24 66 L50 68 Z" fill="#8fc3f0" opacity="0.8"/>
+  <path d="M74 60 L98 57 L104 66 L78 68 Z" fill="#8fc3f0" opacity="0.8"/>
+
+  <!-- лапки -->
+  <g stroke="#e6b93e" stroke-width="2.2" stroke-linecap="round" fill="none">
+    <path d="M54 56 L40 62 M74 56 L88 62"/>
+    <path d="M50 64 L37 72 M78 64 L91 72"/>
+    <path d="M54 78 L42 88 M74 78 L86 88"/>
+  </g>
+
+  <!-- брюшко с полосами и жалом -->
+  <ellipse cx="64" cy="84" rx="13" ry="16" fill="#ffd53f"/>
+  <rect x="53" y="75" width="22" height="5" rx="2" fill="#1b2230"/>
+  <rect x="51" y="85" width="26" height="5" rx="2" fill="#1b2230"/>
+  <rect x="54" y="94" width="20" height="4" rx="2" fill="#1b2230"/>
+  <path d="M62.5 99 L65.5 99 L64 107 Z" fill="#232c3d"/>
+
+  <!-- грудь -->
+  <ellipse cx="64" cy="58" rx="11" ry="9" fill="#232c3d" stroke="#ffd53f" stroke-width="2"/>
+
+  <!-- усики -->
+  <path d="M61 34 L55 21 M67 34 L73 21" stroke="#ffd53f" stroke-width="2.6" stroke-linecap="round" fill="none"/>
+
+  <!-- голова и глаза -->
+  <circle cx="64" cy="43" r="9" fill="#ffd53f"/>
+  <circle cx="60.5" cy="40.5" r="1.8" fill="#141a24"/>
+  <circle cx="67.5" cy="40.5" r="1.8" fill="#141a24"/>
 </svg>

@@ -1,11 +1,11 @@
 #!/usr/bin/env bash
-# Установка ЛайАут на Ubuntu: сборка, файлы в ~/.local/share,
+# Установка PSBees на Ubuntu: сборка, файлы в ~/.local/share,
 # запуск одним кликом из меню приложений (ярлык .desktop).
 # Пошаговая инструкция для новичков — INSTALL_UBUNTU.md.
 set -euo pipefail
 
-APP_ID="linux-pcb-app"
-APP_NAME_RU="ЛайАут — редактор печатных плат"
+APP_ID="psbees"
+APP_NAME_RU="PSBees — редактор печатных плат"
 SRC_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 APP_DIR="$HOME/.local/share/$APP_ID"
 BIN_DIR="$HOME/.local/bin"
@@ -133,7 +133,7 @@ INST_SHA=$(node -e 'try{const v=JSON.parse(require("fs").readFileSync("dist/vers
 say "Создание запускающего скрипта $BIN_DIR/$APP_ID"
 {
   echo '#!/usr/bin/env bash'
-  echo '# Запуск ЛайАут одним кликом: поднимает локальный сервер (если ещё не запущен)'
+  echo '# Запуск PSBees одним кликом: поднимает локальный сервер (если ещё не запущен)'
   echo '# и открывает приложение в браузере. Файл создан install-ubuntu.sh.'
   printf 'PORT=%q\nAPP_DIR=%q\nNODE_BIN=%q\n' "$PORT" "$APP_DIR" "$NODE_BIN"
   cat <<'EOF'
@@ -145,8 +145,8 @@ NODE="$NODE_BIN"
 [ -x "$NODE" ] || NODE="$(command -v node || true)"
 
 fail() {
-  echo "ЛайАут: $1" >&2
-  if command -v notify-send >/dev/null; then notify-send -i "$APP_DIR/icon.svg" "ЛайАут" "$1"; fi
+  echo "PSBees: $1" >&2
+  if command -v notify-send >/dev/null; then notify-send -i "$APP_DIR/icon.svg" "PSBees" "$1"; fi
   exit 1
 }
 
@@ -162,7 +162,7 @@ alive() {
 PIDFILE="$APP_DIR/server.pid"
 
 notify() {
-  command -v notify-send >/dev/null && notify-send -i "$APP_DIR/icon.svg" "ЛайАут" "$1" 2>/dev/null || true
+  command -v notify-send >/dev/null && notify-send -i "$APP_DIR/icon.svg" "PSBees" "$1" 2>/dev/null || true
 }
 
 # ---------- автообновление из GitHub при запуске ----------
@@ -203,7 +203,7 @@ if [ "$NEED_RESTART" = "1" ] && alive; then
 fi
 # уже запущен? -> просто открываем окно
 if ! alive; then
-  nohup "$NODE" "$APP_DIR/server.mjs" "$PORT" "$APP_DIR/dist" >"$LOG" 2>&1 &
+  nohup "$NODE" "$APP_DIR/server.mjs" --app-dir "$APP_DIR" "$PORT" "$APP_DIR/dist" >"$LOG" 2>&1 &
   PID=$!
   echo "$PID" > "$PIDFILE"
   for _ in $(seq 1 40); do
@@ -273,7 +273,7 @@ fi
 
 say "Готово!"
 echo "  • Ярлык «$APP_NAME_RU» появился в меню приложений:"
-echo "    нажмите клавишу Super (с логотипом Windows) и наберите «ЛайАут»."
+echo "    нажмите клавишу Super (с логотипом Windows) и наберите «PSBees»."
 echo "  • Адрес программы в браузере:  http://127.0.0.1:$PORT"
 case ":$PATH:" in
   *":$BIN_DIR:"*)
