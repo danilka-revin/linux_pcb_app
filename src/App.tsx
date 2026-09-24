@@ -4,7 +4,7 @@ import * as M from './pcb/model';
 import { expandComp, expandDoc, libBBox } from './pcb/expand';
 import { lay6ToDoc, docToLay6, lmkToEnts, entsToLmk, hasLay6Magic } from './pcb/lay6';
 import {
-  loadUserMacros, saveUserMacros, makeMacro, addUserMacro, type UserMacro,
+  loadUserMacros, saveUserMacros, makeMacro, addUserMacro, macroKey, splitMacroName, type UserMacro,
 } from './pcb/userlib';
 import { LIB } from './pcb/library';
 import { COLORS, drawDoc, drawEnt, renderPrint, toWorld, type View } from './pcb/render';
@@ -183,7 +183,6 @@ const DEFAULT_DEFS: Defs = {
   rtStep: 0.635,
   rtViaCost: 8,
   rtTopMul: 1.5,
-  rtBottomEntry: true,
   rtAllowTop: true,
   rtAngle: '45',
   rtAutoPad: true,
@@ -612,7 +611,7 @@ export default function App() {
             if (!ents.length) throw new Error('пустой макрос');
             const m = makeMacro(f.name.replace(/\.lmk$/i, ''), ents);
             persistMacros((prev) => addUserMacro(prev, m));
-            setPlaceLib('u:' + m.name);
+            setPlaceLib('u:' + macroKey(m));
             setToolRaw('comp');
             if (warnings.length) alert('Замечания при импорте макроса:\n• ' + warnings.slice(0, 6).join('\n• '));
             return;
@@ -647,9 +646,9 @@ export default function App() {
   const exportLmk = useCallback(() => {
     const selEnts = doc.entities.filter((e) => selRef.current.has(e.id));
     if (!selEnts.length) return;
-    const name = (prompt('Имя макроса Sprint-Layout:', 'Макрос') || 'Макрос').trim() || 'Макрос';
-    const base = name.replace(/[^\wа-яА-ЯёЁ-]+/g, '_');
-    download(`${base}.lmk`, new Blob([entsToLmk(selEnts).slice().buffer], { type: 'application/octet-stream' }));
+    const name = (prompt('Имя макроса Sprint-Layout (можно «Папка/Имя»):', 'Макрос') || 'Макрос').trim() || 'Макрос';
+    const { name: base, folder } = splitMacroName(name);
+    download(`${folder ? folder + '_' : ''}${base}.lmk`, new Blob([entsToLmk(selEnts).slice().buffer], { type: 'application/octet-stream' }));
     // и в локальную библиотеку — сразу
     persistMacros((prev) => addUserMacro(prev, makeMacro(name, selEnts)));
   }, [doc, persistMacros]);
@@ -662,7 +661,7 @@ export default function App() {
         if (!ents.length) throw new Error('пустой макрос');
         const m = makeMacro(f.name.replace(/\.lmk$/i, ''), ents);
         persistMacros((prev) => addUserMacro(prev, m));
-        setPlaceLib('u:' + m.name);
+        setPlaceLib('u:' + macroKey(m));
         setToolRaw('comp');
       } catch {
         alert('Не удалось импортировать макрос .lmk: неверный формат файла.');
@@ -683,16 +682,19 @@ export default function App() {
         return;
       }
       for (const [n, data] of lmks) {
-        const base = n.split(/[\\/]/).pop() || n;
+        const path = n.split(/[\\/]/);
+        const base = path.pop() || n;
+        const folder = path.filter(Boolean).join('/') || undefined; // папки архива → папки библиотеки
         const name = base.replace(/\.lmk$/i, '');
         try {
           if (!hasLay6Magic(data)) throw new Error('формат');
           const { ents, warnings } = lmkToEnts(data);
           if (!ents.length) throw new Error('пустой макрос');
           for (const w of warnings) warns.push(`${base}: ${w}`);
-          persistMacros((prev) => addUserMacro(prev, makeMacro(name, ents)));
+          const m = makeMacro(name, ents, folder);
+          persistMacros((prev) => addUserMacro(prev, m));
           count++;
-          last = name;
+          last = macroKey(m);
         } catch (e) {
           warns.push(`${base}: ${e instanceof Error ? e.message : 'ошибка'}`);
         }
@@ -768,10 +770,10 @@ export default function App() {
   const addComp = useCallback((at: M.Pt) => {
     if (!placeLib) return;
     if (placeLib.startsWith('u:')) {
-      const m = macros.find((x) => 'u:' + x.name === placeLib);
+      const m = macros.find((x) => 'u:' + macroKey(x) === placeLib);
       if (!m) return;
       const comp: M.Comp = {
-        id: M.uid(), kind: 'comp', lib: '', name: m.name,
+        id: M.uid(), kind: 'comp', lib: '', name: macroKey(m),
         x: at.x, y: at.y, rot: placeRot, side: placeSide,
         bl: m.bl.map((v) => v) as [number, number, number, number],
         ents: m.ents.map((e) => ({ ...JSON.parse(JSON.stringify(e)), id: M.uid() } as M.Entity)),
@@ -828,7 +830,7 @@ export default function App() {
       worker.postMessage({ doc: snapshot, opts: {
         trackW: defs.rtW, clearance: defs.rtClear, holeClear: defs.rtHoleClear,
         viaSize: defs.viaSize, viaDrill: defs.viaDrill, step: defs.rtStep,
-        viaCost: defs.rtViaCost, topMul: defs.rtTopMul, bottomEntry: true,
+        viaCost: defs.rtViaCost, topMul: defs.rtTopMul,
         allowTop: defs.rtAllowTop, angle: defs.rtAngle,
       } });
     } catch {
@@ -863,7 +865,7 @@ export default function App() {
       newPad = { id: M.uid(), kind: 'pad', x: sp.x, y: sp.y, shape: defs.padShape, size: defs.padSize, drill: defs.padDrill };
       base = M.cloneDoc(doc);
       base.entities.push(newPad);
-      end = { x: newPad.x, y: newPad.y, layers: ['k2', 'k1'], r: newPad.size / 2, entId: newPad.id, tht: newPad.drill > 0 };
+      end = { x: newPad.x, y: newPad.y, layers: ['k2'], r: newPad.size / 2, entId: newPad.id, tht: true };
     }
     if (!routeA) {
       if (newPad) commit(base);
@@ -874,7 +876,7 @@ export default function App() {
     const r = autoroute(base.entities, base.w, base.h, routeA, end, {
       trackW: defs.rtW, clearance: defs.rtClear, holeClear: defs.rtHoleClear, viaSize: defs.viaSize, viaDrill: defs.viaDrill,
       step: defs.rtStep, viaCost: defs.rtViaCost, topMul: defs.rtTopMul,
-      bottomEntry: defs.rtBottomEntry, allowTop: defs.rtAllowTop, angle: defs.rtAngle,
+      allowTop: defs.rtAllowTop, angle: defs.rtAngle,
     });
     if (!r.ok) {
       if (newPad) commit(base); // площадку всё равно оставляем
@@ -1425,7 +1427,7 @@ export default function App() {
         text: defs.text, mirror: defs.textMirror, layer: defs.textLayer,
       });
       else if (tool === 'comp' && placeLib) {
-        const um = placeLib.startsWith('u:') ? macros.find((x) => 'u:' + x.name === placeLib) : undefined;
+        const um = placeLib.startsWith('u:') ? macros.find((x) => 'u:' + macroKey(x) === placeLib) : undefined;
         ghost({
           id: 'g', kind: 'comp', lib: um ? '' : placeLib, name: '', ...at, rot: placeRot, side: placeSide,
           bl: um ? um.bl : compBL.get(placeLib) ?? [-2, -2, 2, 2],
@@ -1602,8 +1604,8 @@ export default function App() {
       picked={placeLib}
       onPick={(k) => { setPlaceLib(k); setToolRaw('comp'); }}
       macros={macros}
-      onPickUser={(n) => { setPlaceLib('u:' + n); setToolRaw('comp'); }}
-      onDelUser={(n) => { persistMacros((prev) => prev.filter((m) => m.name !== n)); if (placeLib === 'u:' + n) setPlaceLib(null); }}
+      onPickUser={(k) => { setPlaceLib('u:' + k); setToolRaw('comp'); }}
+      onDelUser={(k) => { persistMacros((prev) => prev.filter((m) => macroKey(m) !== k)); if (placeLib === 'u:' + k) setPlaceLib(null); }}
       onImportLmk={() => lmkFileRef.current?.click()}
       onImportZip={() => lmkZipRef.current?.click()}
     />

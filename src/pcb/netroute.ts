@@ -78,8 +78,8 @@ export function routeNets(doc: Doc, opts: RouteOpts, progress: (text: string) =>
     const result = empty();
     let entities = [...doc.entities];
     let comp = initial;
-    // Приоритет пайки снизу обязателен в пакетном режиме.
-    const o = { ...opts, bottomEntry: true, viaCost: Math.max(opts.viaCost, (doc.w + doc.h) * 2) };
+    // Переходы в пакетном режиме сильно «дороже» длины: сначала всё по K2.
+    const o = { ...opts, viaCost: Math.max(opts.viaCost, (doc.w + doc.h) * 2) };
     for (const allowTop of opts.allowTop ? [false, true] : [false]) {
       for (const net of order) {
         while (netMissing(net, comp) > 0) {

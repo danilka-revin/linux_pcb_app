@@ -173,7 +173,14 @@ input, select, textarea { user-select: text; }
 .txt::placeholder, .search input::placeholder { color: var(--muted); }
 .txt:focus, .search input:focus { outline: none; border-color: var(--accent); }
 .lib-list { flex: 1; overflow-y: auto; padding-bottom: 10px; }
-.cat { padding: 9px 12px 3px; font-size: 10px; color: var(--muted); text-transform: uppercase; letter-spacing: 1px; font-weight: 600; }
+.cat { padding: 9px 12px 3px; font-size: 10px; color: var(--muted); text-transform: uppercase; letter-spacing: 1px; font-weight: 600; cursor: pointer; user-select: none; display: flex; align-items: baseline; gap: 6px; }
+.cat:hover { color: var(--fg); }
+.cat .tw { width: 10px; flex: none; font-size: 9px; }
+.cat .nm { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.cat .cnt { flex: none; font-size: 10px; opacity: 0.7; }
+.cat .acts { flex: none; display: inline-flex; gap: 4px; }
+.fold.sub > .cat { padding-left: 26px; text-transform: none; letter-spacing: 0.3px; font-size: 11px; }
+.fold.sub .lib-item { padding-left: 34px; }
 .lib-item { padding: 6px 12px 6px 18px; cursor: pointer; border-left: 2px solid transparent; }
 .lib-item:hover { background: var(--surface-2); }
 .lib-item.picked { background: var(--hover); border-left-color: var(--accent); color: #fff; }

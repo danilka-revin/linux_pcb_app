@@ -4,7 +4,7 @@ import { expandDoc } from '../src/pcb/expand';
 import { copperShapes, shapeDist, type RouteOpts } from '../src/pcb/autoroute';
 import { copperComponents, netConflicts, netMissing, routeNets } from '../src/pcb/netroute';
 
-const O: RouteOpts = { trackW: 0.4, clearance: 0.3, holeClear: 0.6, viaSize: 1.4, viaDrill: 0.6, step: 0.5, viaCost: 5, topMul: 1.5, bottomEntry: true, allowTop: true, angle: '45' };
+const O: RouteOpts = { trackW: 0.4, clearance: 0.3, holeClear: 0.6, viaSize: 1.4, viaDrill: 0.6, step: 0.5, viaCost: 5, topMul: 1.5, allowTop: true, angle: '45' };
 const pad = (id: string, x: number, y: number): M.Pad => ({ id, kind: 'pad', x, y, size: 2, drill: 0.8, shape: 'round' });
 const net = (id: string, pads: string[]): M.Net => ({ id, name: id, pads });
 const applied = (d: M.Doc, ents: M.Entity[]) => ({ ...d, entities: [...d.entities, ...ents] });

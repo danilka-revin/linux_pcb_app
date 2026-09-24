@@ -5,9 +5,11 @@
 // направление движения, чтобы штрафовать изломы и получать «чистые» дорожки
 // под 45°/90°.
 //
-// Правило пайки: в отверстие выводной площадки (THT) дорожка ВСЕГДА входит
-// по нижнему слою K2 (сторона пайки). Дальше дорожка может свободно менять слой
-// через переходные отверстия.
+// Правило пайки: в исходные площадки-«пяточки», которые задаёт пользователь
+// (не переходы-«мостовые»), дорожка ВСЕГДА входит только по нижнему слою K2
+// (сторона пайки). К SMD-площадке дорожка подходит по слою самой площадки.
+// Переходные отверстия («мостовые») доступны с любого слоя. Дальше дорожка
+// может свободно менять слой через переходные отверстия.
 
 import type { Entity, Pt, Track, Via } from './model';
 import { uid } from './model';
@@ -24,7 +26,6 @@ export interface RouteOpts {
   step: number;        // шаг сетки трассировки, мм
   viaCost: number;     // «цена» одного перехода (в мм длины дорожки)
   topMul: number;      // множитель длины на верхнем слое (>1 — предпочитать низ)
-  bottomEntry: boolean; // в отверстия входить только по нижнему слою K2
   allowTop: boolean;   // разрешить верхний слой и переходы
   angle: '45' | '90';  // допустимые направления
   edge?: number;       // отступ от края платы, мм (по умолчанию = зазор)
@@ -33,10 +34,11 @@ export interface RouteOpts {
 /** Конечная точка связи */
 export interface RouteEnd {
   x: number; y: number;
-  layers: Cu[];        // на каких слоях допустимо подключение
+  layers: Cu[];        // на каких слоях допустимо подключение:
+                       // площадка — только K2, SMD — свой слой, переход — оба
   r: number;           // радиус собственной меди точки (площадки), мм
   entId?: string;      // id примитива (после развёртки), к которому подключаемся
-  tht?: boolean;       // выводная площадка с отверстием (пайка со стороны K2)
+  tht?: boolean;       // площадка-«пяточка» (вход только по K2 — сторона пайки)
 }
 
 export interface RouteResult {
@@ -242,18 +244,19 @@ export function pickEndpoint(entities: Entity[], p: Pt, tol: number): RouteEnd |
 
 export function endpointOf(e: Entity): RouteEnd | null {
   if (e.kind === 'pad') {
-    return { x: e.x, y: e.y, layers: ['k2', 'k1'], r: e.size / 2, entId: e.id, tht: e.drill > 0 };
+    // «Пяточка»: пайка со стороны K2 — вход только по нижнему слою (всегда, даже без отверстия)
+    return { x: e.x, y: e.y, layers: ['k2'], r: e.size / 2, entId: e.id, tht: true };
   }
+  // «Мостовая» (переход) — доступна с любого слоя
   if (e.kind === 'via') return { x: e.x, y: e.y, layers: ['k2', 'k1'], r: e.size / 2, entId: e.id };
   if (e.kind === 'smd') {
+    // К SMD — только по слою самой площадки
     const rot = ((Math.round(e.rot) % 180) + 180) % 180;
     const r = Math.min(rot === 90 ? e.h : e.w, rot === 90 ? e.w : e.h) / 2;
     return { x: e.x, y: e.y, layers: [e.layer], r, entId: e.id };
   }
   return null;
 }
-
-const isTht = (e: RouteEnd): boolean => !!e.tht;
 
 // ---------------------------------------------------------------------------
 // Двоичная куча (минимум по f)
@@ -391,10 +394,10 @@ function search(
     return x - bounds[0] >= need && bounds[2] - x >= need && y - bounds[1] >= need && bounds[3] - y >= need;
   };
 
-  const layersA = A.layers.filter((l) => o.allowTop || l === 'k2');
-  const layersB = B.layers.filter((l) => o.allowTop || l === 'k2');
-  const entA = isTht(A) && o.bottomEntry ? layersA.filter((l) => l === 'k2') : layersA;
-  const entB = isTht(B) && o.bottomEntry ? layersB.filter((l) => l === 'k2') : layersB;
+  // Слои входа: у площадки это всегда K2 (сторона пайки), у SMD — её слой,
+  // у перехода — оба (с учётом запрета верхнего слоя).
+  const entA = A.layers.filter((l) => o.allowTop || l === 'k2');
+  const entB = B.layers.filter((l) => o.allowTop || l === 'k2');
   if (!entA.length || !entB.length) return null;
 
   const mul = [o.allowTop ? o.topMul : Infinity, 1];
@@ -617,13 +620,10 @@ export function autoroute(
   if (B.entId) seeds.add(B.entId);
   const net = netOf(shapes, seeds);
   const obst = shapes.filter((s) => !net.has(s.id));
-  // пайка снизу: сверху к собственной выводной площадке дорожка подходить не должна
-  if (o.bottomEntry) {
-    const ownEnds = flat.filter((e) => net.has(e.id) && e.kind === 'pad').map(endpointOf).filter((e): e is RouteEnd => !!e);
-    for (const P of ownEnds) {
-      if (!P.tht || !P.entId) continue;
-      for (const s of shapes) if (s.id === P.entId) obst.push({ ...s, layers: ['k1'], id: s.id + '#top' });
-    }
+  // Пайка снизу: сверху к собственной площадке-«пяточке» дорожка подходить не должна
+  for (const e of flat) {
+    if (e.kind !== 'pad' || !net.has(e.id)) continue;
+    for (const s of shapes) if (s.id === e.id) obst.push({ ...s, layers: ['k1'], id: s.id + '#top' });
   }
   const netShapes = shapes.filter((s) => net.has(s.id) && (s.drilled || s.id === A.entId || s.id === B.entId));
 
