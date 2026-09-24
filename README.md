@@ -1,13 +1,13 @@
-# ЛайАут — редактор печатных плат для Linux и Windows
+# PSBees — редактор печатных плат для Linux и Windows
 
 Веб-приложение для черчения (разводки) печатных плат в духе **Sprint-Layout**.
-На Linux работает в браузере; на Windows — как обычная программа **`LayAut.exe`**
-с установщиком **`LayAut-Setup.exe`**. **Тёмная тема** по умолчанию.
+На Linux работает в браузере; на Windows — как обычная программа **`PSBees.exe`**
+с установщиком **`PSBees-Setup.exe`**. **Тёмная тема** по умолчанию.
 
 ## Запуск
 
-> **Windows:** скачайте установщик **`LayAut-Setup.exe`** (ярлык в «Пуск», запуск `LayAut.exe`)
-> или портативный **`LayAut-portable.exe`**. Пошагово: **[INSTALL_WINDOWS.md](INSTALL_WINDOWS.md)**.
+> **Windows:** скачайте установщик **`PSBees-Setup.exe`** (ярлык в «Пуск», запуск `PSBees.exe`)
+> или портативный **`PSBees-portable.exe`**. Пошагово: **[INSTALL_WINDOWS.md](INSTALL_WINDOWS.md)**.
 > Сборка установщика на машине с Windows: `npm run dist:win` → папка `release/`.
 > Чтобы GitHub сам собирал оба `.exe`, скопируйте `scripts/win/windows.yml` в `.github/workflows/windows.yml`.
 
@@ -27,12 +27,12 @@ bash install-ubuntu.sh   # сборка + установка + ярлык в м�
 ```
 
 После установки приложение запускается **одним кликом** на ярлык
-«ЛайАут — редактор печатных плат» в меню приложений Ubuntu
-или командой `linux-pcb-app` в терминале.
-Файлы ставятся в `~/.local/share/linux-pcb-app`, лаунчер — `~/.local/bin`,
+«PSBees — редактор печатных плат» в меню приложений Ubuntu
+или командой `psbees` в терминале.
+Файлы ставятся в `~/.local/share/psbees`, лаунчер — `~/.local/bin`,
 ярлык — `~/.local/share/applications`. Локальный сервер поднимается сам
 и повторно использует уже запущенный экземпляр (порт 8484; другой порт —
-`PCB_APP_PORT=8485 bash install-ubuntu.sh`, журнал — `~/.local/share/linux-pcb-app/server.log`).
+`PCB_APP_PORT=8485 bash install-ubuntu.sh`, журнал — `~/.local/share/psbees/server.log`).
 
 Обновление: `git pull && bash install-ubuntu.sh`.
 
@@ -132,8 +132,8 @@ SMD: 0805, 1206, SOT-23, SOIC-8/14/16.
 
 ## Технологии
 Vite + React + TypeScript, отрисовка на canvas 2D. Локальный статический сервер
-(`scripts/server.mjs`). На Windows интерфейс упакован в окно Electron (`LayAut.exe`)
-и NSIS-установщик (`LayAut-Setup.exe`).
+(`scripts/server.mjs`). На Windows интерфейс упакован в окно Electron (`PSBees.exe`)
+и NSIS-установщик (`PSBees-Setup.exe`).
 
 ## Горячие клавиши
 

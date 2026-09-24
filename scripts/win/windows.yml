@@ -1,7 +1,7 @@
 # Сборка Windows-установщика и портативного exe.
 # Чтобы GitHub Actions подхватил этот файл, скопируйте его в
 #   .github/workflows/windows.yml
-# Артефакты: LayAut-Setup-*.exe (NSIS) и LayAut-portable-*.exe.
+# Артефакты: PSBees-Setup-*.exe (NSIS) и PSBees-portable-*.exe.
 name: Windows
 
 on:
@@ -36,10 +36,10 @@ jobs:
       - name: Загрузить артефакты
         uses: actions/upload-artifact@v4
         with:
-          name: layaut-windows
+          name: psbees-windows
           path: |
-            release/LayAut-Setup*.exe
-            release/LayAut-portable*.exe
+            release/PSBees-Setup*.exe
+            release/PSBees-portable*.exe
           if-no-files-found: error
 
       - name: Релиз по тегу
@@ -47,6 +47,6 @@ jobs:
         uses: softprops/action-gh-release@v2
         with:
           files: |
-            release/LayAut-Setup*.exe
-            release/LayAut-portable*.exe
+            release/PSBees-Setup*.exe
+            release/PSBees-portable*.exe
           generate_release_notes: true

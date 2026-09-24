@@ -111,7 +111,7 @@ export function gerberLayer(doc: Doc, layer: LayerId, title: string): string {
   const N = (v: number): string => Math.round(v * 10000).toString();
   const out: string[] = [];
   out.push(`G04 ${title} *`);
-  out.push('G04 LayOut (linux_pcb_app) RS-274X *');
+  out.push('G04 PSBees (linux_pcb_app) RS-274X *');
   out.push('%FSLAX34Y34*%');
   out.push('%MOMM*%');
   out.push('%LPD*%');
@@ -163,7 +163,7 @@ export function excellon(doc: Doc): string {
   const tools = [...new Set(holes.map((h) => Math.round(h.d * 100) / 100))].sort((a, b) => a - b);
   const out: string[] = [];
   out.push('M48');
-  out.push('; LayOut Excellon drill file');
+  out.push('; PSBees Excellon drill file');
   out.push('METRIC,TZ');
   tools.forEach((d, i) => out.push(`T${i + 1}C${d.toFixed(3)}`));
   out.push('%');

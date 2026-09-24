@@ -1,6 +1,6 @@
 @echo off
-rem Быстрый запуск ЛайАут на Windows из исходников (нужен Node.js 18+).
-rem Для обычной установки скачайте LayAut-Setup.exe — см. INSTALL_WINDOWS.md.
+rem Быстрый запуск PSBees на Windows из исходников (нужен Node.js 18+).
+rem Для обычной установки скачайте PSBees-Setup.exe — см. INSTALL_WINDOWS.md.
 chcp 65001 >nul
 cd /d "%~dp0"
 
@@ -42,8 +42,8 @@ if not exist "dist\index.html" (
 
 if not defined PORT set PORT=8080
 echo ==^> сервер http://127.0.0.1:%PORT%
-start "LayAut-server" /min node scripts\server.mjs %PORT%
+start "PSBees-server" /min node scripts\server.mjs %PORT%
 ping -n 2 127.0.0.1 >nul
 start http://127.0.0.1:%PORT%
-echo Браузер должен открыться. Сервер работает в свёрнутом окне «ЛайАут».
+echo Браузер должен открыться. Сервер работает в свёрнутом окне «PSBees».
 echo Чтобы остановить — закройте это свёрнутое окно или Диспетчер задач → node.

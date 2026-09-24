@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-// Сборка Windows-приложения: LayAut.exe + установщик LayAut-Setup.exe.
+// Сборка Windows-приложения: PSBees.exe + установщик PSBees-Setup.exe.
 // Запуск: npm run dist:win
 //   • на Windows — NSIS-установщик и portable exe;
 //   • на Linux без wine electron-builder не соберёт NSIS. Используйте
@@ -44,4 +44,4 @@ if (process.platform !== 'win32') {
 }
 console.log('==> electron-builder', targets.join(' '));
 run('npx', ['electron-builder', ...targets]);
-console.log('==> готово. Файлы — в каталоге release/: LayAut-Setup-*.exe и LayAut-portable-*.exe');
+console.log('==> готово. Файлы — в каталоге release/: PSBees-Setup-*.exe и PSBees-portable-*.exe');
