@@ -7,7 +7,7 @@ import { autoroute, pickEndpoint, copperShapes, shapeDist, type RouteOpts } from
 const assert = (c: boolean, m: string): void => { if (!c) { console.error('FAIL:', m); process.exit(1); } };
 const O: RouteOpts = {
   trackW: 0.6, clearance: 0.3, viaSize: 1.6, viaDrill: 0.7, step: 0.635,
-  viaCost: 6, topMul: 1.6, bottomEntry: true, allowTop: true, angle: '45',
+  viaCost: 6, topMul: 1.6, allowTop: true, angle: '45',
 };
 
 function checkEntry(ents: M.Entity[], x: number, y: number, name: string): void {
@@ -159,3 +159,38 @@ console.log('AUTOROUTE GAP OK');
   console.log('6: test1.lay6 — проложено', ok, 'трасс без нарушений зазоров');
 }
 console.log('AUTOROUTE REAL OK');
+
+// 7) правило входа: площадка без отверстия — тоже только по K2;
+//    SMD — по слою самой площадки; переход («мостовая») — с любого слоя
+{
+  const doc = M.newBoard(60, 40);
+  doc.entities.push(
+    { id: 'a', kind: 'pad', x: 10, y: 12, shape: 'round', size: 1.9, drill: 0 },   // без отверстия
+    { id: 'b', kind: 'pad', x: 50, y: 12, shape: 'round', size: 1.9, drill: 0.9 },
+    { id: 't', kind: 'smd', x: 50, y: 30, w: 1.6, h: 2.2, rot: 0, layer: 'k1' },   // SMD на верху
+    { id: 'u', kind: 'smd', x: 10, y: 30, w: 1.6, h: 2.2, rot: 0, layer: 'k2' },   // SMD на низу
+  );
+  const pa = pickEndpoint(doc.entities, { x: 10, y: 12 }, 0.2)!;
+  assert(pa.layers.length === 1 && pa.layers[0] === 'k2', 'площадка: подключение только по K2');
+  const st = pickEndpoint(doc.entities, { x: 50, y: 30 }, 0.2)!;
+  const su = pickEndpoint(doc.entities, { x: 10, y: 30 }, 0.2)!;
+  assert(st.layers.length === 1 && st.layers[0] === 'k1', 'SMD на K1: подключение по K1');
+  assert(su.layers.length === 1 && su.layers[0] === 'k2', 'SMD на K2: подключение по K2');
+  const r1 = autoroute(doc.entities, doc.w, doc.h, pa, pickEndpoint(doc.entities, { x: 50, y: 12 }, 0.2)!, O);
+  assert(r1.ok && r1.drc === 0, 'площадки без отверстий: ' + r1.msg);
+  checkEntry(r1.ents, 10, 12, 'без отв. A'); checkEntry(r1.ents, 50, 12, 'без отв. B');
+  const r2 = autoroute(doc.entities, doc.w, doc.h, st, su, O);
+  assert(r2.ok && r2.drc === 0, 'SMD↔SMD: ' + r2.msg);
+  for (const e of r2.ents) if (e.kind === 'track') {
+    const touchesT = e.pts.some((p) => Math.hypot(p.x - 50, p.y - 30) < 1e-6);
+    const touchesU = e.pts.some((p) => Math.hypot(p.x - 10, p.y - 30) < 1e-6);
+    if (touchesT) assert(e.layer === 'k1', 'вход в SMD на K1 — не по K1');
+    if (touchesU) assert(e.layer === 'k2', 'вход в SMD на K2 — не по K2');
+  }
+  // переход как конечная точка: доступен с любого слоя
+  doc.entities.push({ id: 'v', kind: 'via', x: 30, y: 20, size: 1.8, drill: 0.8 });
+  const ev = pickEndpoint(doc.entities, { x: 30, y: 20 }, 0.2)!;
+  assert(ev.layers.includes('k1') && ev.layers.includes('k2') && !ev.tht, 'переход: оба слоя, без tht');
+  console.log('7:', r1.msg, '|', r2.msg);
+}
+console.log('AUTOROUTE ENTRY OK');

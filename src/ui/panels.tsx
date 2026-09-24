@@ -1,9 +1,10 @@
 // Боковые панели: слои, библиотека компонентов, свойства.
-import { useMemo, useState } from 'react';
+import { useMemo, useState, type ReactNode } from 'react';
 import {
   CATS, LIB,
 } from '../pcb/library';
 import type { UserMacro } from '../pcb/userlib';
+import { macroKey } from '../pcb/userlib';
 import { LAYERS, fmt, type Doc, type Entity, type LayerId, type PadShape } from '../pcb/model';
 import { NI, SI, TI } from './widgets';
 import { Ic } from './icons';
@@ -14,7 +15,7 @@ export type ToolId =
 
 export const TOOLS: { id: ToolId; name: string; icon: string; hint: string }[] = [
   { id: 'select', name: 'Выбор', icon: 'select', hint: 'ЛКМ — выбрать/двигать · рамка — выделить · Del — удалить · R — повернуть · M — другая сторона' },
-  { id: 'route', name: 'Автотрассировка', icon: 'route', hint: 'Две точки или группы соединений — выберите режим справа · вход в отверстия по низу (K2)' },
+  { id: 'route', name: 'Автотрассировка', icon: 'route', hint: 'Две точки или группы соединений — выберите режим справа · вход в площадки по низу (K2), к SMD — по слою площадки' },
   { id: 'probe', name: 'Тест цепи', icon: 'probe', hint: 'ЛКМ по дорожке, площадке, переходу или SMD — подсветить всю электрическую цепь · клик мимо — снять' },
   { id: 'track', name: 'Дорожка', icon: 'track', hint: 'ЛКМ — точки излома · ПКМ/Esc — закончить · L — сменить слой с переходом' },
   { id: 'pad', name: 'Площадка', icon: 'pad', hint: 'ЛКМ — поставить площадку (с обеих сторон, с металлизацией)' },
@@ -62,7 +63,6 @@ export interface Defs {
   rtStep: number;       // шаг сетки трассировки
   rtViaCost: number;    // цена перехода, мм
   rtTopMul: number;     // штраф длины на верхнем слое
-  rtBottomEntry: boolean;
   rtAllowTop: boolean;
   rtAngle: '45' | '90';
   rtAutoPad: boolean;   // в пустом месте ставить площадку (под джампер)
@@ -383,10 +383,10 @@ export function PropsPanel({
             options={[['0.25', '0.25 мм (точно, медленно)'], ['0.3175', '0.3175 мм (1/8″)'], ['0.5', '0.5 мм'], ['0.635', '0.635 мм (1/4″)'], ['1', '1 мм'], ['1.27', '1.27 мм (быстро)']]}
             on={(v) => setDefs({ rtStep: parseFloat(v) })} />
           <SI label="Углы" value={defs.rtAngle} options={[['45', '45°'], ['90', '90°']]} on={(v) => setDefs({ rtAngle: v as '45' | '90' })} />
-          <label className="chk" title="Сторона пайки — низ: к отверстию площадки дорожка всегда подходит по K2">
-            <input type="checkbox" disabled={routeGroups} checked={routeGroups || defs.rtBottomEntry} onChange={(e) => setDefs({ rtBottomEntry: e.target.checked })} />
-            В отверстия входить только по низу (K2)
-          </label>
+          <div className="hint" style={{ padding: '4px 2px' }}>
+            В площадки-«пяточки» вход только по K2 (сторона пайки), к SMD — по слою
+            самой площадки, к переходам — с любого слоя.
+          </div>
           <label className="chk" title="Разрешить уходить на верх (K1) через переходные отверстия">
             <input type="checkbox" checked={defs.rtAllowTop} onChange={(e) => setDefs({ rtAllowTop: e.target.checked })} />
             Разрешить верх (K1) и переходы
@@ -410,8 +410,9 @@ export function PropsPanel({
             <div className={'route-msg ' + (routeInfo.ok === false ? 'bad' : routeInfo.ok ? 'ok' : '')}>{routeInfo.msg}</div>
           )}
           <div className="hint">
-            Приоритет — нижний слой (сторона пайки). Верх используется только для обхода
-            препятствий, с переходами. Чужие дорожки обходятся с «зазором до дорожек»,
+            Приоритет — нижний слой (сторона пайки): в заданные площадки-«пяточки»
+            дорожка входит только по K2, к SMD — по слою самой площадки. Верх используется
+            только для обхода препятствий, с переходами. Чужие дорожки обходятся с «зазором до дорожек»,
             чужие площадки с отверстиями, переходы и крепёжные отверстия — с «зазором до отверстий»
             (считается от края медного пятачка / края отверстия). Оранжевый пунктир на плате —
             граница зоны вокруг отверстий, ближе которой дорожка не пройдёт.

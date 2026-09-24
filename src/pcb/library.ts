@@ -188,6 +188,86 @@ function tact(): LibEl[] {
   ];
 }
 
+/** Штыревая линейка: n выводов от (x0,y0) с шагом (dx,dy); первый вывод квадратный */
+function pinRun(x0: number, y0: number, n: number, dx = 0, dy = -2.54, drill = 1.0, size = 1.9): LibEl[] {
+  const els: LibEl[] = [];
+  for (let i = 0; i < n; i++)
+    els.push(P(x0 + dx * i, y0 + dy * i, drill, size, i === 0 ? 'square' : 'round'));
+  return els;
+}
+
+/**
+ * Модуль на двух штыревых рядах (Nano, DevKit, NodeMCU…):
+ * n выводов в ряду, расстояние между рядами rowSpan, контур bw×bh.
+ */
+function dualRow(n: number, rowSpan: number, bw: number, bh: number): LibEl[] {
+  const y0 = ((n - 1) * 2.54) / 2;
+  const right = pinRun(rowSpan / 2, y0, n, 0, -2.54).map((e) =>
+    e.kind === 'pad' ? { ...e, shape: 'round' as PadShape } : e);
+  return [...pinRun(-rowSpan / 2, y0, n, 0, -2.54), ...right, SR(-bw / 2, -bh / 2, bw, bh)];
+}
+
+/**
+ * Arduino Uno R3 (разъёмы шилда + 4 крепёжных отверстия).
+ * Разводка разъёмов — как в эталонных файлах Arduino (ось Y вверх, USB слева):
+ * верхний ряд 10+8 с зазором 0.16″ между блоками, нижний 8+6, ряды через 1.9″.
+ */
+function unoShield(): LibEl[] {
+  const x = (v: number) => v - 34.29; // относительно центра платы 68.58×53.34
+  const y = (v: number) => v - 26.67;
+  return [
+    // верхний ряд: SCL,SDA,AREF,GND,D13..D8 | D7..D0
+    ...pinRun(x(18.796), y(50.8), 10, 2.54, 0),
+    ...pinRun(x(45.72), y(50.8), 8, 2.54, 0),
+    // нижний ряд: NC,IOREF,RESET,3V3,5V,GND,GND,VIN | A0..A5
+    ...pinRun(x(30.48), y(2.54), 8, 2.54, 0),
+    ...pinRun(x(53.34), y(2.54), 6, 2.54, 0),
+    // крепёжные отверстия
+    { kind: 'hole', x: x(13.97), y: y(2.54), d: 3.2 },
+    { kind: 'hole', x: x(15.24), y: y(50.8), d: 3.2 },
+    { kind: 'hole', x: x(66.04), y: y(7.62), d: 3.2 },
+    { kind: 'hole', x: x(66.04), y: y(35.56), d: 3.2 },
+    SR(x(0), y(0), 68.58, 53.34),
+  ];
+}
+
+/** Arduino Pro Mini: два ряда по 12 + разъём FTDI 1×6 в торце */
+function proMini(): LibEl[] {
+  return [
+    ...pinRun(-7.62, 13.97, 12, 0, -2.54),
+    ...pinRun(7.62, 13.97, 12, 0, -2.54, 0.8, 1.7).map((e) =>
+      e.kind === 'pad' ? { ...e, shape: 'round' as PadShape } : e),
+    ...pinRun(-6.35, 15.24, 6, 2.54, 0, 0.8, 1.7),
+    SR(-8.89, -16.51, 17.78, 33.02),
+  ];
+}
+
+/** ESP-01 (ESP8266): гнездо 2×4 с шагом 2.54 в торце модуля 14.3×24.8 */
+function esp01(): LibEl[] {
+  const els: LibEl[] = [];
+  for (let r = 0; r < 2; r++)
+    for (let c = 0; c < 4; c++)
+      els.push(P(-3.81 + c * 2.54, -9.4 + r * 2.54, 0.9, 1.7, r + c === 0 ? 'square' : 'round'));
+  els.push(SR(-7.15, -12.4, 14.3, 24.8));
+  return els;
+}
+
+/**
+ * ESP32-WROOM-32 (модуль, SMD, упрощённо): 2×14 боковых + 10 нижних площадок
+ * (шаг 1.27, зазомбленные по краю корпуса 18×25.5) + зона антенны сверху.
+ */
+function wroom32(): LibEl[] {
+  const els: LibEl[] = [];
+  for (let i = 0; i < 14; i++) {
+    const yy = 8.255 - i * 1.27;
+    els.push(SM(-7.9, yy, 1.5, 0.9), SM(7.9, yy, 1.5, 0.9));
+  }
+  for (let i = 0; i < 10; i++) els.push(SM(-5.715 + i * 1.27, -11.6, 0.9, 1.5));
+  els.push(SR(-9, -12.75, 18, 25.5, 0.15));
+  els.push(SR(-9, 6.5, 18, 6.25, 0.15)); // зона антенны (без меди)
+  return els;
+}
+
 // --- сам каталог ---
 export const CATS = [
   'Резисторы и диоды',
@@ -196,6 +276,8 @@ export const CATS = [
   'SMD',
   'Транзисторы',
   'Разъёмы',
+  'Arduino',
+  'ESP32 / ESP8266',
   'Прочее',
 ];
 
@@ -254,6 +336,20 @@ export const LIB: Record<string, LibEntry> = Object.fromEntries([
   E('pls40', 'Штыри PLS-40', 'Разъёмы', () => pls(40)),
   E('klem2', 'Клеммник 5.08, 2 конт.', 'Разъёмы', () => klem(2)),
   E('klem3', 'Клеммник 5.08, 3 конт.', 'Разъёмы', () => klem(3)),
+
+  // Arduino
+  E('uno3', 'Arduino Uno R3: разъёмы + отверстия', 'Arduino', unoShield),
+  E('anano', 'Arduino Nano (2×15, 0.6″)', 'Arduino', () => dualRow(15, 15.24, 17.78, 43.18)),
+  E('apromini', 'Arduino Pro Mini (2×12 + FTDI)', 'Arduino', proMini),
+  E('amicro', 'Arduino Micro (2×17, 0.6″)', 'Arduino', () => dualRow(17, 15.24, 17.78, 48.26)),
+
+  // ESP32 / ESP8266
+  E('esp-devkitc', 'ESP32-DevKitC 38 пин (2×19, 0.9″)', 'ESP32 / ESP8266', () => dualRow(19, 22.86, 25.4, 48.26)),
+  E('esp-dev30', 'ESP32 DevKit V1 30 пин (2×15, 1″)', 'ESP32 / ESP8266', () => dualRow(15, 25.4, 28.5, 51.4)),
+  E('nodemcu', 'NodeMCU 30 пин (2×15, 0.9″)', 'ESP32 / ESP8266', () => dualRow(15, 22.86, 26.0, 49.0)),
+  E('d1mini', 'Wemos D1 mini / ESP32 mini (2×8)', 'ESP32 / ESP8266', () => dualRow(8, 22.86, 25.6, 34.2)),
+  E('esp01', 'ESP-01 (ESP8266, гнездо 2×4)', 'ESP32 / ESP8266', esp01),
+  E('wroom32', 'ESP32-WROOM-32 (модуль, SMD)', 'ESP32 / ESP8266', wroom32),
 
   // Прочее
   E('hc49', 'Кварц HC-49', 'Прочее', hc49),
