@@ -159,6 +159,11 @@ canvas { position: absolute; inset: 0; cursor: crosshair; display: block; }
 .status b { color: var(--text); font-weight: 600; font-variant-numeric: tabular-nums; }
 .status .sp { flex: 1; }
 .status .lg { display: flex; align-items: center; gap: 6px; }
+.status .probe-info {
+  color: #ffd23f; font-weight: 600;
+  background: rgba(255, 210, 63, .12);
+  padding: 1px 8px; border-radius: 8px;
+}
 .pulse {
   display: inline-block; width: 8px; height: 8px; border-radius: 50%;
   background: var(--ok); box-shadow: 0 0 0 4px rgba(125, 220, 82, .13);

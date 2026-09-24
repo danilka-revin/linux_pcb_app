@@ -117,10 +117,18 @@ npm run build --no-update-notifier
 
 say "Копирование в $APP_DIR"
 mkdir -p "$APP_DIR" "$BIN_DIR" "$DESKTOP_DIR"
-rm -rf "$APP_DIR/dist"
+rm -rf "$APP_DIR/dist" "$APP_DIR/dist.old"
 cp -r dist "$APP_DIR/dist"
 cp scripts/server.mjs "$APP_DIR/server.mjs"
+cp scripts/update.mjs "$APP_DIR/update.mjs"
 cp scripts/icon.svg "$APP_DIR/icon.svg"
+# данные для автообновления при запуске: откуда качать и какая версия установлена
+REPO_URL=$(git -C "$SRC_DIR" remote get-url origin 2>/dev/null || true)
+[ -n "$REPO_URL" ] || REPO_URL="https://github.com/danilka-revin/linux_pcb_app.git"
+printf '%s\n' "$REPO_URL" > "$APP_DIR/repo.txt"
+INST_SHA=$(node -e 'try{const v=JSON.parse(require("fs").readFileSync("dist/version.json","utf8"));process.stdout.write(v.sha||"")}catch{}' 2>/dev/null || true)
+[ -n "$INST_SHA" ] || INST_SHA=$(git -C "$SRC_DIR" rev-parse HEAD 2>/dev/null || true)
+[ -n "$INST_SHA" ] && printf '%s\n' "$INST_SHA" > "$APP_DIR/version.txt" || rm -f "$APP_DIR/version.txt"
 
 say "Создание запускающего скрипта $BIN_DIR/$APP_ID"
 {
@@ -151,10 +159,53 @@ alive() {
 }
 
 [ -n "$NODE" ] || fail "не найден Node.js. Установите его и повторите установку (INSTALL_UBUNTU.md, шаг 3)."
+PIDFILE="$APP_DIR/server.pid"
+
+notify() {
+  command -v notify-send >/dev/null && notify-send -i "$APP_DIR/icon.svg" "ЛайАут" "$1" 2>/dev/null || true
+}
+
+# ---------- автообновление из GitHub при запуске ----------
+# Проверяем последний комит ветки main. Если он новее установленного —
+# скачиваем, собираем и ставим новую версию (scripts/update.mjs).
+# Без сети или при ошибке — тихо остаёмся на текущей версии.
+NEED_RESTART=0
+if [ -f "$APP_DIR/update.mjs" ]; then
+  UPD_OUT=$("$NODE" "$APP_DIR/update.mjs" --app-dir "$APP_DIR" 2>&1)
+  RC=$?
+  { printf '%s\n' "$UPD_OUT"; } >> "$APP_DIR/update.log" 2>/dev/null || true
+  if [ "$RC" -eq 10 ]; then
+    NEED_RESTART=1
+    notify "Обновление установлено. Запуск новой версии…"
+  elif [ "$RC" -ne 0 ]; then
+    notify "Не удалось обновиться. Запускаем текущую версию."
+  fi
+fi
+
+stop_server() {
+  if [ -f "$PIDFILE" ]; then
+    OLD_PID=$(cat "$PIDFILE" 2>/dev/null || true)
+    [ -n "$OLD_PID" ] && kill "$OLD_PID" 2>/dev/null || true
+  elif command -v fuser >/dev/null; then
+    fuser -k "$PORT/tcp" 2>/dev/null || true
+  else
+    for P in $(pgrep -f "server\.mjs $PORT( |$)" 2>/dev/null || true); do
+      kill "$P" 2>/dev/null || true
+    done
+  fi
+  rm -f "$PIDFILE"
+  for _ in $(seq 1 40); do alive && sleep 0.25 || break; done
+}
+
+# новая версия собрана -> перезапускаем сервер, чтобы работал свежий код
+if [ "$NEED_RESTART" = "1" ] && alive; then
+  stop_server
+fi
 # уже запущен? -> просто открываем окно
 if ! alive; then
   nohup "$NODE" "$APP_DIR/server.mjs" "$PORT" "$APP_DIR/dist" >"$LOG" 2>&1 &
   PID=$!
+  echo "$PID" > "$PIDFILE"
   for _ in $(seq 1 40); do
     alive && break
     kill -0 "$PID" 2>/dev/null || break  # сервер завершился с ошибкой — ждать нечего

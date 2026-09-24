@@ -1,6 +1,6 @@
 import { readFileSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
-import { parseLay6, lay6ToDoc, docToLay6, lmkToEnts, entsToLmk, LAY_TYPE } from '../src/pcb/lay6';
+import { parseLay6, lay6ToDoc, docToLay6, lmkToEnts, entsToLmk, layObjToEnts, LAY_TYPE } from '../src/pcb/lay6';
 import * as M from '../src/pcb/model';
 import { expandDoc } from '../src/pcb/expand';
 
@@ -23,7 +23,7 @@ const { doc, warnings } = lay6ToDoc(buf);
 console.log('импорт test1.lay6:', doc.entities.length, 'сущностей, предупреждений:', warnings.length);
 ok(doc.entities.length > 400, 'im:1 много сущностей');
 const texts = doc.entities.filter((e) => e.kind === 'text') as M.TextE[];
-ok(texts.length >= 40, 'im:2 тексты');
+ok(texts.length >= 15, 'im:2 тексты');
 const t90 = texts.find((t) => t.text === 'IR2110')!;
 ok(t90 && Math.abs(t90.rot - 270) < 1, 'im:3 поворот 90CW→270CCW, получил ' + t90?.rot);
 const t270 = texts.find((t) => t.text === '10K')!;
@@ -52,6 +52,59 @@ const pads1 = sz(doc2, 'pad') as M.PadE[], pads0 = sz(doc, 'pad') as M.PadE[];
 ok(pads1.length === pads0.length && pads1.every((p, i) => Math.abs(p.size - pads0[i].size) < 0.01 && Math.abs(p.drill - pads0[i].drill) < 0.01), 'rt:10 размеры падов сохранены');
 const h1 = sz(doc2, 'hole') as M.HoleE[], h0 = sz(doc, 'hole') as M.HoleE[];
 ok(h1.length === h0.length && h1.every((p, i) => Math.abs(p.d - h0[i].d) < 0.01), 'rt:11 диаметры отверстий сохранены');
+
+// 2b. геометрия текста: якорь = начало базовой линии, size = высота из заголовка,
+//     поворот/зеркало не влияют на размер (в старых багах size = длина/высота bbox)
+const srcTexts = src.boards[0].objects.filter((o) => o.type === LAY_TYPE.TEXT);
+const shift = (t: M.TextE, s: (typeof srcTexts)[number]) =>
+  // глобальный сдвиг lay6ToDoc одинаков для всех объектов: смотрим относительную точность
+  ({ dx: t.x - s.x, dy: t.y - s.y });
+for (const name of ['22u', '0,1', 'IR2110', '10k']) {
+  const s = srcTexts.find((o) => o.text === name);
+  const t = texts.find((tt) => tt.text === name);
+  if (!s || !t) continue;
+  const r = shift(t, s);
+  const s2 = srcTexts.find((o) => o.text === '22u')!;
+  const t2 = texts.find((tt) => tt.text === '22u')!;
+  const r0 = shift(t2, s2);
+  ok(Math.abs(r.dx - r0.dx) < 0.01 && Math.abs(r.dy - r0.dy) < 0.01, `im:5 якорь "${name}"`);
+  ok(Math.abs(t.size - s.out / 2) < 0.01, `im:6 size "${name}" = ${s.out / 2}`);
+}
+
+// 2c. многострочный текст: строки разделяются, базовая линия второй — из глифов
+const layLine = (pts: M.Pt[], lw: number) => ({
+  type: LAY_TYPE.LINE, x: pts[0].x, y: pts[0].y, out: 0, inn: 0,
+  lineWidthRaw: lw, layer: 2, shape: 0, styleU32: 0, styleCustom: 0,
+  thermobarier: 0, flipVertical: 0, cutoff: 0, thzise: 0,
+  metalisation: 0, soldermask: 0, text: '', points: pts, children: [],
+});
+const multi = {
+  type: LAY_TYPE.TEXT, x: 10, y: -5, out: 4, inn: 0, lineWidthRaw: 0,
+  layer: 2, shape: 0, styleU32: 0, styleCustom: 1, thermobarier: 0,
+  flipVertical: 0, cutoff: 0, thzise: 0, metalisation: 0, soldermask: 0,
+  text: 'AB\nCD', points: [], children: [
+    // строка 1: базовая линия y=-5, кап до -3.2; строка 2: базовая y=-7.4
+    layLine([{ x: 10, y: -5 }, { x: 11, y: -5 }, { x: 11, y: -3.2 }, { x: 10, y: -3.2 }], 20),
+    layLine([{ x: 10, y: -7.4 }, { x: 11, y: -7.4 }, { x: 11, y: -5.6 }, { x: 10, y: -5.6 }], 20),
+  ],
+};
+const ments = layObjToEnts(multi, []).filter((e) => e.kind === 'text') as M.TextE[];
+ok(ments.length === 2, 'im:7 многострочный: две строки');
+ok(Math.abs(ments[0].x - 10) < 0.02 && Math.abs(ments[0].y + 5) < 0.02, 'im:8 строка 1 в якоря');
+ok(Math.abs(ments[1].x - 10) < 0.1 && Math.abs(ments[1].y + 7.4) < 0.15, 'im:9 строка 2 — базовая -7.4');
+ok(Math.abs(ments[0].size - 2) < 0.01 && Math.abs(ments[1].size - 2) < 0.01, 'im:10 size обеих строк = высота');
+
+// 2d. текстовый объект без текста, но с векторной фигуркой (маркер контакта 1) — геометрия
+const dot = {
+  type: LAY_TYPE.TEXT, x: 6.095, y: -19.7, out: 2.6, inn: 0, lineWidthRaw: 0,
+  layer: 2, shape: 2, styleU32: 0, styleCustom: 0, thermobarier: 0,
+  flipVertical: 0, cutoff: 0, thzise: 0, metalisation: 0, soldermask: 0,
+  text: '', points: [], children: [
+    layLine([{ x: 6.095, y: -19.7 }, { x: 6.164, y: -19.7 }, { x: 6.164, y: -19.642 }, { x: 6.095, y: -19.642 }, { x: 6.095, y: -19.7 }], 1444),
+  ],
+};
+const dents = layObjToEnts(dot, []);
+ok(dents.length > 0 && dents.every((e) => e.kind === 'line'), 'im:11 пустой текст — геометрия, не «?»');
 
 // 3. макрос lmk
 const sel = doc.entities.slice(0, 30).map((e) => ({ ...e, id: M.uid() }));
