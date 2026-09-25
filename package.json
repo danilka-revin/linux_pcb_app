@@ -13,6 +13,7 @@
   },
   "scripts": {
     "dev": "vite",
+    "icons": "python3 scripts/make-icons.py",
     "build": "tsc --noEmit && vite build && node scripts/write-version.mjs",
     "preview": "vite preview",
     "dist:win": "npm run build && node scripts/win/pack.mjs",
