@@ -87,12 +87,20 @@ button { font: inherit; color: inherit; background: none; border: none; }
 /* ---------- верхняя панель (шапка) ----------
    Всегда в одну строку: инструменты рисования вынесены в вертикальный док у
    холста, редкие действия — в выпадающие меню, на узких окнах бренд сжимается. */
+/*
+ * Одна строка, и ничего не теряется: если мест в окне меньше, чем нужно групп,
+ * сначала сжимается декоративный бренд (см. .brand), а когда и этого мало —
+ * строка листается по горизонтали. «overflow: hidden» раньше обрезал хвост
+ * (тема, «Обновить», меню «Интерфейс и справка») — кнопки выглядели удалёнными.
+ */
 .toolbar {
   display: flex; align-items: center; gap: 2px;
   padding: 5px 10px; background: var(--surface); border-bottom: 1px solid var(--line);
-  flex-wrap: nowrap; overflow: hidden; flex: none; min-height: 44px;
+  flex-wrap: nowrap; overflow-x: auto; overflow-y: hidden; flex: none; min-height: 44px;
+  scrollbar-width: none; /* полоса не нужна: строка листается колесом */
 }
-.brand { display: flex; align-items: center; gap: 8px; margin: 0 8px 0 0; color: var(--text); flex: none; }
+.toolbar::-webkit-scrollbar { display: none; height: 0; }
+.brand { display: flex; align-items: center; gap: 8px; margin: 0 8px 0 0; color: var(--text); flex: 0 1 auto; min-width: 0; }
 /* логотип без рамки и подложки — у самой картинки свои закругления */
 .brandmark {
   width: 32px; height: 32px; border-radius: 9px; flex: none;
@@ -101,15 +109,27 @@ button { font: inherit; color: inherit; background: none; border: none; }
 }
 .brandmark img { width: 32px; height: 32px; display: block; }
 .brand > span { display: block; }
-.brand b { font-weight: 700; font-size: 13px; letter-spacing: .07em; white-space: nowrap; }
+/* бренд — единственное, что в шапке можно сжать: кнопки важнее */
+.brandtext { min-width: 0; overflow: hidden; }
+.brand b { font-weight: 700; font-size: 13px; letter-spacing: .07em; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .brand em { color: var(--accent-text); font-style: normal; font-weight: 700; }
-.brand small { display: block; font-size: 7.5px; color: var(--muted); font-weight: 500; letter-spacing: 1px; margin-top: 1px; white-space: nowrap; }
+.brand small { display: block; font-size: 7.5px; color: var(--muted); font-weight: 500; letter-spacing: 1px; margin-top: 1px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 /* узкое окно: сначала прячем подпись бренда, потом и имя */
 @media (max-width: 1060px) { .brand small { display: none; } }
 @media (max-width: 920px) { .brandtext { display: none; } }
 
 .tb-group { display: flex; align-items: center; gap: 2px; padding: 0 6px; border-right: 1px solid var(--line); flex: none; }
 .tb-group:last-child { border-right: none; }
+/*
+ * Хвост шапки (тема, «Обновить», «⋯ Интерфейс и справка») прилипает к правому
+ * краю: если группа всё же не влезает в окно, она остаётся на виду, а не
+ * уезжает за край. В широком окне правило ничего не меняет.
+ */
+.toolbar > .tb-group:last-child {
+  position: sticky; right: 0; z-index: 2;
+  padding-left: 10px; background: var(--surface);
+  box-shadow: -12px 0 12px -12px rgb(0 0 0 / 55%);
+}
 .tb-btn {
   display: flex; align-items: center; justify-content: center;
   width: 30px; height: 28px; border-radius: 8px; color: var(--text-2); cursor: pointer; flex: none;

@@ -1,4 +1,5 @@
 // SSR-дым: приложение и панель деталей собираются на сервере без ошибок.
+import { readFileSync } from 'node:fs';
 import { createElement } from 'react';
 import { renderToString } from 'react-dom/server.browser';
 import App from '../src/App';
@@ -23,6 +24,25 @@ const must = [
 for (const m of must) if (!html.includes(m)) throw new Error(`не найдено в разметке: ${m}`);
 // на сервере localStorage нет — панель не должна падать и не должна выдумывать детали
 if (html.includes('gen-fail')) throw new Error('SSR: панель деталей ушла в состояние ошибки');
+
+// хвост шапки (тема, «Обновить», меню «Интерфейс и справка») живёт в последней
+// группе и первым упирается в край окна: следим, чтобы он не обрезался
+for (const m of ['Интерфейс и справка', 'upd-btn', 'Обновить']) {
+  if (!html.includes(m)) throw new Error(`шапка: не найдено «${m}» — группа «about» пропала из тулбара`);
+}
+{
+  const css = readFileSync('src/styles.css', 'utf8');
+  const tbAt = css.indexOf('.toolbar {');
+  const toolbar = css.slice(tbAt, css.indexOf('}', tbAt));
+  if (/overflow:\s*hidden/.test(toolbar) || !/overflow-x:\s*auto/.test(toolbar)) {
+    throw new Error('шапка: .toolbar снова режет себя overflow:hidden — кнопки в хвосте исчезнут');
+  }
+  const stick = css.slice(css.indexOf('.toolbar > .tb-group:last-child'), css.indexOf('}', css.indexOf('.toolbar > .tb-group:last-child')));
+  if (!/position:\s*sticky/.test(stick)) throw new Error('шапка: хвост тулбара не прилипает к правому краю');
+  const brAt = css.indexOf('.brand {');
+  const brand = css.slice(brAt, css.indexOf('}', brAt));
+  if (!/flex:\s*0 1 auto/.test(brand)) throw new Error('шапка: бренд не сжимается — при нехватке места пострадают кнопки');
+}
 
 // панель генератора с готовой деталью и деревом папок
 const gen = generate('dip 8 m3 подписи');
