@@ -116,6 +116,17 @@ export function expandComp(c: Comp): Entity[] {
         out.push({ kind: 'circle', id, x: p.x, y: p.y, r: el.r, w: el.w, layer: remapLayer(el.layer, c.side) as LayerId });
         break;
       }
+      case 'text': {
+        // подписи выводов макроса: при установке на нижнюю сторону зеркалим
+        const p = tf(el);
+        const rot = (((c.side === 'bottom' ? c.rot - el.rot : c.rot + el.rot) % 360) + 360) % 360;
+        out.push({
+          kind: 'text', id, x: p.x, y: p.y, size: el.size, th: el.th, rot,
+          text: el.text, mirror: c.side === 'bottom' ? !el.mirror : el.mirror,
+          layer: remapLayer(el.layer, c.side) as LayerId,
+        });
+        break;
+      }
     }
   });
   return out;
@@ -151,6 +162,16 @@ export function libBBox(els: LibEl[]): [number, number, number, number] {
       }
       case 'rect': grow(el.x, el.y); grow(el.x + el.w, el.y + el.h); break;
       case 'circle': grow(el.x - el.r, el.y - el.r); grow(el.x + el.r, el.y + el.r); break;
+      case 'text': {
+        // как в model.entBBox: (x,y) — левый нижний угол, ширина ≈ 0.8 × высота на символ
+        const w = el.text.length * el.size * 0.8;
+        const h = el.size;
+        const a = (el.rot * Math.PI) / 180, ca = Math.cos(a), sa = Math.sin(a);
+        for (const [xx, yy] of [[0, 0], [w, 0], [w, h], [0, h]]) {
+          grow(el.x + xx * ca - yy * sa, el.y + xx * sa + yy * ca);
+        }
+        break;
+      }
     }
   }
   if (x1 > x2) return [-2.54, -2.54, 2.54, 2.54];

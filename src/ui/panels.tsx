@@ -1,11 +1,15 @@
 // Боковые панели: слои, библиотека компонентов, свойства.
 import { useMemo, useState, type ReactNode } from 'react';
 import {
-  CATS, LIB,
+  CATS, LIB, type LibEntry,
 } from '../pcb/library';
+import { libBBox } from '../pcb/expand';
+import { LibPreview } from './libpreview';
 import type { UserMacro } from '../pcb/userlib';
 import { macroKey } from '../pcb/userlib';
 import { LAYERS, fmt, type Doc, type Entity, type LayerId, type PadShape } from '../pcb/model';
+import type { GridStyle, GridUnit } from '../pcb/grid';
+import { fmtGridFull, GRID_STEPS_MM, gridPresets, isPresetStep, gridSummary } from '../pcb/grid';
 import { NI, SI, TI } from './widgets';
 import { Ic } from './icons';
 
@@ -32,7 +36,18 @@ export const TOOLS: { id: ToolId; name: string; icon: string; hint: string }[] =
 ];
 
 export interface Defs {
-  grid: number;
+  // --- сетка (см. src/pcb/grid.ts) ---
+  grid: number;                 // шаг привязки, мм
+  gridUnit: GridUnit;           // единицы ввода/подписи шага
+  gridStyle: GridStyle;         // точки / линии / перекрестия / выкл.
+  gridDiv: number;              // подразбиение отображения (1/2/4/5/10)
+  gridMajor: number;            // «главные» линии каждые N узлов (1 — нет)
+  gridOx: number;               // начало сетки по X, мм
+  gridOy: number;               // начало сетки по Y, мм
+  snapOn: boolean;              // привязка к сетке
+  snapObj: boolean;             // привязка к объектам платы
+  snapPx: number;               // радиус привязки к объектам, px
+  showAxes: boolean;            // показывать оси координат
   angle: '45' | '90' | 'free';
   trackW: number;
   padShape: PadShape;
@@ -66,6 +81,26 @@ export interface Defs {
   rtAllowTop: boolean;
   rtAngle: '45' | '90';
   rtAutoPad: boolean;   // в пустом месте ставить площадку (под джампер)
+}
+
+/** Русская форма числа: plural(2, ['вывод', 'вывода', 'выводов']) */
+export const plural = (n: number, forms: [string, string, string]): string => {
+  const a = Math.abs(n) % 100, b = a % 10;
+  if (a > 10 && a < 20) return forms[2];
+  return b === 1 ? forms[0] : b >= 2 && b <= 4 ? forms[1] : forms[2];
+};
+
+/** Краткая характеристика макроса для панели библиотеки */
+export function libSpecText(e: LibEntry): string {
+  const sp = e.spec;
+  if (!sp) return '';
+  const parts: string[] = [];
+  if (sp.pins) parts.push(`${sp.pins} ${plural(sp.pins, ['вывод', 'вывода', 'выводов'])}`);
+  if (sp.smd) parts.push(`${sp.smd} SMD-${plural(sp.smd, ['площадка', 'площадки', 'площадок'])}`);
+  if (sp.holes) parts.push(`${sp.holes} ${plural(sp.holes, ['отверстие', 'отверстия', 'отверстий'])}`);
+  if (sp.pitch) parts.push(`шаг ${sp.pitch} мм`);
+  if (sp.labels) parts.push(`подписи: ${sp.labels}`);
+  return parts.join(' · ');
 }
 
 // ---------- панель слоёв ----------
@@ -126,6 +161,10 @@ export function LibraryPanel({
   onImportZip: () => void;
 }) {
   const [q, setQ] = useState('');
+  const pickedEntry = picked && !picked.startsWith('u:') ? LIB[picked] : undefined;
+  const pickedUser = picked && picked.startsWith('u:')
+    ? macros.find((m) => 'u:' + macroKey(m) === picked)
+    : undefined;
   const list = useMemo(() => {
     const items = Object.values(LIB);
     const f = q.trim().toLowerCase();
@@ -141,6 +180,31 @@ export function LibraryPanel({
       <div className="search">
         <input placeholder="Поиск компонента…" value={q} onChange={(e) => setQ(e.target.value)} />
       </div>
+      {pickedUser && (
+        <div className="lib-prev">
+          <LibPreview ents={pickedUser.ents} bl={pickedUser.bl} height={132} />
+          <div className="lib-prev-title">{macroKey(pickedUser)}</div>
+          <div className="lib-prev-spec">
+            мой макрос · {pickedUser.ents.length} {plural(pickedUser.ents.length, ['примитив', 'примитива', 'примитивов'])}
+          </div>
+          <div className="lib-prev-note">Нажмите на плату, чтобы поставить.</div>
+        </div>
+      )}
+      {pickedEntry && (
+        <div className="lib-prev">
+          <LibPreview
+            libKey={pickedEntry.key}
+            els={pickedEntry.build()}
+            height={132}
+          />
+          <div className="lib-prev-title">{pickedEntry.name}</div>
+          <div className="lib-prev-spec">{libSpecText(pickedEntry)}</div>
+          {pickedEntry.spec?.note && <div className="lib-prev-note">{pickedEntry.spec.note}</div>}
+          <div className="lib-prev-note">
+            Нажмите на плату, чтобы поставить. R — поворот, сторона — в тулбаре.
+          </div>
+        </div>
+      )}
       <div className="lib-list">
         <div>
           <div className="cat">
@@ -179,9 +243,10 @@ export function LibraryPanel({
                 key={e.key}
                 className={'lib-item' + (picked === e.key ? ' picked' : '')}
                 onClick={() => onPick(e.key)}
-                title="Нажмите и установите на плату кликом"
+                title={`${e.name}${libSpecText(e) ? '\n' + libSpecText(e) : ''}${e.spec?.note ? '\n' + e.spec.note : ''}\nНажмите и установите на плату кликом`}
               >
-                {e.name}
+                <span className="lib-name">{e.name}</span>
+                {libSpecText(e) && <span className="lib-spec">{libSpecText(e)}</span>}
               </div>
             ))}
           </div>
@@ -192,6 +257,12 @@ export function LibraryPanel({
 }
 
 // ---------- свойства ----------
+/** Шаги сетки трассировки: метрические и дюймовые, от точного к быстрому */
+const RT_STEP_OPTIONS: [string, string][] = gridPresets('mm').map((p): [string, string] => [
+  String(p.mm),
+  `${p.label}${p.mm <= 0.254 ? ' — точно, медленно' : p.mm >= 1.27 ? ' — быстро, грубо' : ''}`,
+]);
+
 const silkOpts: [string, string][] = [
   ['s1', 'Шелкография верх (Ш1)'],
   ['s2', 'Шелкография низ (Ш2)'],
@@ -380,8 +451,17 @@ export function PropsPanel({
           <NI label="Зазор до дорожек, мм" value={defs.rtClear} min={0.1} on={(v) => setDefs({ rtClear: v })} />
           <NI label="Зазор до отверстий, мм" value={defs.rtHoleClear} min={0.1} on={(v) => setDefs({ rtHoleClear: v })} />
           <SI label="Шаг сетки трассировки" value={String(defs.rtStep)}
-            options={[['0.25', '0.25 мм (точно, медленно)'], ['0.3175', '0.3175 мм (1/8″)'], ['0.5', '0.5 мм'], ['0.635', '0.635 мм (1/4″)'], ['1', '1 мм'], ['1.27', '1.27 мм (быстро)']]}
-            on={(v) => setDefs({ rtStep: parseFloat(v) })} />
+            options={isPresetStep(defs.rtStep)
+              ? RT_STEP_OPTIONS
+              : [['custom', `своё: ${defs.rtStep} мм`] as [string, string], ...RT_STEP_OPTIONS]}
+            on={(v) => { if (v !== 'custom') setDefs({ rtStep: parseFloat(v) }); }} />
+          <NI label="Своё значение шага, мм" value={defs.rtStep} min={0.02} step={0.01}
+            on={(v) => setDefs({ rtStep: Math.round(v * 1000) / 1000 })} />
+          <div className="sub" style={{ marginTop: 4 }}>
+            Список шагов тот же, что у сетки ({RT_STEP_OPTIONS.length} вариантов от 0.02 до 30 мм),
+            плюс любое своё значение. Чем мельче шаг, тем точнее трасса, но больше времени и памяти:
+            0.254 мм (10 mil) и меньше — «точно, медленно», 1.27 мм (50 mil) — «быстро, грубо».
+          </div>
           <SI label="Углы" value={defs.rtAngle} options={[['45', '45°'], ['90', '90°']]} on={(v) => setDefs({ rtAngle: v as '45' | '90' })} />
           <div className="hint" style={{ padding: '4px 2px' }}>
             В площадки-«пяточки» вход только по K2 (сторона пайки), к SMD — по слою
@@ -543,8 +623,11 @@ export function PropsPanel({
           <NI label="Ширина, мм" value={doc.w} min={5} on={(v) => setDocSize(v, doc.h)} />
           <NI label="Высота, мм" value={doc.h} min={5} on={(v) => setDocSize(doc.w, v)} />
           <div className="hint">
-            Клик — выбрать элемент, дважды — ничего :) Двигайте выделенное мышью или стрелками
-            (шаг = сетка). <span className="kbd">Ctrl+A</span> — выделить всё.
+            Клик — выбрать элемент. Двигайте выделенное мышью или стрелками
+            (шаг = сетка, <span className="kbd">Shift</span> ×10, <span className="kbd">Alt</span> ÷10).
+            <span className="kbd"> Ctrl+A</span> — выделить всё,
+            <span className="kbd"> G</span> — следующий шаг сетки,
+            <span className="kbd"> Ctrl+G</span> — настройки сетки.
           </div>
         </div>
       );

@@ -9,6 +9,10 @@ import {
 } from './pcb/userlib';
 import { LIB } from './pcb/library';
 import { CANVAS_UI, COLORS, drawDoc, drawEnt, renderPrint, setCanvasTheme, toWorld, type ThemeId, type View } from './pcb/render';
+import {
+  cycleGrid, drawGrid, fmtGridFull, gridSummary, nearestRef, normalizeGrid, snapPoint,
+  type GridConf,
+} from './pcb/grid';
 import { productionFiles } from './pcb/gerber';
 import { autoroute, clearanceAt, pickEndpoint, endpointOf, type RouteEnd } from './pcb/autoroute';
 import { copperComponents, type NetRouteResult } from './pcb/netroute';
@@ -23,6 +27,7 @@ import {
 import {
   AboutDialog, ColorsDialog, ExportDialog, NewBoardDialog, PanelizeDialog, type ExportPngOpts,
 } from './ui/dialogs';
+import { GridDialog, GridQuickPanel, GridToolbar, gridOf } from './ui/grid';
 import { applyCustomColors, loadCustomColors, saveCustomColors, type CustomColors } from './ui/palette';
 import { UiBuilderDialog, useUpdater } from './ui/updater';
 
@@ -143,6 +148,16 @@ const clampW = (w: number) => Math.max(160, Math.min(650, Math.round(w) || 250))
 
 const DEFAULT_DEFS: Defs = {
   grid: 1.27,
+  gridUnit: 'mm',
+  gridStyle: 'dots',
+  gridDiv: 1,
+  gridMajor: 5,
+  gridOx: 0,
+  gridOy: 0,
+  snapOn: true,
+  snapObj: false,
+  snapPx: 10,
+  showAxes: true,
   angle: '45',
   trackW: 0.6,
   padShape: 'round',
@@ -248,7 +263,7 @@ export default function App() {
   }, [doc, tool, routeMode]);
   const [routeA, setRouteA] = useState<RouteEnd | null>(null);
   const [routeMsg, setRouteMsg] = useState<{ msg: string; ok: boolean | null }>({ msg: '', ok: null });
-  const [dialog, setDialog] = useState<'new' | 'export' | 'panelize' | 'about' | 'inventory' | 'uib' | 'colors' | null>(null);
+  const [dialog, setDialog] = useState<'new' | 'export' | 'panelize' | 'about' | 'inventory' | 'uib' | 'colors' | 'grid' | null>(null);
   const [uiConf, setUiConf] = useState<UiState>(loadUi);
   // сохраняем конфигурацию интерфейса сразу (не autosave через таймаут)
   const persistUi = useCallback((c: UiState) => {
@@ -373,10 +388,27 @@ export default function App() {
     if (!fitted.current && size.w > 100) { fitted.current = true; fit(); }
   }, [size, fit]);
 
-  // ---------------- вспомогательные ----------------
-  const snapPt = useCallback((w: M.Pt, fine: boolean): M.Pt => (
-    fine ? w : { x: M.snap(w.x, defs.grid), y: M.snap(w.y, defs.grid) }
-  ), [defs.grid]);
+  // ---------------- сетка и привязка ----------------
+  // настройки сетки живут в общих настройках инструментов (defs), см. ui/grid.tsx
+  const gridConf: GridConf = useMemo(() => gridOf(defs), [
+    defs.grid, defs.gridUnit, defs.gridStyle, defs.gridDiv, defs.gridMajor,
+    defs.gridOx, defs.gridOy, defs.snapOn, defs.snapObj, defs.snapPx,
+  ]);
+  // точки, к которым «прилипает» курсор при привязке к объектам
+  const snapRefs = useMemo(
+    () => (defs.snapOn && defs.snapObj ? expandDoc(doc.entities) : []),
+    [defs.snapOn, defs.snapObj, doc.entities],
+  );
+
+  const snapPt = useCallback((w: M.Pt, fine: boolean): M.Pt => {
+    if (fine) return w;                       // Alt — временно без привязки
+    if (!defs.snapOn) return w;
+    if (snapRefs.length) {
+      const hit = nearestRef(snapRefs, w, defs.snapPx / Math.max(view.s, 0.01));
+      if (hit) return hit;
+    }
+    return snapPoint(w, gridConf);
+  }, [defs.snapOn, defs.snapPx, snapRefs, gridConf, view.s]);
 
   const constrain = useCallback((from: M.Pt, to: M.Pt): M.Pt => {
     if (defs.angle === 'free') return to;
@@ -1123,9 +1155,12 @@ export default function App() {
         case 'KeyV': startPaste(); e.preventDefault(); return;
         case 'KeyD': duplicateSel(); e.preventDefault(); return;
         case 'KeyE': setDialog('export'); e.preventDefault(); return;
+        case 'KeyG': setDialog('grid'); e.preventDefault(); return;
         default: return;
       }
     }
+    // сдвиг стрелками: шаг сетки, Shift — в 10 раз больше, Alt — в 10 раз меньше
+    const stepNudge = defs.grid * (e.shiftKey ? 10 : e.altKey ? 0.1 : 1);
     switch (e.code) {
       case 'Escape': finishOrCancel(); break;
       case 'Delete': case 'Backspace': deleteSel(); break;
@@ -1160,16 +1195,24 @@ export default function App() {
       case 'Digit8': setTool('ruler'); break;
       case 'Digit9': setTool('route'); break;
       case 'Digit0': setTool('probe'); break;
-      case 'ArrowLeft': nudge(-defs.grid, 0); e.preventDefault(); break;
-      case 'ArrowRight': nudge(defs.grid, 0); e.preventDefault(); break;
-      case 'ArrowUp': nudge(0, defs.grid); e.preventDefault(); break;
-      case 'ArrowDown': nudge(0, -defs.grid); e.preventDefault(); break;
+      case 'ArrowLeft': nudge(-stepNudge, 0); e.preventDefault(); break;
+      case 'ArrowRight': nudge(stepNudge, 0); e.preventDefault(); break;
+      case 'ArrowUp': nudge(0, stepNudge); e.preventDefault(); break;
+      case 'ArrowDown': nudge(0, -stepNudge); e.preventDefault(); break;
+      // сетка: G — следующий шаг, Shift+G — привязка, H — предыдущий шаг
+      case 'KeyG':
+        if (e.ctrlKey || e.metaKey) setDialog('grid');
+        else if (e.shiftKey) setDefs({ snapOn: !defs.snapOn });
+        else setDefs({ grid: cycleGrid(defs.grid, 1), gridUnit: defs.gridUnit });
+        e.preventDefault();
+        break;
+      case 'KeyH': setDefs({ grid: cycleGrid(defs.grid, -1) }); e.preventDefault(); break;
       default: break;
     }
   }, [
     dialog, doc, undo, redo, saveFile, copySel, startPaste, duplicateSel, finishOrCancel,
     deleteSel, placeLib, rotateSel, mirrorSel, draft, activeCu, mouse.wx, mouse.wy, fit,
-    zoomAt, size, nudge, defs.grid, setTool,
+    zoomAt, size, nudge, defs.grid, defs.gridUnit, defs.snapOn, setDefs, setTool,
   ]);
 
   const keyRef = useRef(keyHandler);
@@ -1202,30 +1245,21 @@ export default function App() {
     ctx.fillStyle = COLORS.bg;
     ctx.fillRect(0, 0, size.w, size.h);
 
-    // сетка
-    let step = defs.grid;
-    while (step * view.s < 7) step *= 2;
-    const wTL = toWorld(view, 0, 0);
-    const wBR = toWorld(view, size.w, size.h);
-    const gx1 = Math.min(wTL.x, wBR.x), gx2 = Math.max(wTL.x, wBR.x);
-    const gy1 = Math.min(wTL.y, wBR.y), gy2 = Math.max(wTL.y, wBR.y);
-    ctx.fillStyle = COLORS.grid;
-    for (let x = Math.floor(gx1 / step) * step; x <= gx2; x += step) {
-      const sxpx = view.ox + x * view.s * (view.mir ? -1 : 1);
-      for (let y = Math.floor(gy1 / step) * step; y <= gy2; y += step) {
-        const sypx = view.oy - y * view.s;
-        ctx.fillRect(sxpx - 0.65, sypx - 0.65, 1.3, 1.3);
-      }
-    }
+    // сетка (шаг, вид, подразбиение, «главные» линии и начало — из настроек)
+    drawGrid(ctx, gridConf, view, size.w, size.h, {
+      minor: COLORS.grid, major: COLORS.gridMajor, origin: COLORS.gridOrigin,
+    });
 
     // оси начала координат
-    ctx.strokeStyle = COLORS.axes;
-    ctx.lineWidth = 1;
-    const o = toPx(0, 0);
-    ctx.beginPath();
-    if (o.px >= 0 && o.px <= size.w) { ctx.moveTo(o.px + 0.5, 0); ctx.lineTo(o.px + 0.5, size.h); }
-    if (o.py >= 0 && o.py <= size.h) { ctx.moveTo(0, o.py + 0.5); ctx.lineTo(size.w, o.py + 0.5); }
-    ctx.stroke();
+    if (defs.showAxes) {
+      ctx.strokeStyle = COLORS.axes;
+      ctx.lineWidth = 1;
+      const o = toPx(0, 0);
+      ctx.beginPath();
+      if (o.px >= 0 && o.px <= size.w) { ctx.moveTo(o.px + 0.5, 0); ctx.lineTo(o.px + 0.5, size.h); }
+      if (o.py >= 0 && o.py <= size.h) { ctx.moveTo(0, o.py + 0.5); ctx.lineTo(size.w, o.py + 0.5); }
+      ctx.stroke();
+    }
 
     // документ
     drawDoc(ctx, view, doc, hidden);
@@ -1532,22 +1566,10 @@ export default function App() {
     ),
     grid: (
       <div className="tb-group" key="grid">
-        <select
-          className="tb-sel" title="Шаг сетки, мм"
-          value={String(defs.grid)}
-          onChange={(e) => setDefs({ grid: parseFloat(e.target.value) })}
-        >
-          {[0.25, 0.5, 0.635, 1.0, 1.27, 2.54, 5.08].map((g) => (
-            <option key={g} value={g}>Сетка {g}</option>
-          ))}
-        </select>
-        <button
-          className="tb-btn"
-          title={`Углы прокладки: ${defs.angle === '45' ? '45°' : defs.angle === '90' ? '90°' : 'свободно'}`}
-          onClick={() => setDefs({ angle: defs.angle === '45' ? '90' : defs.angle === '90' ? 'free' : '45' })}
-        >
-          <Ic n={defs.angle === '45' ? 'angle45' : defs.angle === '90' ? 'angle90' : 'anglefree'} />
-        </button>
+        <GridToolbar
+          defs={defs} setDefs={setDefs} scale={view.s}
+          onOpen={() => setDialog('grid')}
+        />
       </div>
     ),
     layer: (
@@ -1667,6 +1689,10 @@ export default function App() {
           routeGroups={routeMode === 'nets'}
           routeInfo={{ ...routeMsg, msg: routeMode === 'nets' ? '' : routeMsg.msg, picking: routeA ? 'b' : 'a' }}
         />
+        <GridQuickPanel
+          defs={defs} setDefs={setDefs} scale={view.s}
+          onOpen={() => setDialog('grid')}
+        />
       </div>
     </div>
   );
@@ -1731,7 +1757,14 @@ export default function App() {
       <div className="status">
         <span>X <b>{M.fmt(mouse.wx)}</b> мм <b>{M.fmt(M.mm2mil(mouse.wx), 1)}</b> mil</span>
         <span>Y <b>{M.fmt(mouse.wy)}</b> мм <b>{M.fmt(M.mm2mil(mouse.wy), 1)}</b> mil</span>
-        <span>Сетка: <b>{defs.grid}</b></span>
+        <span title={gridSummary(gridConf, view.s)}>
+          Сетка: <b>{fmtGridFull(defs.grid)}</b>
+          {' · '}{defs.gridStyle === 'dots' ? 'точки' : defs.gridStyle === 'lines' ? 'линии' : defs.gridStyle === 'cross' ? 'перекрестия' : 'выкл.'}
+          {defs.gridDiv > 1 ? ` ÷${defs.gridDiv}` : ''}
+          {defs.gridMajor > 1 ? ` · главные ×${defs.gridMajor}` : ''}
+          {' · '}
+          <b className={defs.snapOn ? '' : 'off'}>{defs.snapOn ? (defs.snapObj ? 'привязка + объекты' : 'привязка') : 'без привязки'}</b>
+        </span>
         <span>Масштаб: <b>{Math.round(view.s * 12.5)}%</b></span>
         <span className="lg">
           <span className="sw" style={{ background: activeCu === 'k1' ? COLORS.k1 : COLORS.k2 }} />
@@ -1786,6 +1819,12 @@ export default function App() {
           onChange={(next) => persistUi({ ...uiConf, ids: next.ids, hidden: next.hidden })}
           onSides={(next) => persistUi({ ...uiConf, sides: next })}
           onClose={() => setDialog(null)}
+        />
+      )}
+      {dialog === 'grid' && (
+        <GridDialog
+          defs={defs} setDefs={setDefs} onClose={() => setDialog(null)}
+          cursor={{ x: mouse.wx, y: mouse.wy }}
         />
       )}
       {dialog === 'about' && <AboutDialog version={appVer} onClose={() => setDialog(null)} />}
