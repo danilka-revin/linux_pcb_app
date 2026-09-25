@@ -1,7 +1,7 @@
 // Тест автотрассировки: вход в THT-площадки только по нижнему слою K2.
 import * as M from '../src/pcb/model';
-import { LIB } from '../src/pcb/library';
-import { libBBox, expandDoc } from '../src/pcb/expand';
+import { generate } from '../src/pcb/gen';
+import { expandDoc, libElsToEnts } from '../src/pcb/expand';
 import { autoroute, pickEndpoint, copperShapes, shapeDist, type RouteOpts } from '../src/pcb/autoroute';
 
 const assert = (c: boolean, m: string): void => { if (!c) { console.error('FAIL:', m); process.exit(1); } };
@@ -15,6 +15,12 @@ function checkEntry(ents: M.Entity[], x: number, y: number, name: string): void 
   const touching = ents.filter((e) => e.kind === 'track' && e.pts.some((p) => Math.hypot(p.x - x, p.y - y) < 1e-6)) as M.Track[];
   assert(touching.length > 0, name + ': к площадке не подведена дорожка');
   assert(touching.every((t) => t.layer === 'k2'), name + ': вход в отверстие не по K2');
+}
+
+/** Корпус из строки генератора — так его кладёт приложение */
+function dip(id: string, x: number, y: number): M.Comp {
+  const g = generate('dip 8');
+  return { id, kind: 'comp', lib: '', name: g.title ?? 'DIP-8', x, y, rot: 0, side: 'top', bl: g.bl, ents: libElsToEnts(g.els) };
 }
 
 // 1) простая связь двух площадок
@@ -59,8 +65,7 @@ function checkEntry(ents: M.Entity[], x: number, y: number, name: string): void 
 {
   const doc = M.newBoard(80, 50);
   doc.entities.push(
-    { id: 'u1', kind: 'comp', lib: 'dip8', name: 'DIP-8', x: 40, y: 25, rot: 0, side: 'top', bl: libBBox(LIB.dip8.build()) },
-    { id: 'u2', kind: 'comp', lib: 'dip8', name: 'DIP-8', x: 20, y: 25, rot: 0, side: 'top', bl: libBBox(LIB.dip8.build()) },
+    dip('u1', 40, 25), dip('u2', 20, 25),
   );
   const pads = expandDoc(doc.entities).filter((e) => e.kind === 'pad') as M.Pad[];
   const p1 = pads.find((p) => p.id.startsWith('u2'))!;

@@ -1,7 +1,7 @@
-// Дымовой тест чистой логики (модель, библиотека, развёртка, gerber, zip).
+// Дымовой тест чистой логики (модель, генератор деталей, развёртка, gerber, zip).
 import * as M from '../src/pcb/model';
-import { LIB } from '../src/pcb/library';
-import { expandComp, expandDoc, libBBox } from '../src/pcb/expand';
+import { EXAMPLES, generate } from '../src/pcb/gen';
+import { expandComp, expandDoc, libElsToEnts } from '../src/pcb/expand';
 import { gerberLayer, excellon, productionFiles } from '../src/pcb/gerber';
 import { makeZip, unzip } from '../src/pcb/zip';
 import { lmkToEnts } from '../src/pcb/lay6';
@@ -10,6 +10,13 @@ import { textPolylines } from '../src/pcb/strokefont';
 import { zOrdered } from '../src/pcb/render';
 
 const assert = (c: boolean, m: string): void => { if (!c) { console.error('FAIL:', m); process.exit(1); } };
+
+/** Деталь из строки генератора — как её вставляет приложение (ents внутри comp) */
+function compEnt(id: string, query: string, x: number, y: number, rot: number, side: M.Side): Omit<M.Comp, 'id'> {
+  const g = generate(query);
+  assert(g.ok, `генератор: «${query}» не собралось`);
+  return { kind: 'comp', lib: '', name: g.title ?? query, x, y, rot, side, bl: g.bl, ents: libElsToEnts(g.els) };
+}
 
 const doc = M.newBoard(80, 60, 'Тест');
 doc.entities.push(
@@ -23,13 +30,16 @@ doc.entities.push(
   { id: 'pg1', kind: 'poly', pts: [{ x: 50, y: 5 }, { x: 70, y: 5 }, { x: 70, y: 25 }, { x: 55, y: 25 }], layer: 'k2' },
   { id: 'c1', kind: 'circle', x: 60, y: 45, r: 6, w: 0.3, layer: 'outline' },
   { id: 'r1', kind: 'rect', x: 1, y: 1, w: 78, h: 58, filled: false, th: 0.2, layer: 'outline' },
-  { id: 'k1comp', kind: 'comp', lib: 'dip8', name: 'DIP-8', x: 40, y: 30, rot: 90, side: 'bottom', bl: libBBox(LIB.dip8.build()) },
-  { id: 'k2comp', kind: 'comp', lib: 'soic8', name: 'SOIC-8', x: 60, y: 15, rot: 0, side: 'top', bl: libBBox(LIB.soic8.build()) },
-  { id: 'k3comp', kind: 'comp', lib: 'to92', name: 'TO-92', x: 15, y: 40, rot: 270, side: 'top', bl: libBBox(LIB.to92.build()) },
+  { id: 'k1comp', ...compEnt('k1comp', 'dip 8', 40, 30, 90, 'bottom') },
+  { id: 'k2comp', ...compEnt('k2comp', 'soic 8 шаг 1.27', 60, 15, 0, 'top') },
+  { id: 'k3comp', ...compEnt('k3comp', 'to-92', 15, 40, 270, 'top') },
 );
 
-// все библиотечные макросы строятся без ошибок
-for (const e of Object.values(LIB)) libBBox(e.build());
+// любая деталь генератора разворачивается в примитивы платы
+for (const ex of EXAMPLES) {
+  const g = generate(ex.query);
+  assert(g.ok && g.els.length > 0, `генератор: «${ex.query}» не собралось`);
+}
 
 const flat = expandDoc(doc.entities);
 console.log('Примитивов после развёртки:', flat.length);
@@ -50,7 +60,7 @@ console.log('Штрих шрифта (сегментов):', strokes.length);
 // hit-тесты (entities[0] — контур платы, [1] — дорожка, [2] — площадка)
 console.log('hit pad:', M.hitEnt(doc.entities[2] as M.Entity, { x: 10.2, y: 30.1 }, 0.1));
 console.log('hit track:', M.hitEnt(doc.entities[1] as M.Entity, { x: 12, y: 5.2 }, 0.1));
-// компонент со встроенным макросом (из .lmk): развёртка с поворотом и переносом на низ
+// компонент со встроенными примитивами: развёртка с поворотом и переносом на низ
 {
   const mc: M.Comp = {
     id: 'mc1', kind: 'comp', lib: '', name: 'Макрос', x: 10, y: 10, rot: 90, side: 'bottom',

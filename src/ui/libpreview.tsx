@@ -4,22 +4,20 @@
 // LibPreviewDialog — тот же предпросмотр, но всплывающим окном поверх платы:
 // ничего не перекрывается холстом, а «Добавить на плату» ставит макрос в центр
 // вида — целиться курсором в список не нужно.
-import { useEffect, useRef } from 'react';
+import { useEffect, useMemo, useRef } from 'react';
 import { COLORS, drawDoc, type View } from '../pcb/render';
 import { drawGrid, type GridConf } from '../pcb/grid';
-import { libBBox } from '../pcb/expand';
+import { libBBox, libElsToEnts } from '../pcb/expand';
 import { fmt, type Comp, type Doc } from '../pcb/model';
-import type { LibEl } from '../pcb/library';
+import type { LibEl } from '../pcb/footprint';
 import { Modal, SI } from './widgets';
 
 export interface LibPreviewProps {
-  /** макрос библиотеки (элементы строятся на месте) */
+  /** примитивы генератора (LibEl) — конвертируются на месте */
   els?: LibEl[];
-  /** или сохранённый макрос пользователя */
+  /** или готовые сущности сохранённой детали */
   ents?: Comp['ents'];
   bl?: [number, number, number, number];
-  /** ключ макроса библиотеки: компонент разворачивается через LIB */
-  libKey?: string;
   height?: number;
   /** мм вокруг макроса */
   pad?: number;
@@ -63,9 +61,11 @@ function niceBar(scale: number, maxPx: number): number | null {
 }
 
 export function LibPreview({
-  els, ents, bl, libKey, height = 140, pad = 1.5, rot = 0, side = 'top',
+  els, ents, bl, height = 140, pad = 1.5, rot = 0, side = 'top',
 }: LibPreviewProps) {
   const ref = useRef<HTMLCanvasElement>(null);
+  // примитивы генератора и сохранённая деталь рисуются одинаково: через ents
+  const srcEnts = useMemo(() => (ents ?? (els ? libElsToEnts(els) : undefined)), [ents, els]);
 
   useEffect(() => {
     const cv = ref.current;
@@ -85,10 +85,10 @@ export function LibPreview({
 
       const localBL = bl ?? (els ? libBBox(els) : [-1, -1, 1, 1]);
       const comp: Comp = {
-        id: 'preview', kind: 'comp', lib: libKey ?? '', name: '',
+        id: 'preview', kind: 'comp', lib: '', name: '',
         x: 0, y: 0, rot, side,
         bl: localBL,
-        ...(ents ? { ents } : {}),
+        ...(srcEnts ? { ents: srcEnts } : {}),
       };
       // габарит — уже с учётом поворота и стороны: рамка, кадрирование и
       // подпись размеров совпадают с тем, что встанет на плату
@@ -175,7 +175,7 @@ export function LibPreview({
       ro.disconnect();
       window.removeEventListener('psbees:theme', draw);
     };
-  }, [els, ents, bl, libKey, height, pad, rot, side]);
+  }, [srcEnts, bl, height, pad, rot, side]);
 
   return <canvas ref={ref} className="lib-preview" style={{ width: '100%', height }} />;
 }

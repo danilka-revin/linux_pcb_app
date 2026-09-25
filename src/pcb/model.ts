@@ -104,16 +104,16 @@ export interface Poly extends Base {
   layer: 'k1' | 'k2';
 }
 
-/** Компонент из библиотеки (экземпляр макроса) */
+/** Компонент: деталь, поставленная на плату со своими примитивами */
 export interface Comp extends Base {
   kind: 'comp';
-  lib: string; // пусто, если заданы встроенные ents (пользовательский макрос)
+  lib: string; // служебное: пустое поле у деталей из генератора (см. ents)
   name: string;
   x: number; y: number;
   rot: number;
   side: 'top' | 'bottom';
   bl: [number, number, number, number]; // локальный bbox
-  ents?: Entity[]; // встроенные примитивы (макрос .lmk, вставленный из файла)
+  ents?: Entity[]; // примитивы детали (генератор, своя библиотека или .lmk-импорт)
 }
 
 export type Entity =

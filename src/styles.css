@@ -607,3 +607,62 @@ canvas { display: block; }
 .lib-item { display: block; }
 .lib-item .lib-spec { display: block; font-size: 10px; opacity: .5; }
 .lib-item.picked .lib-spec { opacity: .7; }
+
+/* ---------------- генератор деталей + личная библиотека (папки) ---------------- */
+.pane-scroll { flex: 1; min-height: 0; overflow-y: auto; padding-bottom: 12px; }
+.gen { padding: 0 12px 10px; font-size: 12px; }
+.gen-q { margin: 10px 0 6px; }
+.gen-q input { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; }
+.gen-bar { display: flex; gap: 6px; padding: 2px 0 8px; flex-wrap: wrap; }
+.gen-help {
+  border: 1px solid var(--line); border-radius: 8px; background: var(--surface-2);
+  padding: 6px 10px 8px; margin-bottom: 8px; max-height: 250px; overflow-y: auto;
+}
+.gen-help ul { margin: 6px 0 0; padding-left: 16px; }
+.gen-help li { margin: 4px 0; line-height: 1.4; color: var(--text-2); }
+.gen-help b { color: var(--accent-text); }
+.gen-fail { border: 1px solid var(--accent-line); border-radius: 8px; background: var(--accent-soft); padding: 8px 10px 9px; }
+.gen-err { color: var(--warn); font-size: 12px; line-height: 1.45; }
+.gen-ex { display: flex; flex-wrap: wrap; gap: 5px; padding: 7px 0 2px; }
+.chip {
+  border: 1px solid var(--line); background: var(--surface); color: var(--text-2);
+  border-radius: 999px; padding: 2px 9px; font-size: 11px; cursor: pointer;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+}
+.chip:hover { border-color: var(--accent); color: var(--text); background: var(--hover); }
+.gen-fam { display: flex; align-items: baseline; justify-content: space-between; gap: 8px; padding: 2px 0 6px; }
+.gen-fam .t { font-weight: 600; font-size: 12.5px; }
+.gen-fam .f { color: var(--muted); font-size: 10px; text-transform: uppercase; letter-spacing: .6px; white-space: nowrap; }
+.lib-spec { color: var(--muted); font-size: 10.5px; line-height: 1.5; }
+.gen-spec {
+  border: 1px solid var(--line-soft); border-radius: 7px; padding: 5px 7px; margin-top: 6px;
+  background: var(--surface-2); font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  white-space: pre-line;
+}
+.gen-note { color: var(--warn); font-size: 11px; line-height: 1.45; padding-top: 4px; }
+.gen-acts { display: flex; flex-wrap: wrap; gap: 6px; padding: 8px 0 2px; }
+.gen-save { border: 1px solid var(--line); border-radius: 8px; background: var(--surface-2); padding: 8px; margin-top: 8px; }
+.gen-save .field { margin-top: 6px; }
+.gen-save .field:first-child { margin-top: 0; }
+.gen-save-acts { display: flex; gap: 6px; justify-content: flex-end; margin-top: 8px; }
+.gen-params { margin-top: 10px; border-top: 1px solid var(--line-soft); padding-bottom: 4px; }
+.gen-p { padding: 0 0 2px; }
+.gen-chk { margin-top: 8px; }
+.gen .lib-preview { margin-top: 2px; }
+.lib-name { font-size: 12px; }
+.mtree { padding-bottom: 10px; }
+.mtree .lib-item { display: flex; align-items: center; gap: 7px; padding-right: 8px; }
+.mtree .lib-item .lib-name { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.mtree .lib-item .lib-spec { flex: none; max-width: 46%; overflow: hidden; text-overflow: ellipsis; }
+.acts { display: inline-flex; gap: 4px; align-items: center; }
+.mtree .lib-item .acts { display: none; }
+.mtree .lib-item:hover .acts, .mtree .lib-item.picked .acts { display: inline-flex; }
+.cat .acts { display: none; }
+.cat:hover .acts { display: inline-flex; }
+.fold.sub > .cat .acts { margin-right: 2px; }
+.mv {
+  background: var(--surface); color: var(--muted); border: 1px solid var(--line); border-radius: 5px;
+  font-size: 10px; padding: 0 3px; height: 18px; max-width: 84px; cursor: pointer;
+}
+.mv:hover { color: var(--text); border-color: var(--accent); }
+.nm-edit { flex: 1; height: 20px; font-size: 11.5px; padding: 1px 6px; }

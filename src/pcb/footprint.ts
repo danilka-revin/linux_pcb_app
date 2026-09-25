@@ -90,6 +90,46 @@ export const lc = (
   cx: number, y: number, t: string, size = 1, rot = 0, layer: LibLayer = 's1',
 ): LibEl => LT(cx - textW(t, size) / 2, y, t, size, thFor(size), rot, layer);
 
+/**
+ * Габарит примитивов генератора (локальные мм) — тот же расчёт, что у
+ * model.entBBox: подписи с учётом поворота, линии и рамки — с половиной штриха.
+ */
+export function bboxOf(els: LibEl[]): [number, number, number, number] {
+  let x1 = 1e9, y1 = 1e9, x2 = -1e9, y2 = -1e9;
+  const grow = (ax: number, ay: number): void => {
+    x1 = Math.min(x1, ax); y1 = Math.min(y1, ay);
+    x2 = Math.max(x2, ax); y2 = Math.max(y2, ay);
+  };
+  for (const el of els) {
+    switch (el.kind) {
+      case 'pad': grow(el.x - el.size / 2, el.y - el.size / 2); grow(el.x + el.size / 2, el.y + el.size / 2); break;
+      case 'smd': {
+        const rot = ((Math.round(el.rot) % 180) + 180) % 180;
+        const w = rot === 0 ? el.w : el.h, h = rot === 0 ? el.h : el.w;
+        grow(el.x - w / 2, el.y - h / 2); grow(el.x + w / 2, el.y + h / 2);
+        break;
+      }
+      case 'hole': grow(el.x - el.d / 2, el.y - el.d / 2); grow(el.x + el.d / 2, el.y + el.d / 2); break;
+      case 'line': {
+        const m = el.w / 2;
+        grow(Math.min(el.x1, el.x2) - m, Math.min(el.y1, el.y2) - m);
+        grow(Math.max(el.x1, el.x2) + m, Math.max(el.y1, el.y2) + m);
+        break;
+      }
+      case 'rect': grow(el.x - el.th / 2, el.y - el.th / 2); grow(el.x + el.w + el.th / 2, el.y + el.h + el.th / 2); break;
+      case 'circle': grow(el.x - el.r - el.w / 2, el.y - el.r - el.w / 2); grow(el.x + el.r + el.w / 2, el.y + el.r + el.w / 2); break;
+      case 'text': {
+        const w = textW(el.text, el.size), h = el.size;
+        const a = (el.rot * Math.PI) / 180, ca = Math.cos(a), sa = Math.sin(a);
+        for (const [xx, yy] of [[0, 0], [w, 0], [w, h], [0, h]]) grow(el.x + xx * ca - yy * sa, el.y + xx * sa + yy * ca);
+        break;
+      }
+    }
+  }
+  if (x1 > x2) return [-2.54, -2.54, 2.54, 2.54];
+  return [r3(x1), r3(y1), r3(x2), r3(y2)];
+}
+
 /** Все подписи на другую сторону шелкографии (для «низ» в генераторе) */
 export const onLayer = (els: LibEl[], layer: Silk): LibEl[] =>
   layer === 's1' ? els : els.map((e) =>
@@ -332,7 +372,8 @@ export function soicFootprint(o: SoicOpts): { els: LibEl[]; spec: FpSpec } {
   const pitch = o.pitch ?? 1.27;
   const half = Math.max(1, Math.round(o.pins / 2));
   const padLen = o.padLen ?? 1.8;
-  const padH = o.padH ?? Math.max(0.35, pitch - 0.45);
+  // на мелком шаге площадки сужаем сами — иначе медь слипается (0.2 мм зазор)
+  const padH = Math.min(o.padH ?? Math.max(0.35, pitch - 0.45), Math.max(0.2, pitch - 0.2));
   const bodyW = o.bodyW ?? o.rowX - 1.5;
   const layer = o.layer ?? 's1';
   const lsize = o.labelSize ?? Math.min(0.9, pitch * 0.75);
@@ -495,7 +536,7 @@ export function twoLeadFootprint(o: TwoLeadOpts): { els: LibEl[]; spec: FpSpec }
     if (pol === 'tant') {
       els.push(lc(-o.pitch / 2, -Math.max(cw, size / 2) - 1.6, '+', 0.9, 0, layer));
     }
-    if (o.value && textW(o.value, 0.9) <= o.bodyL - 0.4) {
+    if (o.value && textW(o.value, 0.9) <= Math.min(o.bodyL - 0.4, o.pitch - size - 0.4)) {
       els.push(lc(0, -0.45, o.value, 0.9, 0, layer));
     }
   }
@@ -520,9 +561,11 @@ export interface ChipSmdOpts {
 export function chipSmdFootprint(o: ChipSmdOpts): { els: LibEl[]; spec: FpSpec } {
   const layer = o.layer ?? 's1';
   const cu = o.cu ?? 'k1';
+  // площадки не должны слипаться: зазор между ними не меньше 0.2 мм
+  const padW = Math.min(o.padW, Math.max(0.2, o.gap - 0.2));
   const els: LibEl[] = [
-    SM(-o.gap / 2, 0, o.padW, o.padH, 0, cu),
-    SM(o.gap / 2, 0, o.padW, o.padH, 0, cu),
+    SM(-o.gap / 2, 0, padW, o.padH, 0, cu),
+    SM(o.gap / 2, 0, padW, o.padH, 0, cu),
   ];
   if (o.silk !== false) {
     els.push(SR(-o.bodyW / 2, -o.bodyH / 2, o.bodyW, o.bodyH, 0.15, layer));
@@ -531,7 +574,12 @@ export function chipSmdFootprint(o: ChipSmdOpts): { els: LibEl[]; spec: FpSpec }
       els.push(lc(-o.gap / 2 - o.padW / 2 - 0.45, -0.4, 'A', 0.7, 0, layer));
       els.push(lc(o.gap / 2 + o.padW / 2 + 0.45, -0.4, 'K', 0.7, 0, layer));
     }
-    if (o.value && textW(o.value, 0.7) <= o.bodyW - 0.3) els.push(lc(0, -0.35, o.value, 0.7, 0, layer));
+    if (o.value) {
+      const w = textW(o.value, 0.7);
+      // влезает между площадками — пишем на корпусе, иначе — над ним
+      if (w <= o.bodyW - 0.3 && w <= o.gap - padW - 0.3) els.push(lc(0, -0.35, o.value, 0.7, 0, layer));
+      else els.push(lc(0, Math.max(o.bodyH, o.padH) / 2 + 0.5, o.value, 0.7, 0, layer));
+    }
   }
   return {
     els,
@@ -604,9 +652,21 @@ export function rowFootprint(o: RowOpts): { els: LibEl[]; spec: FpSpec } {
     const t = names ? names[i] : nums[i];
     if (t) pts.push({ x, y, t });
   });
+  let drawnLabels = 0;
   if (pts.length) {
-    if (rows === 1) els.push(...labelsFor(pts, 'down', lsize, size / 2, layer));
-    else els.push(...labelsFor(pts, o.numbering === 'cols' ? 'left' : 'left', lsize, size / 2, layer));
+    if (rows === 1) {
+      els.push(...labelsFor(pts, 'down', lsize, size / 2, layer));
+      drawnLabels = pts.length;
+    } else {
+      // между рядами 2.54 мм подпись не помещается — выводим её наружу;
+      // средние ряды (3+ рядов) остаются без нумерации
+      const topY = y0, botY = y0 - (rows - 1) * pitchY;
+      const upper = pts.filter((pt) => Math.abs(pt.y - topY) < 1e-6);
+      const lower = rows > 2 ? [] : pts.filter((pt) => Math.abs(pt.y - botY) < 1e-6);
+      els.push(...labelsFor(upper, 'up', lsize, size / 2, layer));
+      els.push(...labelsFor(lower, 'down', lsize, size / 2, layer));
+      drawnLabels = upper.length + lower.length;
+    }
   }
   const bodyW = o.bodyW ?? 0;
   const bodyH = o.bodyH ?? 0;
@@ -634,7 +694,7 @@ export function rowFootprint(o: RowOpts): { els: LibEl[]; spec: FpSpec } {
     els,
     spec: {
       pins: total, pitch: r3(Math.min(pitch, pitchY)),
-      labels: pts.length, holes: rowHoles,
+      labels: drawnLabels, holes: rowHoles,
     },
   };
 }
@@ -770,28 +830,30 @@ export function sotFootprint(o: {
   const bodyW = o.bodyW ?? 2.9;
   const bodyH = o.bodyH ?? 2.4;
   const half = Math.ceil(pins / 2);
+  // вдоль ряда площадка не длиннее шага минус зазор
+  const along = Math.min(padH, Math.max(0.3, pitch - 0.2));
+  const tab = o.tabW && o.tabH ? { w: o.tabW, h: o.tabH } : null;
   const els: LibEl[] = [];
   const btm: LabelledPt[] = [];
   const topPts: LabelledPt[] = [];
   const names = o.names ?? Array.from({ length: pins }, (_, i) => String(i + 1));
   const x0 = -((half - 1) * pitch) / 2;
   for (let i = 0; i < half; i++) {
-    els.push(SM(x0 + i * pitch, -rowX / 2, padH, padW, 0, cu));
+    els.push(SM(x0 + i * pitch, -rowX / 2, along, padW, 0, cu));
     btm.push({ x: x0 + i * pitch, y: -rowX / 2, t: names[i] });
   }
   const top = pins - half;
   for (let i = 0; i < top; i++) {
     const x = top === 1 ? 0 : -((top - 1) * pitch) / 2 + i * pitch;
-    els.push(SM(x, rowX / 2, padH, padW, 0, cu));
+    els.push(SM(x, rowX / 2, along, padW, 0, cu));
     topPts.push({ x, y: rowX / 2, t: names[half + i] });
   }
-  if (o.tabW && o.tabH) {
-    els.push(SM(0, rowX / 2 + o.tabH / 2 + 0.2, o.tabW, o.tabH, 0, cu));
-  }
+  if (tab) els.push(SM(0, rowX / 2 + padW / 2 + tab.h / 2 + 0.25, tab.w, tab.h, 0, cu));
   els.push(SR(-bodyW / 2, -bodyH / 2, bodyW, bodyH, 0.15, layer));
   els.push(SC(-bodyW / 2 - 0.35, -bodyH / 2 - 0.35, 0.22, 0.15, layer));
-  els.push(...labelsFor(btm, 'down', 0.6, padH / 2 + 0.2, layer));
-  els.push(...labelsFor(topPts, 'up', 0.6, padH / 2 + 0.2, layer));
+  els.push(...labelsFor(btm, 'down', 0.6, padW / 2 + 0.25, layer));
+  // подписки верхнего ряда уходят за тепловую площадку, если она есть
+  els.push(...labelsFor(topPts, 'up', 0.6, padW / 2 + 0.25 + (tab ? tab.h + 0.3 : 0), layer));
   const smd = els.filter((e) => e.kind === 'smd').length;
   return { els, spec: { smd, pitch: r3(pitch), labels: btm.length + topPts.length, holes: 0 } };
 }
@@ -867,7 +929,7 @@ export function moduleFootprint(o: ModuleOpts): { els: LibEl[]; spec: FpSpec } {
     }
   }
   if (o.dim !== false) {
-    els.push(lc(0, bh / 2 + 0.6, `${r3(bw)}×${r3(bh)}`, 0.9, 0, layer));
+    els.push(lc(0, bh / 2 + 0.6, `${r3(bw)}x${r3(bh)}`, 0.9, 0, layer));
   }
   if (o.title) els.push(lc(0, -bh / 2 - 1.6, o.title, 0.9, 0, layer));
   return {
@@ -928,7 +990,7 @@ export function boardFootprint(o: BoardOpts): { els: LibEl[]; spec: FpSpec } {
     }
   }
   if (o.dim !== false) {
-    els.push(lc(0, hh + 0.9, `${r3(o.w)} × ${r3(o.h)} мм`, 1.0, 0, layer));
+    els.push(lc(0, hh + 0.9, `${r3(o.w)} x ${r3(o.h)} мм`, 1.0, 0, layer));
   }
   if (o.title) els.push(lc(0, -hh - 2.2, o.title, 1.2, 0, layer));
   return { els, spec: { holes, w: r3(o.w), h: r3(o.h), labels: 0 } };
@@ -943,8 +1005,9 @@ export function holeFootprint(o: {
 }): { els: LibEl[]; spec: FpSpec } {
   const layer = o.layer ?? 's1';
   const n = Math.max(1, Math.round(o.n ?? 1));
-  const pitch = o.pitch ?? 0;
   const d = o.d ?? 3.2;
+  // несколько отверстий без шага раздвигаем сами — иначе они лягут друг на друга
+  const pitch = (o.pitch ?? 0) > 0 ? (o.pitch as number) : (n > 1 ? Math.max(3 * d + 2, 8) : 0);
   const x0 = -((n - 1) * pitch) / 2;
   const els: LibEl[] = [];
   for (let i = 0; i < n; i++) {
@@ -1018,7 +1081,7 @@ export function crystalFootprint(o: {
   const bw = o.bodyW ?? 2.5;
   const els: LibEl[] = [];
   const pts: LabelledPt[] = [];
-  const pw = 1.4, ph = 1.2;
+  const pw = 1.4, ph = Math.min(1.2, Math.max(0.4, (o.bodyW ?? 2.5) - 1.4));
   if (pads === 2) {
     els.push(SM(-bl / 2 + 0.4, 0, 1.0, bw - 0.4, 0, 'k1'));
     els.push(SM(bl / 2 - 0.4, 0, 1.0, bw - 0.4, 0, 'k1'));
@@ -1029,7 +1092,9 @@ export function crystalFootprint(o: {
     pts.push({ x: -ox, y: oy, t: '1' }, { x: ox, y: oy, t: '2' }, { x: ox, y: -oy, t: '3' }, { x: -ox, y: -oy, t: '4' });
   }
   els.push(SR(-bl / 2, -bw / 2, bl, bw, 0.15, layer));
-  els.push(...labelsFor(pts, 'up', 0.6, 0.9, layer));
+  // подписи рядов — наружу, иначе они ложатся на площадки соседнего ряда
+  els.push(...labelsFor(pts.filter((pt) => pt.y > 0), 'up', 0.6, ph / 2 + 0.25, layer));
+  els.push(...labelsFor(pts.filter((pt) => pt.y <= 0), 'down', 0.6, ph / 2 + 0.25, layer));
   if (o.title) els.push(lc(0, -bw / 2 - 1.4, o.title, 0.7, 0, layer));
   return { els, spec: { smd: pads, labels: pads } };
 }

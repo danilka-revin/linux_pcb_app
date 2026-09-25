@@ -23,6 +23,7 @@
 // остальные слова показаны в списке «проигнорировано».
 
 import {
+  bboxOf as fpBBox,
   boardFootprint, chipSmdFootprint, crystalFootprint, dipFootprint, dipSwitchFootprint,
   electroFootprint, fiducialFootprint, holeFootprint, minCopperPitch, moduleFootprint,
   packFootprint, padFootprint, quadFootprint, relayFootprint, rowFootprint, r3, shieldFootprint,
@@ -48,6 +49,11 @@ export interface ParamDef {
   words?: string[];
   /** как печатать параметр обратно в строку; null — не печатать */
   token?: string | null;
+  /**
+   * false — число ищется только ПОСЛЕ слова. Нужно для слов, которые сами
+   * содержат цифру («m3»): иначе «dip 8 m3» прочтётся как «отверстие 8 мм».
+   */
+  rev?: boolean;
 }
 
 export interface GenOut {
@@ -111,7 +117,7 @@ const drill = (def = 0.9): ParamDef =>
 
 const labelsEvery = (def = 1, words = ['подписи', 'нумерация', 'labels', 'маркировка']): ParamDef =>
   P_INT('labels', 'Подписывать каждый N-й вывод', def, {
-    min: 0, max: 20, words, token: 'подписи',
+    min: 0, max: 20, words, token: 'подписи', rev: false,
     hint: '1 — все выводы, 0 — без подписей, 5 — каждый пятый плюс первый и последний',
   });
 
@@ -128,7 +134,7 @@ const holeCount = (def = 0, words = ['крепёжные отверстия', '�
 
 const holeDia = (def = 3.2): ParamDef =>
   P_NUM('holeD', 'Ø крепёжного отверстия, мм', def, {
-    min: 0.6, max: 12, step: 0.05, words: ['m2', 'm2.5', 'm3', 'm4', 'резьба', 'винт'], token: 'отверстие',
+    min: 0.6, max: 12, step: 0.05, words: ['m2', 'm2.5', 'm3', 'm4', 'резьба', 'винт'], token: 'отверстие', rev: false,
     hint: 'M2 → 2.2, M2.5 → 2.7, M3 → 3.2, M4 → 4.3 мм',
   });
 
@@ -169,7 +175,7 @@ const esc = (s: string): string => s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 const NUMRE = String.raw`(\d+(?:[.,]\d+)?)(?![0-9a-zа-я])`;
 /** число, за которым может идти единица измерения («0.25w», «10ком») */
 const NUMP = String.raw`(\d+(?:[.,]\d+)?)(?![0-9a-zа-я.])`;
-const UNITRE = String.raw`\s*(мм|mm|mil|мил|см|"|дюйм\w*)?`;
+const UNITRE = String.raw`\s*(мм|mm|mil|мил|см|"|дюйм[а-яё0-9-]*)?`;
 
 /** Метрические коды SMD-корпусов: зазор площадок, сами площадки, корпус */
 const CHIP_CODES: Record<string, { gap: number; padW: number; padH: number; bw: number; bh: number }> = {
@@ -248,28 +254,35 @@ class Scan {
   }
 }
 
-/** «шаг 2.54 мм», «шаг=2.54», «2.54 шаг», «100mil шаг» → число в мм */
-function takeNumBy(sc: Scan, words: string[]): number | null {
+/**
+ * «шаг 2.54 мм», «шаг=2.54», «2.54 шаг», «100mil шаг» → число в мм.
+ * Единица может быть приклеена к числу («100mil») — поэтому она внутри совпадения,
+ * а граница слова проверяется уже после неё.
+ */
+const NUMUNIT = String.raw`(\d+(?:[.,]\d+)?)(\s*(?:мм|mm|мил|mil|см|cm|дюйм[а-яё0-9-]*))?(?![0-9a-zа-я])`;
+function takeNumBy(sc: Scan, words: string[], rev = true): number | null {
   const alt = words.filter((w) => w.length > 1).map((w) => esc(norm(w))).sort((a, b) => b.length - a.length).join('|');
   if (!alt) return null;
-  let m = sc.take(new RegExp(String.raw`(?:${alt})\s*[:=]?\s*${NUMRE}${UNITRE}`, 'i'));
-  if (m) return conv(m[1], m[0]);
-  m = sc.take(new RegExp(String.raw`(?:^|[^0-9a-zа-я./])${NUMRE}${UNITRE}\s*(?:${alt})(?![0-9a-zа-я])`, 'i'));
-  if (m) return conv(m[1], m[0]);
+  let m = sc.take(new RegExp(String.raw`(?:${alt})\s*[:=]?\s*${NUMUNIT}`, 'i'));
+  if (m) return conv(m[1], m[2] ?? '');
+  if (!rev) return null;
+  m = sc.take(new RegExp(String.raw`(?:^|[^0-9a-zа-я./])${NUMUNIT}\s*(?:${alt})(?![0-9a-zа-я])`, 'i'));
+  if (m) return conv(m[1], m[2] ?? '');
   return null;
 }
 
 /** ми́ллы → мм, см → мм */
 function conv(v: string, full: string): number {
   const x = toNum(v);
-  if (/mil|мил/.test(full)) return r3(x * 0.0254 * 1000) / 100;
+  if (/mil|мил/.test(full)) return r3(x * 0.0254);
+  if (/дюйм|"/.test(full)) return r3(x * 25.4);
   if (/см/.test(full)) return r3(x * 10);
   return x;
 }
 
 /** «площадка 1.8/0.8» → [площадка, сверло] */
 function takePadPair(sc: Scan): [number, number] | null {
-  const m = sc.take(/(?:площадка|pad|пят[ао][кч]\w*)\s*[:=]?\s*(\d+(?:[.,]\d+)?)\s*\/\s*(\d+(?:[.,]\d+)?)/);
+  const m = sc.take(/(?:площадка|pad|пят[ао][кч][а-яё0-9-]*)\s*[:=]?\s*(\d+(?:[.,]\d+)?)\s*\/\s*(\d+(?:[.,]\d+)?)/);
   return m ? [toNum(m[1]), toNum(m[2])] : null;
 }
 
@@ -299,9 +312,12 @@ function takeKV(sc: Scan, def: ParamDef): ParamVal | undefined {
   if (!keys) return undefined;
   if (def.kind === 'bool') {
     const m = sc.take(new RegExp(String.raw`(?:без\s+)?(?:${keys})(?:\s*[:=]\s*(on|off|да|нет|вкл|выкл|есть|без|1|0))?`, 'i'));
-    if (!m) return undefined;
-    const neg = m[0].startsWith('без') || /off|нет|выкл|без|^0$/.test(m[1] ?? '');
-    return !neg;
+    if (m) return !(m[0].startsWith('без') || /off|нет|выкл|без|^0$/.test(m[1] ?? ''));
+    // «без шелкографии», «без крепёжных»: после «без» сравниваем основу слова —
+    // так падежные окончания не нужно перебирать, и чужое «отверстие 3.25» цело
+    const stems = keys.split('|').map((k) => k.replace(/[а-яё]{1,2}$/, '')).filter((k) => k.length > 3);
+    if (!stems.length) return undefined;
+    return sc.take(new RegExp(String.raw`без\s+(?:${stems.join('|')})`, 'i')) ? false : undefined;
   }
   if (def.kind === 'enum' && def.options) {
     for (const [v, label] of def.options) {
@@ -320,7 +336,7 @@ function takeKV(sc: Scan, def: ParamDef): ParamVal | undefined {
     const m = sc.take(new RegExp(String.raw`(?:${keys})\s*[:=]\s*"?([0-9a-zа-я.,+-]{1,14})"?`, 'i'));
     return m ? m[1] : undefined;
   }
-  const v = takeNumBy(sc, [def.key, def.token ?? '', ...(def.words ?? [])]);
+  const v = takeNumBy(sc, [def.key, def.token ?? '', ...(def.words ?? [])], def.rev !== false);
   if (v === null) return undefined;
   return def.kind === 'int' ? Math.round(v) : r3(v);
 }
@@ -616,8 +632,9 @@ export const FAMILIES: Family[] = [
     id: 'chip',
     title: 'SMD 0201…2512',
     hint: 'Планарные резисторы, конденсаторы, диоды SOD/SMA. Достаточно кода корпуса — размеры площадок подставятся.',
-    aliases: ['0201', '0402', '0603', '0805', '1206', '1210', '1812', '2010', '2512', 'smd', 'sod', 'sma', 'smb', 'smc', 'чип'],
-    weak: ['конденсатор smd', 'резистор smd'],
+    aliases: ['0201', '0402', '0603', '0805', '1206', '1210', '1812', '2010', '2512', 'sod', 'sma', 'smb', 'smc', 'чип'],
+    // «smd» — слабое слово: «транзистор smd» должен остаться SOT-ом
+    weak: ['конденсатор smd', 'резистор smd', 'smd'],
     bare: ['gap', 'padW', 'padH'],
     params: [
       P_ENUM('code', 'Корпус', '0805', Object.keys(CHIP_CODES).map((k): [string, string] => [k, k]), { token: null }),
@@ -1138,6 +1155,15 @@ const aliasRe = (a: string): RegExp =>
 export function detectFamily(s: string): { fam: Family; preset?: Params; word: string } | null {
   const in_ = norm(s);
   const modKey = detectModule(in_);
+  // «nano shield» / «pro mini щит» — это шилд ПОД модуль, а не сам модуль
+  if (modKey && /shield|шилд|щит/.test(in_) && (modKey === 'nano' || modKey === 'pro_mini' || modKey === 'esp01')) {
+    const m = MODULE_NAMES[modKey];
+    return {
+      fam: byId('shield'), word: 'shield',
+      // габарит шилда — по корпусу модуля с запасом на дорожки
+      preset: { value: `${m.title} SHIELD`, w: r3(m.bodyW + 3), h: r3(m.bodyH + 3) },
+    };
+  }
   if (modKey) {
     const m = MODULE_NAMES[modKey];
     return {
@@ -1225,7 +1251,7 @@ function takeCount(sc2: Scan, params: Params, fam: Family, touched: Set<string>)
 function takeBareNumbers(sc2: Scan, params: Params, fam: Family, touched: Set<string>): void {
   const nums: number[] = [];
   for (;;) {
-    const m = sc2.take(new RegExp(String.raw`(?:^|\s)(\d+(?:[.,]\d+)?)(?:(мм|mm|mil|мил|см|дюйм\w*)(?![0-9a-zа-я])|(?![0-9a-zа-я.,]))`));
+    const m = sc2.take(new RegExp(String.raw`(?:^|\s)(\d+(?:[.,]\d+)?)(?:(мм|mm|mil|мил|см|дюйм[а-яё0-9-]*)(?![0-9a-zа-я])|(?![0-9a-zа-я.,]))`));
     if (!m) break;
     nums.push(conv(m[1], m[2] ?? ''));
   }
@@ -1263,9 +1289,11 @@ export function generate(query: string): GenResult {
   const params: Params = {};
   const defaults: Params = {};
   const touched = new Set<string>();
+  /** параметр именно назвали в строке (пресет/умолчание — не в счёт) */
+  const said = new Set<string>();
   for (const d of fam.params) { params[d.key] = d.def; defaults[d.key] = d.def; }
   if (det.preset) for (const [k, v] of Object.entries(det.preset)) { params[k] = v; touched.add(k); }
-  const set = (k: string, v: ParamVal): void => { params[k] = v; touched.add(k); };
+  const set = (k: string, v: ParamVal): void => { params[k] = v; touched.add(k); said.add(k); };
 
   // сторона установки
   const bottom = sc2.take(/(?<![0-9a-zа-я])(низ|снизу|bottom|сторона пайки|k2)(?![0-9a-zа-я])/) !== null;
@@ -1345,10 +1373,9 @@ export function generate(query: string): GenResult {
   if (th) {
     const key = 'm' + (th[1] ? r3(toNum(th[1])) : '');
     if ('holeD' in params) set('holeD', THREAD[key] ?? r3(toNum(th[1] ?? '3')));
-    if ('holes' in params && (params.holes as number) === 0) set('holes', fam.id === 'board' ? 4 : 2);
   }
   // «2 крепёжных отверстия», «крепёж», «без отверстий»
-  const mnt = sc2.take(/(?:по\s+|с\s+)?(\d{1,2})?\s*(?:креп[её]жн\w*\s*(?:отверст\w*)?|креп[её]ж\w*|отверстий|отверстия|отверстие|mounting\s+holes?|mounts?)/i);
+  const mnt = sc2.take(/(?:по\s+|с\s+)?(\d{1,2})?\s*(?:креп[её]жн[а-яё0-9-]*\s*(?:отверст[а-яё0-9-]*)?|креп[её]ж[а-яё0-9-]*|отверстий|отверстия|отверстие|mounting\s+holes?|mounts?)/i);
   if (mnt) {
     const k = mnt[1] ? parseInt(mnt[1], 10) : 0;
     if ('holes' in params) set('holes', k || (params.holes as number) || (fam.id === 'board' ? 4 : 2));
@@ -1368,7 +1395,7 @@ export function generate(query: string): GenResult {
     if (fam.id === 'soic' && 'rowX' in params) set('rowX', 5.4);
   }
   // панелька/штыри, шелкография, подписи
-  if (sc2.take(/(?<![0-9a-zа-я])(панелька|socket|гнездо|мама|female|розетк\w*)(?![0-9a-zа-я])/i) && 'socket' in params) set('socket', true);
+  if (sc2.take(/(?<![0-9a-zа-я])(панелька|socket|гнездо|мама|female|розетк[а-яё0-9-]*)(?![0-9a-zа-я])/i) && 'socket' in params) set('socket', true);
   if (sc2.take(/(?<![0-9a-zа-я])(штыри|штырь|папа|male|pin\s+header)(?![0-9a-zа-я])/i) && 'socket' in params) set('socket', false);
   if (sc2.take(/(?<![0-9a-zа-я])(без\s+(?:шелкографии|корпуса|обводки)|no\s+silk)(?![0-9a-zа-я])/i) && 'silk' in params) set('silk', false);
   if (sc2.take(/(?<![0-9a-zа-я])(без\s+подписей|no\s+labels|без\s+нумерации)(?![0-9a-zа-я])/i)) {
@@ -1376,7 +1403,7 @@ export function generate(query: string): GenResult {
     if ('labelEvery' in params) set('labelEvery', 0);
     if ('names' in params) set('names', '');
   }
-  const every = sc2.take(/подпис\w*\s+(?:каждый\s+)?(\d{1,2})\s*-?й?/i);
+  const every = sc2.take(/подпис[а-яё0-9-]*\s+(?:кажд[а-яё0-9-]*\s+)?(\d{1,2})\s*-?й?/i);
   if (every) {
     const v = parseInt(every[1], 10);
     if ('labels' in params) set('labels', v);
@@ -1386,7 +1413,7 @@ export function generate(query: string): GenResult {
     if ('labels' in params) set('labels', 1);
     if ('labelEvery' in params) set('labelEvery', 1);
   }
-  if (sc2.take(/(?<![0-9a-zа-я])подпис\w*(?![0-9a-zа-я])/i)) {
+  if (sc2.take(/(?<![0-9a-zа-я])подпис[а-яё0-9-]*(?![0-9a-zа-я])/i)) {
     if ('labels' in params && params.labels === 0) set('labels', 1);
     if ('labelEvery' in params && params.labelEvery === 0) set('labelEvery', 1);
     if ('dim' in params) set('dim', true);
@@ -1395,13 +1422,13 @@ export function generate(query: string): GenResult {
   if (fam.id === 'two' && params.polarity === 'led' && !touched.has('pitch')) set('pitch', 2.54);
   // форма площадки
   if ('shape' in params) {
-    if (sc2.take(/(?<![0-9a-zа-я])квадратн\w*(?![0-9a-zа-я])/i)) set('shape', 'square');
-    else if (sc2.take(/(?<![0-9a-zа-я])(восьмиугольн\w*|oct)(?![0-9a-zа-я])/i)) set('shape', 'oct');
-    else if (sc2.take(/(?<![0-9a-zа-я])кругл\w*(?![0-9a-zа-я])/i)) set('shape', 'round');
+    if (sc2.take(/(?<![0-9a-zа-я])квадратн[а-яё0-9-]*(?![0-9a-zа-я])/i)) set('shape', 'square');
+    else if (sc2.take(/(?<![0-9a-zа-я])(восьмиугольн[а-яё0-9-]*|oct)(?![0-9a-zа-я])/i)) set('shape', 'oct');
+    else if (sc2.take(/(?<![0-9a-zа-я])кругл[а-яё0-9-]*(?![0-9a-zа-я])/i)) set('shape', 'round');
   }
   // SMD-код корпуса
   if (fam.id === 'chip') {
-    const cm = sc2.take(new RegExp(String.raw`(?:^|[^0-9])(${Object.keys(CHIP_CODES).join('|')})(диод|резистор|конденсатор|конд\w*|sod\w*|sma|smb|smc)?`, 'i'));
+    const cm = sc2.take(new RegExp(String.raw`(?:^|[^0-9])(${Object.keys(CHIP_CODES).join('|')})(диод|резистор|конденсатор|конд[а-яё0-9-]*|sod[а-яё0-9-]*|sma|smb|smc)?`, 'i'));
     if (cm) {
       set('code', cm[1]);
       if (/диод|sod|sm[abc]/i.test(cm[2] ?? '')) set('diode', true);
@@ -1416,6 +1443,11 @@ export function generate(query: string): GenResult {
       set('bodyH', parseInt(cm[1].slice(2), 10) / 10);
     }
   }
+  // «nano shield»: слово модуля уже вошло в название — не считаем его мусором
+  if (fam.id === 'shield') {
+    const key = detectModule(sc2.s);
+    if (key === 'nano' || key === 'pro_mini' || key === 'esp01') sc2.take(new RegExp(esc(key.replace('_', ' ')), 'i'));
+  }
   // пресет модуля: имена выводов, корпус, крепёж
   if (fam.id === 'module') {
     const key = detectModule(sc2.s + ' ' + norm(query));
@@ -1424,7 +1456,9 @@ export function generate(query: string): GenResult {
       set('n', Math.max(m.left.length, m.right.length));
       set('rowW', m.rowW); set('bodyW', m.bodyW); set('bodyH', m.bodyH);
       set('names', `${m.left.join(',')}|${m.right.join(',')}`);
-      set('holes', m.holes); set('holeD', m.holeD ?? 3.2);
+      // крепёж из пресета — не «сказанный»: правило «назвали Ø → нужен крепёж» молчит
+      params.holes = m.holes; params.holeD = m.holeD ?? 3.2;
+      touched.add('holes'); touched.add('holeD');
       if (m.socket) set('socket', true);
       set('value', m.title);
       sc2.take(new RegExp(esc(key.replace('_', ' ')), 'i'));
@@ -1435,17 +1469,27 @@ export function generate(query: string): GenResult {
   // служебное слово семейства разобрано — в «проигнорировано» его быть не должно
   if (det.word.trim()) sc2.take(new RegExp(esc(norm(det.word)), 'i'));
   // номинал/подпись: «10ком», «100нф», «U1», "U74HC595"
-  if ('value' in params && !(params.value as string)) {
+  if ('value' in params) {
+    const cur = String(params.value ?? '');
+    // значение из пресета-обозначения («c1» → C1) не мешает найти настоящий номинал
+    const onlyDesig = !cur || /^[a-z]{1,3}[0-9]{0,3}$/i.test(cur);
     const quoted = sc2.take(/"([^"]{1,14})"/);
     if (quoted) set('value', normValue(quoted[1]) || quoted[1]);
     else {
-      const v = sc2.take(new RegExp(String.raw`(?:^|[^0-9a-zа-я.])(\d+(?:[.,]\d+)?)(ком|килоом|мком|гком|ом|ом\w*|нф|nf|мкф|uf|пф|pf|фарад\w*|мгн|нгн|в|вольт|v|мгц|mhz|ггц|ghz|k|m|ohm|r)(?![0-9a-zа-я])`, 'i'));
-      if (v) set('value', normValue(v[1] + (v[2] ?? '')));
-      else {
+      const v = sc2.take(new RegExp(String.raw`(?:^|[^0-9a-zа-я.])(\d+(?:[.,]\d+)?)(ком|килоом|мком|гком|ом|ом[а-яё0-9-]*|нф|nf|мкф|uf|пф|pf|фарад[а-яё0-9-]*|мгн|нгн|в|вольт|v|мгц|mhz|ггц|ghz|k|m|ohm|r)(?![0-9a-zа-я])`, 'i'));
+      if (v) {
+        const nv = normValue(v[1] + (v[2] ?? ''));
+        if (nv && onlyDesig) set('value', nv);
+      } else {
         const nameTok = sc2.take(/(?<![0-9a-zа-я])([a-z]{1,3}\d{1,3})(?![0-9a-zа-я])/i);
-        if (nameTok) set('value', nameTok[1].toUpperCase());
+        if (nameTok && !cur) set('value', nameTok[1].toUpperCase());
       }
     }
+  }
+
+  // Ø крепежа назвали, а количество — нет: крепёж всегда ставят минимум в двух местах
+  if (said.has('holeD') && (params.holes ?? 0) === 0 && 'holes' in params) {
+    set('holes', fam.id === 'board' ? 4 : 2);
   }
 
   let out: GenOut;
@@ -1478,21 +1522,8 @@ export function generate(query: string): GenResult {
 }
 
 /** Простой bbox по элементам (рамка предпросмотра и габарит компонента) */
-export function bboxOf(els: LibEl[]): [number, number, number, number] {
-  let x1 = 1e9, y1 = 1e9, x2 = -1e9, y2 = -1e9;
-  const g = (x: number, y: number): void => { x1 = Math.min(x1, x); y1 = Math.min(y1, y); x2 = Math.max(x2, x); y2 = Math.max(y2, y); };
-  for (const e of els) {
-    if (e.kind === 'pad') { g(e.x - e.size / 2, e.y - e.size / 2); g(e.x + e.size / 2, e.y + e.size / 2); }
-    else if (e.kind === 'smd') { g(e.x - e.w / 2, e.y - e.h / 2); g(e.x + e.w / 2, e.y + e.h / 2); }
-    else if (e.kind === 'hole') { g(e.x - e.d / 2, e.y - e.d / 2); g(e.x + e.d / 2, e.y + e.d / 2); }
-    else if (e.kind === 'line') { g(Math.min(e.x1, e.x2) - e.w / 2, Math.min(e.y1, e.y2) - e.w / 2); g(Math.max(e.x1, e.x2) + e.w / 2, Math.max(e.y1, e.y2) + e.w / 2); }
-    else if (e.kind === 'rect') { g(e.x - e.th / 2, e.y - e.th / 2); g(e.x + e.w + e.th / 2, e.y + e.h + e.th / 2); }
-    else if (e.kind === 'circle') { g(e.x - e.r - e.w / 2, e.y - e.r - e.w / 2); g(e.x + e.r + e.w / 2, e.y + e.r + e.w / 2); }
-    else { g(e.x, e.y); g(e.x + e.text.length * e.size * 0.8, e.y + e.size); }
-  }
-  if (x1 > x2) return [-2.54, -2.54, 2.54, 2.54];
-  return [r3(x1), r3(y1), r3(x2), r3(y2)];
-}
+/** Габарит сгенерированных примитивов (см. footprint.bboxOf) */
+export const bboxOf = fpBBox;
 
 /** Подсказки при нераспознанной строке */
 export function suggest(s: string): string[] {
@@ -1511,6 +1542,19 @@ export function suggest(s: string): string[] {
  * Переписать параметр в строку — панель параметров правит запрос, поэтому
  * пользователь всегда видит, что именно понято («silk off», «шаг=1.27»).
  */
+/** родительный падеж для «без …» (шелкография → шелкографии) */
+const genitive = (w: string): string => {
+  if (/ия$/.test(w)) return `${w.slice(0, -2)}ии`;
+  if (/ые$/.test(w)) return `${w.slice(0, -2)}ых`;
+  if (/ие$/.test(w)) return `${w.slice(0, -2)}ия`;
+  if (/(?:её|е|и|ы|у|ю|а|я)$/.test(w) && /[а-яё]$/i.test(w)) {
+    if (/а$/.test(w)) return `${w.slice(0, -1)}ы`;
+    if (/я$/.test(w)) return `${w.slice(0, -1)}и`;
+    if (/е$/.test(w)) return `${w.slice(0, -1)}я`;
+  }
+  return w;
+};
+
 export function setParamInQuery(query: string, fam: Family, key: string, v: ParamVal): string {
   const def = fam.params.find((d) => d.key === key);
   const token = def?.token ?? key;
@@ -1520,7 +1564,10 @@ export function setParamInQuery(query: string, fam: Family, key: string, v: Para
     const re = new RegExp(String.raw`${esc(norm(k))}\s*[:=]\s*(?:on|off|да|нет|вкл|выкл|-?\d+(?:[.,]\d+)?[a-zа-я]*)`, 'i');
     if (re.test(query)) return query.replace(re, `${k}=${text}`);
   }
-  if (def?.kind === 'bool') return v ? `${query.trim()} ${token}` : `${query.trim()} без ${token}`;
+  if (def?.kind === 'bool') {
+    const word = (def?.words ?? []).find((w) => /[а-яё]/i.test(w)) ?? token;
+    return v ? `${query.trim()} ${word}` : `${query.trim()} без ${genitive(word)}`;
+  }
   if (def?.kind === 'text') return `${query.trim()} "${text}"`;
   if (def?.kind === 'enum') return v === def.def ? query : `${query.trim()} ${text}`;
   return `${query.trim()} ${token} ${text}`;
