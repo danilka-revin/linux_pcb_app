@@ -12,6 +12,7 @@ BIN_DIR="$HOME/.local/bin"
 DESKTOP_DIR="$HOME/.local/share/applications"
 
 say() { printf '\033[1;36m==>\033[0m %s\n' "$*"; }
+warn() { printf '\033[1;33mВнимание:\033[0m %s\n' "$*" >&2; }
 err() { printf '\033[1;31mОшибка:\033[0m %s\n' "$*" >&2; exit 1; }
 
 # порт локального сервера: PCB_APP_PORT=8485 bash install-ubuntu.sh,
@@ -107,8 +108,40 @@ else
   install_nodejs
 fi
 
-say "Установка зависимостей"
 cd "$SRC_DIR"
+
+# ---------- свежие исходники из GitHub ----------
+# Установщик собирает программу из этой папки, а не из GitHub. Если копию давно не
+# обновляли, он поставит старую версию: «кнопок/функций не появилось». Поэтому
+# перед сборкой подтягиваем свежие коммиты (если это git-копия и есть сеть).
+# Локальные правки не трогаем: при них pull не удастся — просто соберём копию как есть.
+update_sources() {
+  [ -d "$SRC_DIR/.git" ] || return 0
+  command -v git >/dev/null 2>&1 || return 0
+  say "Проверка свежих исходников в GitHub"
+  if ! git -C "$SRC_DIR" fetch --quiet origin; then
+    warn "не удалось связаться с GitHub — собираем вашу копию (без интернета это нормально)."
+    return 0
+  fi
+  UPSTREAM=$(git -C "$SRC_DIR" rev-parse --abbrev-ref --symbolic-full-name '@{upstream}' 2>/dev/null || true)
+  [ -n "$UPSTREAM" ] || UPSTREAM=$(git -C "$SRC_DIR" symbolic-ref --quiet --short refs/remotes/origin/HEAD 2>/dev/null || true)
+  [ -n "$UPSTREAM" ] || UPSTREAM="origin/main"
+  BEHIND=$(git -C "$SRC_DIR" rev-list --count "HEAD..$UPSTREAM" 2>/dev/null || echo 0)
+  if [ "${BEHIND:-0}" = "0" ]; then
+    say "Исходники уже свежие ($(git -C "$SRC_DIR" rev-parse --short HEAD))"
+    return 0
+  fi
+  say "В GitHub $BEHIND новых коммитов — обновляем исходники"
+  if git -C "$SRC_DIR" pull --ff-only --quiet >/dev/null 2>&1; then
+    say "Обновлено до $(git -C "$SRC_DIR" log -1 --format='%h %s')"
+  else
+    warn "не удалось обновить автоматически — в папке есть ваши правки или другая ветка.
+  Собираем эту копию. Свежая версия (ваши правки не нужны?): git -C \"$SRC_DIR\" checkout -- . && git -C \"$SRC_DIR\" pull && bash install-ubuntu.sh"
+  fi
+}
+update_sources
+
+say "Установка зависимостей"
 # npm ci ставит ровно то, что в package-lock.json, и не меняет его (git pull не конфликтует)
 npm ci --no-audit --no-fund --no-update-notifier --loglevel=error
 
@@ -129,6 +162,8 @@ printf '%s\n' "$REPO_URL" > "$APP_DIR/repo.txt"
 INST_SHA=$(node -e 'try{const v=JSON.parse(require("fs").readFileSync("dist/version.json","utf8"));process.stdout.write(v.sha||"")}catch{}' 2>/dev/null || true)
 [ -n "$INST_SHA" ] || INST_SHA=$(git -C "$SRC_DIR" rev-parse HEAD 2>/dev/null || true)
 [ -n "$INST_SHA" ] && printf '%s\n' "$INST_SHA" > "$APP_DIR/version.txt" || rm -f "$APP_DIR/version.txt"
+# какую версию поставили — чтобы сверить с тем, что видно в «О программе»
+BUILD_VER=$(node -e 'try{const v=JSON.parse(require("fs").readFileSync("dist/version.json","utf8"));process.stdout.write(v.short||"")}catch{}' 2>/dev/null || true)
 
 say "Создание запускающего скрипта $BIN_DIR/$APP_ID"
 {
@@ -275,6 +310,8 @@ if command -v update-desktop-database >/dev/null; then
 fi
 
 say "Готово!"
+[ -n "${BUILD_VER:-}" ] && echo "  • Версия: $BUILD_VER (та же — в меню «⋯ → О программе»)"
+echo "  • Если окно программы было открыто, обновите его клавишей F5."
 echo "  • Ярлык «$APP_NAME_RU» появился в меню приложений:"
 echo "    нажмите клавишу Super (с логотипом Windows) и наберите «PSBees»."
 echo "  • Адрес программы в браузере:  http://127.0.0.1:$PORT"

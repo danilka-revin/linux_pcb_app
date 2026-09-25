@@ -496,12 +496,14 @@ function UpdaterDialog({
 
 /** Перестановка (←/→) и скрытие/показ групп кнопок верхней панели. */
 export function UiBuilder({
-  ids, names, onChange, hidden,
+  ids, names, onChange, hidden, pinned = [],
 }: {
   ids: string[];
   names: Record<string, string>;
   onChange: (next: { ids: string[]; hidden: string[] }) => void;
   hidden: string[];
+  /** группы, которые нельзя спрятать (в них вход в сами настройки) */
+  pinned?: string[];
 }) {
   const move = (id: string, dir: -1 | 1) => {
     const i = ids.indexOf(id);
@@ -512,6 +514,7 @@ export function UiBuilder({
     onChange({ ids: nx, hidden });
   };
   const toggle = (id: string) => {
+    if (pinned.includes(id)) return; // группу с меню настроек скрывать нельзя
     const hid = hidden.includes(id) ? hidden.filter((x) => x !== id) : [...hidden, id];
     onChange({ ids, hidden: hid });
   };
@@ -524,12 +527,19 @@ export function UiBuilder({
           <button className="uib-left" onClick={() => move(id, -1)} disabled={idx === 0} title="Левее">←</button>
           <button className="uib-right" onClick={() => move(id, 1)} disabled={idx === ids.length - 1} title="Правее">→</button>
           <span className="uib-name">{names[id] ?? id}</span>
-          <button
-            className={'btn tiny' + (hidden.includes(id) ? ' uib-hide-on' : '')}
-            onClick={() => toggle(id)} title={hidden.includes(id) ? 'Показать группу' : 'Скрыть группу'}
-          >
-            {hidden.includes(id) ? 'Скрыта' : 'Показана'}
-          </button>
+          {pinned.includes(id) ? (
+            <button className="btn tiny uib-pinned" disabled
+              title="Здесь меню «⋯» с этим конструктором, цветами и обновлением — группу нельзя спрятать">
+              Всегда показана
+            </button>
+          ) : (
+            <button
+              className={'btn tiny' + (hidden.includes(id) ? ' uib-hide-on' : '')}
+              onClick={() => toggle(id)} title={hidden.includes(id) ? 'Показать группу' : 'Скрыть группу'}
+            >
+              {hidden.includes(id) ? 'Скрыта' : 'Показана'}
+            </button>
+          )}
         </div>
       ))}
       <div className="uib-meta">
@@ -539,7 +549,9 @@ export function UiBuilder({
       </div>
       <p className="uib-note">
         Стрелки «← / →» меняют порядок групп на панели кнопок, «Скрыта» убирает группу.
-        Изменения сразу применяются и сохраняются в этом браузере.
+        Изменения сразу применяются и сохраняются в этом браузере. Группа «Всегда показана»
+        не скрывается: в ней меню «⋯» с этим конструктором, цветами и обновлением —
+        иначе вернуть кнопки было бы нечем.
       </p>
     </div>
   );
@@ -647,11 +659,12 @@ export function SideBuilder({
 const LEFT_TAB_CHECK: string[] = ['layers', 'lib'];
 
 export function UiBuilderDialog({
-  ids, names, hidden, onChange, onClose, sideTabs, sideNames, leftW, rightW, showRight, onSides,
+  ids, names, hidden, onChange, onClose, sideTabs, sideNames, leftW, rightW, showRight, onSides, pinned,
 }: {
   ids: string[];
   names: Record<string, string>;
   hidden: string[];
+  pinned?: string[];
   onChange: (next: { ids: string[]; hidden: string[] }) => void;
   onClose: () => void;
   sideTabs?: string[];
@@ -675,7 +688,7 @@ export function UiBuilderDialog({
       foot={<button className="btn primary" onClick={onClose}>Готово</button>}
     >
       <p style={{ marginTop: 0 }}>Настройте состав и порядок групп кнопок на верхней панели.</p>
-      <UiBuilder ids={ids} names={names} hidden={hidden} onChange={onChange} />
+      <UiBuilder ids={ids} names={names} hidden={hidden} pinned={pinned} onChange={onChange} />
       {hasSides && (
         <>
           <div className="sect" />

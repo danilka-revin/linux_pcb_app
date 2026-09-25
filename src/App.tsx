@@ -117,10 +117,21 @@ const GROUP_DEFS: { id: string; label: string }[] = [
   { id: 'grid', label: 'Сетка и углы' },
   { id: 'layer', label: 'Слой K1 / K2' },
   { id: 'view', label: 'Вид' },
-  { id: 'about', label: 'Тема, «Обновить» и «О программе»' },
+  { id: 'about', label: 'Тема, «Обновить», интерфейс и справка' },
 ];
 const GROUP_ORDER: string[] = GROUP_DEFS.map((g) => g.id);
 const GROUP_NAMES: Record<string, string> = Object.fromEntries(GROUP_DEFS.map((g) => [g.id, g.label]));
+
+/**
+ * Группы, которые нельзя спрятать конструктором интерфейса.
+ *
+ * В последней группе живёт меню «⋯» — единственный вход в конструктор интерфейса,
+ * «Цвета интерфейса» и «О программе». Спрятав её, вернуть кнопки было бы нечем:
+ * выход из настройки пропал бы вместе с самими настройками. Поэтому «about»
+ * показывается всегда, а сохранённая в браузере конфигурация с ней в списке
+ * скрытых просто игнорируется.
+ */
+const PINNED_GROUPS: string[] = ['about'];
 
 /**
  * Инструменты рисования вынесены из верхней панели в вертикальный док у холста
@@ -185,7 +196,10 @@ function loadUi(): UiState {
       if (d && Array.isArray(d.ids) && Array.isArray(d.hidden)) {
         return {
           ids: d.ids.filter((id: string) => GROUP_DEFS.some((g) => g.id === id)),
-          hidden: d.hidden.filter((id: string) => GROUP_DEFS.some((g) => g.id === id)),
+          // «about» не скрывается: в нём меню с настройками интерфейса (см. PINNED_GROUPS)
+          hidden: d.hidden
+            .filter((id: string) => GROUP_DEFS.some((g) => g.id === id))
+            .filter((id: string) => !PINNED_GROUPS.includes(id)),
           sides: normalizeSides(d.sides),
         };
       }
@@ -1829,9 +1843,10 @@ export default function App() {
     };
 
     // порядок групп: сохранённый в localStorage, иначе порядок по умолчанию;
-    // «Инструменты» (tools) теперь живут в вертикальном доке у холста
+    // «Инструменты» (tools) теперь живут в вертикальном доке у холста,
+    // «about» (меню с настройками интерфейса) спрятать нельзя — см. PINNED_GROUPS
     const hiddenSet = new Set(uiConf.hidden);
-    const order = uiOrder.filter((id) => id !== 'tools' && !hiddenSet.has(id));
+    const order = uiOrder.filter((id) => id !== 'tools' && (!hiddenSet.has(id) || PINNED_GROUPS.includes(id)));
     return (
       <div className="toolbar">
         <div className="brand">
@@ -2138,6 +2153,7 @@ export default function App() {
           ids={uiOrder}
           names={GROUP_NAMES}
           hidden={uiConf.hidden}
+          pinned={PINNED_GROUPS}
           sideTabs={sidesConf.leftTabs}
           sideNames={LEFT_TAB_NAMES}
           leftW={sidesConf.leftW}
