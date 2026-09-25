@@ -44,6 +44,43 @@ for (const m of ['Интерфейс и справка', 'upd-btn', 'Обнов�
   if (!/flex:\s*0 1 auto/.test(brand)) throw new Error('шапка: бренд не сжимается — при нехватке места пострадают кнопки');
 }
 
+// Сохранённая в браузере конфигурация интерфейса не должна отнимать вход в сам
+// конструктор: старая запись (порядок без «about» + попытка спрятать хвост) —
+// именно так «кнопки не появлялись» после обновления.
+{
+  const mem = new Map<string, string>();
+  (globalThis as any).localStorage = {
+    getItem: (k: string) => (mem.has(k) ? mem.get(k)! : null),
+    setItem: (k: string, v: string) => { mem.set(k, String(v)); },
+    removeItem: (k: string) => { mem.delete(k); },
+    clear: () => mem.clear(),
+    key: (i: number) => [...mem.keys()][i] ?? null,
+    get length() { return mem.size; },
+  };
+  localStorage.setItem('lauaut.ui', JSON.stringify({
+    ids: ['file', 'grid', 'view'],   // порядок из версии, где «about» ещё не было
+    hidden: ['about'],               // и вдобавок попытка спрятать хвост шапки
+  }));
+  const html2 = renderToString(createElement(App));
+  for (const m of ['Интерфейс и справка', 'upd-btn', 'Обновить']) {
+    if (!html2.includes(m)) throw new Error(`старые настройки спрятали «${m}» — в конструктор интерфейса не вернуться`);
+  }
+  // группы, появившиеся в новой версии, дописываются в конец (а не пропадают)
+  for (const m of ['Активный слой: верхняя медь', 'Генератор деталей (I)']) {
+    if (!html2.includes(m)) throw new Error(`старый порядок групп спрятал новую группу: ${m}`);
+  }
+  delete (globalThis as any).localStorage;
+}
+
+// «⋯ → Интерфейс и справка» — единственный вход в конструктор интерфейса и цвета:
+// следим, чтобы его пункты не потерялись (меню рендерится только по клику)
+{
+  const app = readFileSync('src/App.tsx', 'utf8');
+  for (const m of ['Конструктор интерфейса…', 'Цвета интерфейса…']) {
+    if (!app.includes(m)) throw new Error(`меню «Интерфейс и справка»: пропал пункт «${m}»`);
+  }
+}
+
 // панель генератора с готовой деталью и деревом папок
 const gen = generate('dip 8 m3 подписи');
 if (!gen.ok) throw new Error('SSR: dip 8 m3 подписи не собралось');
