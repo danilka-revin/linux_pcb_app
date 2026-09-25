@@ -22,6 +22,17 @@ if (ver.short !== 'deadbee') throw new Error('version: ' + JSON.stringify(ver));
 const page = await (await fetch(url + '/')).text();
 if (!page.includes('<title>ok</title>')) throw new Error('index не отдался');
 
+// обновление: статус (с номером ревизии для long-poll), отмена без запущенного обновления
+const us = await (await fetch(url + '/update/status')).json();
+if (us.status !== 'idle' || typeof us.rev !== 'number' || !Array.isArray(us.stages)) throw new Error('update/status: ' + JSON.stringify(us));
+const t0 = Date.now();
+const us2 = await (await fetch(url + '/update/status?since=' + (us.rev + 1))).json(); // ревизия уже другая — ответ сразу
+if (Date.now() - t0 > 2000 || us2.rev !== us.rev) throw new Error('update/status long-poll не ответил сразу');
+const cr = await fetch(url + '/update/cancel', { method: 'POST' });
+if (cr.status !== 409) throw new Error('update/cancel без обновления должен вернуть 409, а вернул ' + cr.status);
+// хэшированные ассеты кэшируются навсегда, index.html — нет
+if ((await fetch(url + '/')).headers.get('cache-control') !== 'no-cache') throw new Error('index.html не должен кэшироваться');
+
 server.close();
 rmSync(dir, { recursive: true, force: true });
 console.log('server OK', url);
