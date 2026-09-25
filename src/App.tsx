@@ -21,14 +21,15 @@ import {
   type Defs, type ToolId,
 } from './ui/panels';
 import {
-  AboutDialog, ExportDialog, NewBoardDialog, PanelizeDialog, type ExportPngOpts,
+  AboutDialog, ColorsDialog, ExportDialog, NewBoardDialog, PanelizeDialog, type ExportPngOpts,
 } from './ui/dialogs';
+import { applyCustomColors, loadCustomColors, saveCustomColors, type CustomColors } from './ui/palette';
 import { UiBuilderDialog, useUpdater } from './ui/updater';
 
 type ToolId2 = ToolId;
 
 /** Фирменный логотип (оса с молнией) — значок в шапке. */
-function BeeMark({ size = 30 }: { size?: number }) {
+function BeeMark({ size = 40 }: { size?: number }) {
   return <img src="/logo.png" alt="" width={size} height={size} draggable={false} />;
 }
 
@@ -224,6 +225,12 @@ export default function App() {
   const [leftTab, setLeftTab] = useState<'layers' | 'lib'>('layers');
   // тема оформления: тёмная (по умолчанию) или светлая, переключается в шапке
   const [theme, setTheme] = useState<ThemeId>(loadTheme);
+  // кастомные цвета интерфейса (акцент/фон/панели/текст), см. ui/palette
+  const [colors, setColorsState] = useState<CustomColors>(loadCustomColors);
+  const setColors = useCallback((c: CustomColors) => {
+    setColorsState(c);
+    saveCustomColors(c);
+  }, []);
   const [routeMode, setRouteMode] = useState<'pair' | 'nets'>('pair');
   const [activeNet, setActiveNet] = useState<string | null>(null);
   const [routing, setRouting] = useState<string | null>(null);
@@ -241,7 +248,7 @@ export default function App() {
   }, [doc, tool, routeMode]);
   const [routeA, setRouteA] = useState<RouteEnd | null>(null);
   const [routeMsg, setRouteMsg] = useState<{ msg: string; ok: boolean | null }>({ msg: '', ok: null });
-  const [dialog, setDialog] = useState<'new' | 'export' | 'panelize' | 'about' | 'inventory' | 'uib' | null>(null);
+  const [dialog, setDialog] = useState<'new' | 'export' | 'panelize' | 'about' | 'inventory' | 'uib' | 'colors' | null>(null);
   const [uiConf, setUiConf] = useState<UiState>(loadUi);
   // сохраняем конфигурацию интерфейса сразу (не autosave через таймаут)
   const persistUi = useCallback((c: UiState) => {
@@ -329,12 +336,13 @@ export default function App() {
     try { localStorage.setItem(DEFS_KEY, JSON.stringify(defs)); } catch { /* ignore */ }
   }, [defs]);
 
-  // применяем тему: CSS-переменные на <html> + палитра холста
+  // применяем тему: CSS-переменные на <html> + палитра холста + пользовательские цвета
   useEffect(() => {
     document.documentElement.dataset.theme = theme;
     setCanvasTheme(theme);
+    applyCustomColors(colors, theme);
     try { localStorage.setItem(THEME_KEY, theme); } catch { /* ignore */ }
-  }, [theme]);
+  }, [theme, colors]);
 
   // ---------------- размер холста ----------------
   useEffect(() => {
@@ -1567,6 +1575,7 @@ export default function App() {
         {tb(theme === 'dark' ? 'sun' : 'moon',
           theme === 'dark' ? 'Включить светлую тему' : 'Включить тёмную тему',
           () => setTheme(theme === 'dark' ? 'light' : 'dark'))}
+        {tb('palette', 'Цвета интерфейса', () => setDialog('colors'))}
         {upd.Button}
         {tb('about', 'О программе', () => setDialog('about'))}
       </div>
@@ -1758,6 +1767,12 @@ export default function App() {
         <PanelizeDialog defX={doc.w + 2} defY={doc.h + 2} onOk={(c, r, gx, gy) => { panelize(c, r, gx, gy); setDialog(null); }} onClose={() => setDialog(null)} />
       )}
       {dialog === 'inventory' && <InventoryDialog doc={doc} onClose={() => setDialog(null)} />}
+      {dialog === 'colors' && (
+        <ColorsDialog
+          colors={colors} theme={theme} setColors={setColors}
+          onClose={() => setDialog(null)}
+        />
+      )}
       {dialog === 'uib' && (
         <UiBuilderDialog
           ids={uiOrder}

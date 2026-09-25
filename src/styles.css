@@ -33,8 +33,6 @@
   --code-bg: #0b0e12;
   --modal-veil: rgba(5, 8, 12, .72);
   --shadow: 0 22px 60px rgba(0, 0, 0, .6);
-  --badge-bg: #14181f;
-  --badge-line: rgba(255, 255, 255, .09);
   --sw-line: rgba(255, 255, 255, .25);
 }
 
@@ -67,8 +65,6 @@
   --code-bg: #f2f4f7;
   --modal-veil: rgba(30, 35, 42, .45);
   --shadow: 0 22px 50px rgba(25, 32, 42, .18);
-  --badge-bg: #14181f;
-  --badge-line: rgba(0, 0, 0, .25);
   --sw-line: rgba(20, 30, 40, .25);
 }
 
@@ -95,13 +91,13 @@ button { font: inherit; color: inherit; background: none; border: none; }
   flex-wrap: wrap;
 }
 .brand { display: flex; align-items: center; gap: 10px; margin: 0 14px 0 2px; color: var(--text); }
+/* логотип без рамки и подложки — у самой картинки свои закругления */
 .brandmark {
-  width: 32px; height: 32px; border-radius: 9px; flex: none;
+  width: 40px; height: 40px; border-radius: 10px; flex: none;
   display: grid; place-items: center;
-  background: var(--badge-bg); border: 1px solid var(--badge-line);
   overflow: hidden;
 }
-.brandmark img { width: 27px; height: 27px; display: block; }
+.brandmark img { width: 40px; height: 40px; display: block; }
 .brand > span { display: block; }
 .brand b { font-weight: 700; font-size: 13.5px; letter-spacing: .07em; }
 .brand em { color: var(--accent-text); font-style: normal; font-weight: 700; }
@@ -403,17 +399,48 @@ canvas { position: absolute; inset: 0; cursor: crosshair; display: block; }
 .radio-row label { display: flex; gap: 6px; align-items: center; cursor: pointer; font-size: 12.5px; }
 .radio-row input { accent-color: var(--accent); }
 
-/* диалог «О программе»: шапка с логотипом */
+/* диалог «О программе»: шапка с логотипом (без рамки) */
 .about-head { display: flex; align-items: center; gap: 12px; margin-bottom: 12px; }
 .about-logo {
-  width: 46px; height: 46px; flex: none; border-radius: 11px;
-  background: var(--badge-bg); border: 1px solid var(--badge-line);
+  width: 54px; height: 54px; flex: none; border-radius: 13px;
   display: grid; place-items: center; overflow: hidden;
 }
-.about-logo img { width: 40px; height: 40px; display: block; }
+.about-logo img { width: 54px; height: 54px; display: block; }
 .about-head b { font-size: 17px; letter-spacing: .04em; display: block; }
 .about-head b em { color: var(--accent-text); font-style: normal; }
 .about-head small { display: block; color: var(--muted); font-size: 9px; letter-spacing: 1.2px; margin-top: 2px; }
+
+/* диалог «Цвета интерфейса»: образцы акцента и выбор цвета */
+.swatches { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; }
+.swatch {
+  width: 28px; height: 28px; border-radius: 8px; cursor: pointer; flex: none;
+  border: 2px solid var(--sw-line); padding: 0;
+  transition: transform .12s ease, border-color .12s ease;
+}
+.swatch:hover { transform: scale(1.1); }
+.swatch.on { border-color: var(--accent-text); box-shadow: 0 0 0 2px var(--accent-soft); }
+.swatch.auto { background: linear-gradient(135deg, #ffc233 50%, #98a2b3 50%); }
+.swatch.custom { position: relative; overflow: hidden; display: grid; place-items: center; background: var(--surface-2); }
+.swatch.custom::after {
+  content: '+'; position: absolute; inset: 0; display: grid; place-items: center;
+  font-size: 15px; font-weight: 700; color: var(--muted); pointer-events: none;
+}
+.swatch.custom input[type='color'] { position: absolute; inset: 0; opacity: 0; cursor: pointer; }
+.color-fields { display: flex; gap: 10px 16px; flex-wrap: wrap; margin-top: 8px; }
+.color-field {
+  display: flex; align-items: center; gap: 7px; font-size: 12.5px; color: var(--text-2);
+}
+.color-field input[type='color'] {
+  width: 34px; height: 26px; padding: 2px; border: 1px solid var(--line); border-radius: 6px;
+  background: var(--surface-2); cursor: pointer;
+}
+.color-field input[type='color']::-webkit-color-swatch-wrapper { padding: 0; }
+.color-field input[type='color']::-webkit-color-swatch { border: none; border-radius: 4px; }
+.color-reset {
+  color: var(--muted); font-size: 14px; line-height: 1; padding: 1px 5px;
+  border-radius: 5px; cursor: pointer;
+}
+.color-reset:hover { color: var(--danger-ink); background: var(--surface-2); }
 
 ::-webkit-scrollbar { width: 10px; height: 10px; }
 ::-webkit-scrollbar-thumb { background: var(--line); border-radius: 5px; border: 2px solid var(--surface); }
