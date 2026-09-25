@@ -5,5 +5,6 @@ const html = renderToString(createElement(App));
 console.log('SSR длина:', html.length);
 if (!html.includes('toolbar') || !html.includes('status')) throw new Error('layout not rendered');
 if (!html.includes('Bees')) throw new Error('brand not rendered');
-if (!html.includes('ffd53f')) throw new Error('wasp mark not rendered');
+if (!html.includes('logo.png')) throw new Error('bee logo not rendered');
+if (!html.includes('светлую тему') && !html.includes('тёмную тему')) throw new Error('theme toggle not rendered');
 console.log('SSR OK');

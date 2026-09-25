@@ -1,4 +1,5 @@
-// PSBees — редактор печатных плат для Linux и Windows (аналог Sprint-Layout, тёмная тема).
+// PSBees — редактор печатных плат для Linux и Windows (аналог Sprint-Layout;
+// фирменный стиль «пчелиный»: оса с молнией, золото на графите; тёмная и светлая темы).
 import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from 'react';
 import * as M from './pcb/model';
 import { expandComp, expandDoc, libBBox } from './pcb/expand';
@@ -7,7 +8,7 @@ import {
   loadUserMacros, saveUserMacros, makeMacro, addUserMacro, macroKey, splitMacroName, type UserMacro,
 } from './pcb/userlib';
 import { LIB } from './pcb/library';
-import { COLORS, drawDoc, drawEnt, renderPrint, toWorld, type View } from './pcb/render';
+import { CANVAS_UI, COLORS, drawDoc, drawEnt, renderPrint, setCanvasTheme, toWorld, type ThemeId, type View } from './pcb/render';
 import { productionFiles } from './pcb/gerber';
 import { autoroute, clearanceAt, pickEndpoint, endpointOf, type RouteEnd } from './pcb/autoroute';
 import { copperComponents, type NetRouteResult } from './pcb/netroute';
@@ -26,32 +27,19 @@ import { UiBuilderDialog, useUpdater } from './ui/updater';
 
 type ToolId2 = ToolId;
 
-/** Логотип-оса (стиль Betaflight) — миниатюра для шапки. */
-function WaspMark({ size = 30 }: { size?: number }) {
-  return (
-    <svg width={size} height={size} viewBox="0 0 128 128" aria-hidden="true">
-      <rect x="8" y="8" width="112" height="112" rx="20" fill="#141a24" stroke="#2a3a52" strokeWidth="4" />
-      <path d="M58 50 L26 24 L14 32 L50 58 Z" fill="#a7d3ff" opacity="0.9" />
-      <path d="M70 50 L102 24 L114 32 L78 58 Z" fill="#a7d3ff" opacity="0.9" />
-      <path d="M54 60 L30 57 L24 66 L50 68 Z" fill="#8fc3f0" opacity="0.8" />
-      <path d="M74 60 L98 57 L104 66 L78 68 Z" fill="#8fc3f0" opacity="0.8" />
-      <g stroke="#e6b93e" strokeWidth="2.2" strokeLinecap="round" fill="none">
-        <path d="M54 56 L40 62 M74 56 L88 62" />
-        <path d="M50 64 L37 72 M78 64 L91 72" />
-        <path d="M54 78 L42 88 M74 78 L86 88" />
-      </g>
-      <ellipse cx="64" cy="84" rx="13" ry="16" fill="#ffd53f" />
-      <rect x="53" y="75" width="22" height="5" rx="2" fill="#1b2230" />
-      <rect x="51" y="85" width="26" height="5" rx="2" fill="#1b2230" />
-      <rect x="54" y="94" width="20" height="4" rx="2" fill="#1b2230" />
-      <path d="M62.5 99 L65.5 99 L64 107 Z" fill="#232c3d" />
-      <ellipse cx="64" cy="58" rx="11" ry="9" fill="#232c3d" stroke="#ffd53f" strokeWidth="2" />
-      <path d="M61 34 L55 21 M67 34 L73 21" stroke="#ffd53f" strokeWidth="2.6" strokeLinecap="round" fill="none" />
-      <circle cx="64" cy="43" r="9" fill="#ffd53f" />
-      <circle cx="60.5" cy="40.5" r="1.8" fill="#141a24" />
-      <circle cx="67.5" cy="40.5" r="1.8" fill="#141a24" />
-    </svg>
-  );
+/** Фирменный логотип (оса с молнией) — значок в шапке. */
+function BeeMark({ size = 30 }: { size?: number }) {
+  return <img src="/logo.png" alt="" width={size} height={size} draggable={false} />;
+}
+
+const THEME_KEY = 'psbees.theme';
+
+function loadTheme(): ThemeId {
+  try {
+    const t = localStorage.getItem(THEME_KEY);
+    if (t === 'light' || t === 'dark') return t;
+  } catch { /* приватный режим / SSR */ }
+  return 'dark';
 }
 
 /** Русские формы множественного числа: [1, 2, 5] → «1 дорожка», «2 дорожки», «5 дорожек» */
@@ -234,6 +222,8 @@ export default function App() {
   const [placeSide, setPlaceSide] = useState<'top' | 'bottom'>('top');
   const [pasteTpl, setPasteTpl] = useState<M.Entity[] | null>(null);
   const [leftTab, setLeftTab] = useState<'layers' | 'lib'>('layers');
+  // тема оформления: тёмная (по умолчанию) или светлая, переключается в шапке
+  const [theme, setTheme] = useState<ThemeId>(loadTheme);
   const [routeMode, setRouteMode] = useState<'pair' | 'nets'>('pair');
   const [activeNet, setActiveNet] = useState<string | null>(null);
   const [routing, setRouting] = useState<string | null>(null);
@@ -338,6 +328,13 @@ export default function App() {
   useEffect(() => {
     try { localStorage.setItem(DEFS_KEY, JSON.stringify(defs)); } catch { /* ignore */ }
   }, [defs]);
+
+  // применяем тему: CSS-переменные на <html> + палитра холста
+  useEffect(() => {
+    document.documentElement.dataset.theme = theme;
+    setCanvasTheme(theme);
+    try { localStorage.setItem(THEME_KEY, theme); } catch { /* ignore */ }
+  }, [theme]);
 
   // ---------------- размер холста ----------------
   useEffect(() => {
@@ -1272,7 +1269,7 @@ export default function App() {
       ctx.strokeStyle = activeCu === 'k1' ? COLORS.k1 : COLORS.k2;
       ctx.beginPath(); ctx.moveTo(a.px, a.py); ctx.lineTo(b.px, b.py); ctx.stroke();
       ctx.globalAlpha = 1;
-      ctx.fillStyle = '#fff';
+      ctx.fillStyle = CANVAS_UI.ink;
       pts.forEach((p) => {
         const q = toPx(p.x, p.y);
         ctx.fillRect(q.px - 1.5, q.py - 1.5, 3, 3);
@@ -1306,7 +1303,7 @@ export default function App() {
       const p2 = constrain(draft.p1, { x: mouse.wx, y: mouse.wy });
       const a = toPx(draft.p1.x, draft.p1.y), b = toPx(p2.x, p2.y);
       ctx.setLineDash([5, 4]);
-      ctx.strokeStyle = '#fff';
+      ctx.strokeStyle = CANVAS_UI.ink;
       ctx.lineWidth = 1;
       ctx.beginPath(); ctx.moveTo(a.px, a.py); ctx.lineTo(b.px, b.py); ctx.stroke();
       ctx.setLineDash([]);
@@ -1314,7 +1311,7 @@ export default function App() {
     if (draft?.t === 'rect') {
       const a = toPx(draft.p1.x, draft.p1.y), b = toPx(mouse.wx, mouse.wy);
       ctx.setLineDash([5, 4]);
-      ctx.strokeStyle = '#fff';
+      ctx.strokeStyle = CANVAS_UI.ink;
       ctx.strokeRect(Math.min(a.px, b.px), Math.min(a.py, b.py), Math.abs(b.px - a.px), Math.abs(b.py - a.py));
       ctx.setLineDash([]);
     }
@@ -1322,10 +1319,10 @@ export default function App() {
       const a = toPx(draft.c.x, draft.c.y);
       const rr = Math.hypot(mouse.wx - draft.c.x, mouse.wy - draft.c.y);
       ctx.setLineDash([5, 4]);
-      ctx.strokeStyle = '#fff';
+      ctx.strokeStyle = CANVAS_UI.ink;
       ctx.beginPath(); ctx.arc(a.px, a.py, rr * view.s, 0, Math.PI * 2); ctx.stroke();
       ctx.setLineDash([]);
-      ctx.fillStyle = '#cdd3db';
+      ctx.fillStyle = CANVAS_UI.labelInk;
       ctx.font = '11px monospace';
       ctx.fillText('R ' + M.fmt(rr), a.px + 10, a.py - 8);
     }
@@ -1346,7 +1343,7 @@ export default function App() {
       ctx.font = '11px monospace';
       const tw = ctx.measureText(label).width;
       const lx = (a.px + b.px) / 2 + 12, ly = (a.py + b.py) / 2 - 10;
-      ctx.fillStyle = 'rgba(20,22,26,.85)';
+      ctx.fillStyle = CANVAS_UI.labelBg;
       ctx.fillRect(lx - 4, ly - 12, tw + 8, 17);
       ctx.fillStyle = '#7ac0ff';
       ctx.fillText(label, lx, ly);
@@ -1548,10 +1545,10 @@ export default function App() {
     layer: (
       <div className="tb-group" key="layer">
         <button className={'tb-btn cu' + (activeCu === 'k1' ? ' active' : '')}
-          style={{ borderColor: COLORS.k1, color: activeCu === 'k1' ? '#fff' : COLORS.k1 }}
+          style={{ borderColor: COLORS.k1, color: activeCu === 'k1' ? 'var(--text)' : COLORS.k1 }}
           title="Активный слой: верхняя медь (L)" onClick={() => setActiveCu('k1')}>K1</button>
         <button className={'tb-btn cu' + (activeCu === 'k2' ? ' active' : '')}
-          style={{ borderColor: COLORS.k2, color: activeCu === 'k2' ? '#fff' : COLORS.k2 }}
+          style={{ borderColor: COLORS.k2, color: activeCu === 'k2' ? 'var(--text)' : COLORS.k2 }}
           title="Активный слой: нижняя медь (L)" onClick={() => setActiveCu('k2')}>K2</button>
       </div>
     ),
@@ -1567,6 +1564,9 @@ export default function App() {
     about: (
       <div className="tb-group" key="about">
         {tb('uib', 'Конструктор интерфейса', () => setDialog('uib'))}
+        {tb(theme === 'dark' ? 'sun' : 'moon',
+          theme === 'dark' ? 'Включить светлую тему' : 'Включить тёмную тему',
+          () => setTheme(theme === 'dark' ? 'light' : 'dark'))}
         {upd.Button}
         {tb('about', 'О программе', () => setDialog('about'))}
       </div>
@@ -1667,9 +1667,9 @@ export default function App() {
     <>
       <div className="toolbar">
         <div className="brand">
-            <span className="brandmark"><WaspMark /></span>
-            <span><b>PS<em>Bees</em></b><small>PCB · LINUX · WINDOWS · SPRINT-LAYOUT</small></span>
-          </div>
+          <span className="brandmark"><BeeMark /></span>
+          <span><b>PS<em>Bees</em></b><small>PCB · LINUX · WINDOWS · SPRINT-LAYOUT</small></span>
+        </div>
         {toShow.map((id) => tbGroups[id])}
       </div>
 

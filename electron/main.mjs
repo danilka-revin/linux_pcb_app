@@ -22,7 +22,7 @@ function createWindow(url) {
     height: 900,
     minWidth: 960,
     minHeight: 640,
-    backgroundColor: '#14161a',
+    backgroundColor: '#0f1115',
     autoHideMenuBar: true,
     show: false,
     title: 'PSBees — редактор печатных плат',

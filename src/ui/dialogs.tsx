@@ -160,9 +160,17 @@ export function AboutDialog({ version, onClose }: { version: string | null; onCl
       onClose={onClose}
       foot={<button className="btn primary" onClick={onClose}>Закрыть</button>}
     >
+      <div className="about-head">
+        <span className="about-logo"><img src="/logo.png" alt="" /></span>
+        <span>
+          <b>PS<em>Bees</em></b>
+          <small>PCB · LINUX · WINDOWS · SPRINT-LAYOUT</small>
+        </span>
+      </div>
       <p>
         <b>PSBees</b> — редактор разводки печатных плат для Linux и Windows в духе Sprint-Layout.
-        Данные хранятся локально, тёмная тема по умолчанию.
+        Данные хранятся локально. Оформление — фирменный «пчелиный» стиль: две темы,
+        тёмная (по умолчанию) и светлая, переключаются кнопкой в шапке.
       </p>
       <p style={{ fontSize: 12, opacity: 0.85 }}>
         {version

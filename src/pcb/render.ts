@@ -10,21 +10,61 @@ export interface View {
   mir: boolean; // вид снизу (зеркально)
 }
 
+export type ThemeId = 'dark' | 'light';
+
+/** Цвета холста. Функциональные цвета слоёв (k1/k2/s1/both) общие для обеих
+ *  тем — это «реальные» цвета меди и шелкографии; фон/сетка/выделение
+ *  переключаются вместе с темой (см. setCanvasTheme). Объект мутируется
+ *  на месте, поэтому все импортировавшие его получают новые значения. */
 export const COLORS = {
-  bg: '#0d1411',
+  bg: '#0f1115',
   k1: '#2f80ed',
   k2: '#35c46a',
   s1: '#e5484d',
   s2: '#e8c93e',
   outline: '#e9ecf1',
   both: '#f0a63c',
-  holeFill: '#070d0a',
-  holeRing: 'rgba(233,236,241,.32)',
-  sel: '#d5ff45',
+  holeFill: '#0f1115',
+  holeRing: 'rgba(233,236,241,.35)',
+  sel: '#ffc233',
   probe: '#ffd23f',
-  grid: '#22302a',
-  axes: '#34453c',
+  grid: '#232830',
+  axes: '#3a414d',
 };
+
+/** Сервисные цвета canvas-оверлеев (черновики, подписи, перекрестие). */
+export const CANVAS_UI = {
+  ink: '#ffffff',
+  labelBg: 'rgba(13,16,20,.88)',
+  labelInk: '#a7b0bc',
+  crosshair: 'rgba(255,255,255,.14)',
+};
+
+const CANVAS_THEMES: Record<ThemeId, { colors: typeof COLORS; ui: typeof CANVAS_UI }> = {
+  dark: {
+    colors: {
+      bg: '#0f1115', k1: '#2f80ed', k2: '#35c46a', s1: '#e5484d', s2: '#e8c93e',
+      outline: '#e9ecf1', both: '#f0a63c', holeFill: '#0f1115',
+      holeRing: 'rgba(233,236,241,.35)', sel: '#ffc233', probe: '#ffd23f',
+      grid: '#232830', axes: '#3a414d',
+    },
+    ui: { ink: '#ffffff', labelBg: 'rgba(13,16,20,.88)', labelInk: '#a7b0bc', crosshair: 'rgba(255,255,255,.14)' },
+  },
+  light: {
+    colors: {
+      bg: '#eef1f4', k1: '#2f80ed', k2: '#2aa35c', s1: '#d93a3f', s2: '#c9930a',
+      outline: '#232a34', both: '#e08e00', holeFill: '#eef1f4',
+      holeRing: 'rgba(35,42,52,.45)', sel: '#e08e00', probe: '#d97706',
+      grid: '#d7dce3', axes: '#c2c9d2',
+    },
+    ui: { ink: '#232a34', labelBg: 'rgba(255,255,255,.92)', labelInk: '#45505c', crosshair: 'rgba(20,30,40,.13)' },
+  },
+};
+
+export function setCanvasTheme(theme: ThemeId): void {
+  Object.assign(COLORS, CANVAS_THEMES[theme].colors);
+  Object.assign(CANVAS_UI, CANVAS_THEMES[theme].ui);
+}
 
 export const toWorld = (v: View, px: number, py: number): Pt => ({
   x: ((px - v.ox) / v.s) * (v.mir ? -1 : 1),
