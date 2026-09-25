@@ -90,6 +90,7 @@ export const ICONS: Record<string, ReactNode> = {
       {C(12, 12, 2.6)}
     </>
   ),
+  more: <>{C(5.5, 12, 1.7, true)}{C(12, 12, 1.7, true)}{C(18.5, 12, 1.7, true)}</>,
 };
 
 export function Ic({ n, size = 18 }: { n: string; size?: number }) {

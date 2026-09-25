@@ -1,6 +1,8 @@
-// Мелкие UI-виджеты: числовое поле, диалог.
-import { useEffect, useState, type ReactNode } from 'react';
+// Мелкие UI-виджеты: числовое поле, диалог, кнопка с выпадающим меню.
+import { useEffect, useRef, useState, type ReactNode } from 'react';
+import { createPortal } from 'react-dom';
 import { fmt } from '../pcb/model';
+import { Ic } from './icons';
 
 /** Числовое поле (мм) */
 export function NI({
@@ -107,6 +109,101 @@ export function Modal({
         {children}
         {foot && <div className="foot">{foot}</div>}
       </div>
+    </div>
+  );
+}
+
+/** Пункт выпадающего меню тулбара (sep — разделитель) */
+export interface MenuEntry {
+  icon?: string;
+  label?: string;
+  kbd?: string;
+  onClick?: () => void;
+  disabled?: boolean;
+  sep?: boolean;
+}
+
+/**
+ * Кнопка тулбара с выпадающим меню: компактно размещает группу редких
+ * действий в один клик. Меню закрывается по Esc, клику мимо и после выбора.
+ * Раскрывается порталом к <body> с фиксированным позиционированием — шапка
+ * с overflow:hidden его не обрезает.
+ */
+export function MenuBtn({
+  icon = 'more', title, items, align = 'left', active = false,
+}: {
+  icon?: string;
+  title: string;
+  items: MenuEntry[];
+  align?: 'left' | 'right';
+  active?: boolean;
+}) {
+  const [open, setOpen] = useState(false);
+  const [pos, setPos] = useState<{ top: number; left?: number; right?: number }>({ top: 0 });
+  const root = useRef<HTMLDivElement>(null);
+  const pop = useRef<HTMLDivElement>(null);
+
+  const toggle = () => {
+    if (!open && root.current) {
+      const r = root.current.getBoundingClientRect();
+      setPos(align === 'right'
+        ? { top: r.bottom + 6, right: Math.max(6, window.innerWidth - r.right) }
+        : { top: r.bottom + 6, left: Math.max(6, Math.min(r.left, window.innerWidth - 266)) });
+    }
+    setOpen((o) => !o);
+  };
+
+  useEffect(() => {
+    if (!open) return;
+    const down = (e: MouseEvent) => {
+      const t = e.target as Node;
+      if (!root.current?.contains(t) && !pop.current?.contains(t)) setOpen(false);
+    };
+    const key = (e: KeyboardEvent) => { if (e.key === 'Escape') { e.stopPropagation(); setOpen(false); } };
+    // подписываемся после текущего клика, чтобы он же меню не закрыл
+    const t = setTimeout(() => document.addEventListener('mousedown', down), 0);
+    window.addEventListener('keydown', key, true);
+    return () => {
+      clearTimeout(t);
+      document.removeEventListener('mousedown', down);
+      window.removeEventListener('keydown', key, true);
+    };
+  }, [open]);
+
+  return (
+    <div className={'tb-menu' + (align === 'right' ? ' right' : '')} ref={root}>
+      <button
+        type="button"
+        className={'tb-btn' + (open || active ? ' active' : '')}
+        title={title}
+        aria-haspopup="menu"
+        aria-expanded={open}
+        onClick={toggle}
+      >
+        <Ic n={icon} />
+      </button>
+      {open && createPortal(
+        <div className="tb-pop" role="menu" ref={pop}
+          style={{ position: 'fixed', top: pos.top, left: pos.left, right: pos.right }}>
+          {items.map((it, i) => (it.sep ? (
+            <div key={i} className="tb-pop-sep" />
+          ) : (
+            <button
+              key={i}
+              type="button"
+              role="menuitem"
+              className="tb-pop-item"
+              disabled={it.disabled}
+              onClick={() => { setOpen(false); it.onClick?.(); }}
+            >
+              {it.icon ? <Ic n={it.icon} size={16} /> : <span className="tb-pop-ico" />}
+              <span className="tb-pop-label">{it.label}</span>
+              {it.kbd && <span className="tb-pop-kbd">{it.kbd}</span>}
+            </button>
+          )))}
+        </div>,
+        document.body,
+      )}
     </div>
   );
 }

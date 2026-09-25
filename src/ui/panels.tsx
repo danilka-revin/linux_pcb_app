@@ -165,6 +165,8 @@ export function LibraryPanel({
   const pickedUser = picked && picked.startsWith('u:')
     ? macros.find((m) => 'u:' + macroKey(m) === picked)
     : undefined;
+  // элементы выбранного макроса строим один раз (а не на каждый рендер панели)
+  const pickedEls = useMemo(() => (pickedEntry ? pickedEntry.build() : undefined), [pickedEntry]);
   const list = useMemo(() => {
     const items = Object.values(LIB);
     const f = q.trim().toLowerCase();
@@ -182,7 +184,7 @@ export function LibraryPanel({
       </div>
       {pickedUser && (
         <div className="lib-prev">
-          <LibPreview ents={pickedUser.ents} bl={pickedUser.bl} height={132} />
+          <LibPreview ents={pickedUser.ents} bl={pickedUser.bl} height={140} />
           <div className="lib-prev-title">{macroKey(pickedUser)}</div>
           <div className="lib-prev-spec">
             мой макрос · {pickedUser.ents.length} {plural(pickedUser.ents.length, ['примитив', 'примитива', 'примитивов'])}
@@ -194,8 +196,8 @@ export function LibraryPanel({
         <div className="lib-prev">
           <LibPreview
             libKey={pickedEntry.key}
-            els={pickedEntry.build()}
-            height={132}
+            els={pickedEls}
+            height={140}
           />
           <div className="lib-prev-title">{pickedEntry.name}</div>
           <div className="lib-prev-spec">{libSpecText(pickedEntry)}</div>

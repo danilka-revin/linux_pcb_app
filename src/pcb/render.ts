@@ -1,6 +1,6 @@
 // Отрисовка документа на canvas 2D.
 
-import type { Doc, Entity, LayerId, Pt } from './model';
+import { entBBox, type Doc, type Entity, type LayerId, type Pt } from './model';
 import { expandComp } from './expand';
 
 export interface View {
@@ -66,6 +66,9 @@ const CANVAS_THEMES: Record<ThemeId, { colors: typeof COLORS; ui: typeof CANVAS_
 export function setCanvasTheme(theme: ThemeId): void {
   Object.assign(COLORS, CANVAS_THEMES[theme].colors);
   Object.assign(CANVAS_UI, CANVAS_THEMES[theme].ui);
+  // Сигнал для мини-канвасов (предпросмотр библиотеки, сетки): перерисоваться
+  // новыми цветами. Тема мутирует COLORS на месте, без этого они бы «застыли».
+  try { window.dispatchEvent(new Event('psbees:theme')); } catch { /* SSR/тесты */ }
 }
 
 export const toWorld = (v: View, px: number, py: number): Pt => ({
@@ -278,11 +281,41 @@ export function zOrdered(doc: Doc): Entity[] {
   return [...under, ...over];
 }
 
+/** Прямоугольник видимой области в мм — для отсечения невидимых примитивов */
+export interface ClipRect { x1: number; y1: number; x2: number; y2: number }
+
+/**
+ * Отрисовка готового плоского списка примитивов (например, из zOrdered).
+ * Список можно построить один раз (useMemo) и переиспользовать в кадрах —
+ * развёртка компонентов (expandComp) не вызывается на каждую перерисовку.
+ * clip — видимый прямоугольник в мм: примитивы вне его не рисуются
+ * (существенно ускоряет работу на крупных платах при увеличении).
+ */
+export function drawFlat(
+  ctx: CanvasRenderingContext2D,
+  v: View,
+  ents: Entity[],
+  hidden?: Set<LayerId>,
+  clip?: ClipRect | null,
+): void {
+  const o: DrawOpts = { hidden };
+  if (!clip) {
+    for (let i = 0; i < ents.length; i++) drawEnt(ctx, v, ents[i], o);
+    return;
+  }
+  for (let i = 0; i < ents.length; i++) {
+    const e = ents[i];
+    const b = entBBox(e);
+    if (b[2] < clip.x1 || b[0] > clip.x2 || b[3] < clip.y1 || b[1] > clip.y2) continue;
+    drawEnt(ctx, v, e, o);
+  }
+}
+
 /** Документ целиком */
 export function drawDoc(
   ctx: CanvasRenderingContext2D, v: View, doc: Doc, hidden: Set<LayerId>,
 ): void {
-  for (const e of zOrdered(doc)) drawEnt(ctx, v, e, { hidden });
+  drawFlat(ctx, v, zOrdered(doc), hidden);
 }
 
 /** Печатный вид 1:1 для ЛУТ/фотошаблона (чёрным по белому) */

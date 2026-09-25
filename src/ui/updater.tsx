@@ -8,7 +8,7 @@
 //   POST /update/cancel         — отменить.
 // После установки сервер сам перезапускается, а страница дожидается новой
 // версии и перезагружается автоматически.
-import { useCallback, useEffect, useRef, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { Modal } from './widgets';
 import { Ic } from './icons';
 
@@ -273,7 +273,9 @@ export function useUpdater(version: string | null) {
   }, [check, st.phase, st.reload]);
 
   const busy = st.phase === 'running';
-  const Button = (
+  // мемоизируем кнопку: тулбар приложения не должен пересобираться на каждое
+  // движение мыши из-за новой идентичности этого элемента
+  const Button = useMemo(() => (
     <button
       className={'tb-btn cu upd-btn' + (busy ? ' upd-busy' : '')}
       title={busy ? `Идёт обновление: ${pct ?? 0}% — нажмите, чтобы развернуть` : 'Обновить программу из ветки main (GitHub)'}
@@ -284,7 +286,7 @@ export function useUpdater(version: string | null) {
       {!busy && st.updateAvailable && <span className="upd-dot" title="Доступна новая версия" />}
       {busy && <span className="upd-btn-bar" style={{ transform: `scaleX(${(pct ?? 0) / 100})` }} />}
     </button>
-  );
+  ), [busy, pct, st.updateAvailable, openDialog]);
 
   const Dialog = (
     <UpdaterDialog
