@@ -3,3 +3,6 @@ dist/
 release/
 *.local
 .DS_Store
+dist.old/
+dist.new/
+.update-cache/

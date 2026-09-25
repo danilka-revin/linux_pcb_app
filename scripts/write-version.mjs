@@ -20,11 +20,13 @@ const git = (cmd) => {
   }
 };
 
-const sha = git('git rev-parse HEAD') || 'local';
+// автообновление собирает из tar.gz без .git — SHA передаётся через окружение
+const envSha = /^[0-9a-f]{40}$/i.test(process.env.PSBEES_BUILD_SHA || '') ? process.env.PSBEES_BUILD_SHA : '';
+const sha = envSha || git('git rev-parse HEAD') || 'local';
 const version = {
   sha,
-  short: (git('git rev-parse --short HEAD') || sha.slice(0, 7)),
-  branch: git('git rev-parse --abbrev-ref HEAD') || '',
+  short: envSha ? envSha.slice(0, 7) : (git('git rev-parse --short HEAD') || sha.slice(0, 7)),
+  branch: process.env.PSBEES_BUILD_BRANCH || git('git rev-parse --abbrev-ref HEAD') || '',
   built: new Date().toISOString(),
 };
 

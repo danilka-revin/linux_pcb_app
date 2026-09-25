@@ -171,7 +171,10 @@ notify() {
 # Без сети или при ошибке — тихо остаёмся на текущей версии.
 NEED_RESTART=0
 if [ -f "$APP_DIR/update.mjs" ]; then
-  UPD_OUT=$("$NODE" "$APP_DIR/update.mjs" --app-dir "$APP_DIR" 2>&1)
+  # системные сертификаты для fetch (прокси/антивирусы), если Node.js это умеет
+  CA_FLAG=""
+  "$NODE" --use-system-ca -e 0 >/dev/null 2>&1 && CA_FLAG="--use-system-ca"
+  UPD_OUT=$("$NODE" $CA_FLAG "$APP_DIR/update.mjs" --app-dir "$APP_DIR" 2>&1)
   RC=$?
   { printf '%s\n' "$UPD_OUT"; } >> "$APP_DIR/update.log" 2>/dev/null || true
   if [ "$RC" -eq 10 ]; then
