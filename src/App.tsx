@@ -24,13 +24,14 @@ import { InventoryDialog } from './ui/inventory';
 import { download, makeZip, unzip } from './pcb/zip';
 import { Ic } from './ui/icons';
 import {
-  LayersPanel, LibraryPanel, PropsPanel, TOOLS,
+  LayersPanel, LibraryPanel, PropsPanel, TOOLS, libSpecText,
   type Defs, type ToolId,
 } from './ui/panels';
 import {
   AboutDialog, ColorsDialog, ExportDialog, NewBoardDialog, PanelizeDialog, type ExportPngOpts,
 } from './ui/dialogs';
 import { GridDialog, GridQuickPanel, GridToolbar, gridOf } from './ui/grid';
+import { LibPreviewDialog } from './ui/libpreview';
 import { applyCustomColors, loadCustomColors, saveCustomColors, type CustomColors } from './ui/palette';
 import { UiBuilderDialog, useUpdater } from './ui/updater';
 import { MenuBtn } from './ui/widgets';
@@ -247,6 +248,8 @@ export default function App() {
   const [mouse, setMouse] = useState({ px: -100, py: -100, wx: 0, wy: 0 });
   const [size, setSize] = useState({ w: 640, h: 480 });
   const [placeLib, setPlaceLib] = useState<string | null>(null);
+  // макрос, открытый окном предпросмотра (ключ библиотеки или «u:имя»)
+  const [libPrev, setLibPrev] = useState<string | null>(null);
   const [macros, setMacros] = useState<UserMacro[]>(loadUserMacros);
   const persistMacros = useCallback((up: (prev: UserMacro[]) => UserMacro[]) => {
     setMacros((prev) => {
@@ -844,11 +847,12 @@ export default function App() {
     });
   }, []);
 
-  const addComp = useCallback((at: M.Pt) => {
-    if (!placeLib) return;
+  /** Поставить выбранный макрос в точку `at`; возвращает id компонента */
+  const addComp = useCallback((at: M.Pt): string | null => {
+    if (!placeLib) return null;
     if (placeLib.startsWith('u:')) {
       const m = macros.find((x) => 'u:' + macroKey(x) === placeLib);
-      if (!m) return;
+      if (!m) return null;
       const comp: M.Comp = {
         id: M.uid(), kind: 'comp', lib: '', name: macroKey(m),
         x: at.x, y: at.y, rot: placeRot, side: placeSide,
@@ -856,17 +860,53 @@ export default function App() {
         ents: m.ents.map((e) => ({ ...JSON.parse(JSON.stringify(e)), id: M.uid() } as M.Entity)),
       };
       addEnts([comp]);
-      return;
+      return comp.id;
     }
     const entry = LIB[placeLib];
-    if (!entry) return;
+    if (!entry) return null;
     const comp: M.Comp = {
       id: M.uid(), kind: 'comp', lib: placeLib, name: entry.name,
       x: at.x, y: at.y, rot: placeRot, side: placeSide,
       bl: libBBox(entry.build()),
     };
     addEnts([comp]);
+    return comp.id;
   }, [placeLib, placeRot, placeSide, addEnts, macros]);
+
+  // «Добавить на плату» из окна предпросмотра: ставим макрос в центр видимой
+  // области (с привязкой к сетке — как при обычном клике) и выделяем, чтобы
+  // сразу было видно, куда он встал.
+  const addLibFromPreview = useCallback(() => {
+    const id = addComp(snapPt(toWorld(view, size.w / 2, size.h / 2), false));
+    if (id) setSel(new Set([id]));
+    setLibPrev(null);
+  }, [addComp, snapPt, view, size]);
+
+  // Данные для окна предпросмотра макроса: макрос из библиотеки или «мой» —
+  // всё, что нужно и предпросмотру, и заголовку с характеристиками.
+  const libPrevInfo = useMemo(() => {
+    if (!libPrev) return null;
+    if (libPrev.startsWith('u:')) {
+      const m = macros.find((x) => 'u:' + macroKey(x) === libPrev);
+      if (!m) return null;
+      return {
+        title: macroKey(m),
+        spec: `мой макрос · ${m.ents.length} ${plur(m.ents.length, ['примитив', 'примитива', 'примитивов'])}`,
+        note: 'Макрос сохранён из выделенных элементов платы (правый клик → «В макрос»).',
+        ents: m.ents,
+        bl: m.bl,
+      };
+    }
+    const entry = LIB[libPrev];
+    if (!entry) return null;
+    return {
+      title: entry.name,
+      spec: libSpecText(entry),
+      note: entry.spec?.note,
+      entry,
+      els: entry.build(),
+    };
+  }, [libPrev, macros]);
 
   // ---------------- автотрассировка ----------------
   const changeNets = useCallback((nets: M.Net[]) => {
@@ -1192,7 +1232,7 @@ export default function App() {
       if (e.code === 'Escape') { routeWorker.current.terminate(); routeWorker.current = null; setRouting(null); setRouteMsg({ msg: 'Трассировка отменена. Плата не изменена.', ok: null }); }
       e.preventDefault(); return;
     }
-    if (dialog) return;
+    if (dialog || libPrev) return;   // окно открыто — плату не трогаем
     const t = e.target as HTMLElement;
     if (t && (t.tagName === 'INPUT' || t.tagName === 'TEXTAREA' || t.tagName === 'SELECT' || t.isContentEditable)) return;
     const ctrl = e.ctrlKey || e.metaKey;
@@ -1264,7 +1304,7 @@ export default function App() {
     }
   }, [
     dialog, doc, undo, redo, saveFile, copySel, startPaste, duplicateSel, finishOrCancel,
-    deleteSel, placeLib, rotateSel, mirrorSel, draft, activeCu, mouse.wx, mouse.wy, fit,
+    deleteSel, placeLib, libPrev, rotateSel, mirrorSel, draft, activeCu, mouse.wx, mouse.wy, fit,
     zoomAt, size, nudge, defs.grid, defs.gridUnit, defs.snapOn, setDefs, setTool,
   ]);
 
@@ -1783,10 +1823,11 @@ export default function App() {
     const renderLibPane = () => (
       <LibraryPanel
         picked={placeLib}
-        onPick={(k) => { setPlaceLib(k); setToolRaw('comp'); }}
+        onPick={(k) => { setPlaceLib(k); setToolRaw('comp'); setLibPrev(k); }}
         macros={macros}
-        onPickUser={(k) => { setPlaceLib('u:' + k); setToolRaw('comp'); }}
-        onDelUser={(k) => { persistMacros((prev) => prev.filter((m) => macroKey(m) !== k)); if (placeLib === 'u:' + k) setPlaceLib(null); }}
+        onPickUser={(k) => { setPlaceLib('u:' + k); setToolRaw('comp'); setLibPrev('u:' + k); }}
+        onPreview={(k) => setLibPrev(k)}
+        onDelUser={(k) => { persistMacros((prev) => prev.filter((m) => macroKey(m) !== k)); if (placeLib === 'u:' + k) setPlaceLib(null); if (libPrev === 'u:' + k) setLibPrev(null); }}
         onImportLmk={() => lmkFileRef.current?.click()}
         onImportZip={() => lmkZipRef.current?.click()}
       />
@@ -1807,7 +1848,7 @@ export default function App() {
         </div>
       </div>
     );
-  }, [sidesConf, leftTab, activeCu, hidden, counts, doc, sel, placeLib, macros, toggleHidden, persistMacros]);
+  }, [sidesConf, leftTab, activeCu, hidden, counts, doc, sel, placeLib, libPrev, macros, toggleHidden, persistMacros]);
 
   const rightColumn = useMemo(() => (
     <div className="side right" style={{ width: clampW(sidesConf.rightW) }}>
@@ -1946,6 +1987,18 @@ export default function App() {
           <button className="btn" autoFocus onClick={cancelRouting}>Отменить (Esc)</button>
         </div>
       </div>}
+      {libPrev && <LibPreviewDialog
+        title={libPrevInfo?.title ?? 'Предпросмотр макроса'}
+        spec={libPrevInfo?.spec}
+        note={libPrevInfo?.note}
+        onClose={() => setLibPrev(null)}
+        onAdd={placeLib ? addLibFromPreview : undefined}
+        rot={placeRot} side={placeSide}
+        onRot={setPlaceRot} onSide={setPlaceSide}
+        {...(libPrevInfo?.entry
+          ? { libKey: libPrevInfo.entry.key, els: libPrevInfo.els }
+          : { ents: libPrevInfo?.ents, bl: libPrevInfo?.bl })}
+      />}
       {dialog === 'new' && <NewBoardDialog onOk={newBoardDlg} onClose={() => setDialog(null)} />}
       {dialog === 'export' && (
         <ExportDialog
