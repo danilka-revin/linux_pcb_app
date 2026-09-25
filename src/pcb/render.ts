@@ -12,10 +12,10 @@ export interface View {
 
 export const COLORS = {
   bg: '#0d1411',
-  k1: '#e5484d',
+  k1: '#2f80ed',
   k2: '#35c46a',
-  s1: '#e8c93e',
-  s2: '#a8b0b8',
+  s1: '#e5484d',
+  s2: '#e8c93e',
   outline: '#e9ecf1',
   both: '#f0a63c',
   holeFill: '#070d0a',
