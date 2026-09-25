@@ -95,9 +95,19 @@ export function glyph(ch: string): Seg[] {
   if (FONT[c]) return FONT[c];
   if (CYR[c]) return CYR[c];
   if (CYR_ALIAS[c]) return FONT[CYR_ALIAS[c]];
-  if (/[a-z]/.test(c)) return BOX;
-  return BOX;
+  return BOX; // нет начертания — рисуем рамку, чтобы это было заметно
 }
+
+/** Есть ли у символа собственное начертание (иначе в печати/гербере он станет квадратом) */
+export function hasGlyph(ch: string): boolean {
+  const c = ch.toUpperCase();
+  if (ch === ' ') return true;
+  return Boolean(FONT[c] || CYR[c] || CYR_ALIAS[c]);
+}
+
+/** Символы строки, для которых нет начертания */
+export const missingGlyphs = (text: string): string[] =>
+  [...new Set([...text].filter((ch) => !hasGlyph(ch)))];
 
 export interface Poly {
   x: number;

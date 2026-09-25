@@ -274,8 +274,11 @@ export function entBBox(e: Entity): [number, number, number, number] {
     }
     case 'rect': return [e.x, e.y, e.x + e.w, e.y + e.h];
     case 'text': {
-      const w = e.text.length * e.size * 0.62, h = e.size;
-      const cs = [[0, 0], [w, 0], [w, h], [0, h]].map(([xx, yy]) => rotPt(xx, yy, 0, 0, e.rot));
+      // шаг штрихового шрифта — 0.8 высоты на символ (см. strokefont.textPolylines)
+      const w = e.text.length * e.size * 0.8, h = e.size;
+      // зеркальный текст (нижняя сторона платы) уходит влево от точки привязки
+      const x0 = e.mirror ? -w : 0, x1 = e.mirror ? 0 : w;
+      const cs = [[x0, 0], [x1, 0], [x1, h], [x0, h]].map(([xx, yy]) => rotPt(xx, yy, 0, 0, e.rot));
       const xs = cs.map((p) => p.x), ys = cs.map((p) => p.y);
       return [Math.min(...xs) + e.x, Math.min(...ys) + e.y, Math.max(...xs) + e.x, Math.max(...ys) + e.y];
     }

@@ -491,3 +491,47 @@ canvas { position: absolute; inset: 0; cursor: crosshair; display: block; }
 .stock-shape.oct { clip-path: polygon(30% 0, 70% 0, 100% 30%, 100% 70%, 70% 100%, 30% 100%, 0 70%, 0 30%); background: var(--accent-text); }
 .stock-shape.smd { width: 14px; height: 8px; }
 @media (max-width: 600px) { .inventory-totals { grid-template-columns: repeat(2, 1fr); } }
+
+/* ---------- сетка: тулбар, компактная панель, диалог ---------- */
+.tb-glyph { font-size: 14px; line-height: 1; letter-spacing: -1px; }
+.modal.grid-dlg { width: 640px; max-width: calc(100vw - 32px); }
+.grid-preview {
+  display: block; width: 100%; height: 120px; border: 1px solid var(--line);
+  border-radius: 9px; background: var(--page);
+}
+.grid-presets { max-height: 220px; overflow-y: auto; margin-top: 6px; padding-right: 4px; }
+.grid-preset-group + .grid-preset-group { margin-top: 10px; }
+.grid-preset-title {
+  font-size: 10px; text-transform: uppercase; letter-spacing: 1px; color: var(--muted);
+  margin-bottom: 5px; font-weight: 600;
+}
+.grid-preset-items { display: flex; flex-wrap: wrap; gap: 4px; }
+.btn.on { border-color: var(--accent); color: var(--accent-text); background: var(--hover); }
+
+.gq { border-top: 1px solid var(--line); padding: 10px 12px 14px; flex: none; }
+.gq-head {
+  display: flex; align-items: center; justify-content: space-between; font-size: 10px;
+  text-transform: uppercase; letter-spacing: 1.1px; color: var(--muted); font-weight: 600;
+  margin-bottom: 7px;
+}
+.gq-row { display: flex; align-items: center; gap: 5px; flex-wrap: wrap; margin-bottom: 6px; }
+.gq-step { font-size: 13px; font-weight: 600; color: var(--text); font-variant-numeric: tabular-nums; }
+.gq-badge {
+  font-size: 10.5px; color: var(--muted); border: 1px solid var(--line);
+  border-radius: 5px; padding: 0 5px; line-height: 16px;
+}
+.gq-styles .btn.tiny { min-width: 26px; }
+.gq-note {
+  font-size: 11px; color: var(--muted); line-height: 1.5; display: flex;
+  align-items: center; gap: 6px; flex-wrap: wrap; margin-top: 4px;
+}
+
+/* предпросмотр макроса в библиотеке */
+.lib-prev { padding: 6px 8px 8px; border-bottom: 1px solid var(--line2, #2a2f3a); }
+.lib-prev canvas, .lib-preview { display: block; width: 100%; border-radius: 6px; border: 1px solid var(--line2, #2a2f3a); background: #0f1115; }
+.lib-prev-title { margin-top: 6px; font-weight: 600; font-size: 12px; }
+.lib-prev-spec { margin-top: 2px; font-size: 11px; opacity: .75; }
+.lib-prev-note { margin-top: 3px; font-size: 10.5px; opacity: .55; line-height: 1.35; }
+.lib-item { display: block; }
+.lib-item .lib-spec { display: block; font-size: 10px; opacity: .5; }
+.lib-item.picked .lib-spec { opacity: .7; }
