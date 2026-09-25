@@ -40,13 +40,11 @@ export function NewBoardDialog({
 }
 
 export function ExportDialog({
-  onGerber, onPng, onLay6, onLmk, selCount, onClose,
+  onGerber, onPng, onLay6, onClose,
 }: {
   onGerber: () => void;
   onPng: (o: ExportPngOpts) => void;
   onLay6: () => void;
-  onLmk: () => void;
-  selCount: number;
   onClose: () => void;
 }) {
   const [layer, setLayer] = useState<ExportPngOpts['layer']>('k2');
@@ -72,14 +70,10 @@ export function ExportDialog({
 
       <div className="sect">
         <h3 style={{ margin: '0 0 6px', fontSize: 13 }}>Sprint-Layout</h3>
-        <p>Совместимость с Sprint-Layout 6: плата целиком как .lay6, выделенные элементы — как макрос .lmk.</p>
+        <p>Совместимость с Sprint-Layout 6: плата целиком как .lay6.</p>
         <div className="row" style={{ marginTop: 4, gap: 8 }}>
           <button className="btn primary" onClick={() => { onLay6(); onClose(); }}>
             Сохранить плату как .lay6
-          </button>
-          <button className="btn" disabled={!selCount} onClick={() => { onLmk(); onClose(); }}
-            title={selCount ? `Выделено элементов: ${selCount}` : 'Сначала выделите элементы платy'}>
-            Выделенное как .lmk{selCount ? ` (${selCount})` : ''}
           </button>
         </div>
       </div>
@@ -267,9 +261,12 @@ export function AboutDialog({ version, onClose }: { version: string | null; onCl
         <li>Площадки (круг/квадрат/восьмиугольник) с металлизацией, SMD-площадки, переходы, отверстия</li>
         <li>Линии, прямоугольники, окружности, залитые полигоны (земля), текст на шелкографии</li>
         <li>2 слоя меди + 2 шелкографии + контур, вид снизу (зеркально)</li>
-        <li>Библиотека из 170 макросов в 11 папках: резисторы, конденсаторы, DIP, SMD (SOIC/TSSOP/QFN/LQFP),
-          транзисторы, разъёмы (PLS, клеммники, IDC, USB, RJ45, DB9), Arduino, ESP32/ESP8266, реле, крепёж</li>
-        <li>У макросов подписаны выводы: номера пинов и имена сигналов видны на шелкографии сразу после установки</li>
+        <li>Генератор деталей: пишешь строкой «dip 8 шаг 2.54 2 крепёжных отверстия m3 подписи» —
+          посадочное место собирается само: выводы, корпуса, шелкография, крепёж, номинал.
+          21 семейство: DIP, SOIC/TSSOP, QFN/QFP, SOT, чип-корпусы 0201…2512, выводные резисторы
+          и конденсаторы, электролиты, кварцы, кнопки, клеммники, линейки, TO-220/247, Arduino/ESP32</li>
+        <li>Своя библиотека: деталь (или выделенное с платы) сохраняется в папку с вложенными
+          папками, ставится кликом, правится через свою строку описания; резервная копия — JSON</li>
         <li>Сетка: 92 готовых шага от 0.02 до 50.8 мм (метрика, mil, монтаж) и любое своё значение,
           точки/линии/перекрестия, подразбиение, «главные» линии, своё начало координат</li>
         <li>Привязка к сетке и к объектам платы (центры площадок, концы и середины дорожек, углы), координаты в мм и mil</li>

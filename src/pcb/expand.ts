@@ -1,7 +1,33 @@
 // Развёртка компонентов (Comp) в список примитивов для отрисовки/экспорта.
 
 import type { Comp, Entity, LayerId, Pt } from './model';
-import { LIB, type LibEl } from './library';
+import { bboxOf, type LibEl } from './footprint';
+
+/**
+ * Примитивы генератора (LibEl, локальные мм) → сущности компонента (Entity).
+ * Так сгенерированная деталь становится самодостаточной: она ставится на плату,
+ * сохраняется в библиотеку и экспортируется без всякого каталога.
+ */
+export function libElsToEnts(els: LibEl[]): Entity[] {
+  const out: Entity[] = [];
+  els.forEach((el, i) => {
+    const id = `l${i}`;
+    switch (el.kind) {
+      case 'pad': out.push({ kind: 'pad', id, x: el.x, y: el.y, shape: el.shape, size: el.size, drill: el.drill }); break;
+      case 'smd': out.push({ kind: 'smd', id, x: el.x, y: el.y, w: el.w, h: el.h, rot: ((el.rot % 180) + 180) % 180, layer: el.layer }); break;
+      case 'hole': out.push({ kind: 'hole', id, x: el.x, y: el.y, d: el.d }); break;
+      case 'line': out.push({ kind: 'line', id, x1: el.x1, y1: el.y1, x2: el.x2, y2: el.y2, w: el.w, layer: el.layer }); break;
+      case 'rect': out.push({ kind: 'rect', id, x: el.x, y: el.y, w: el.w, h: el.h, filled: false, th: el.th, layer: el.layer }); break;
+      case 'circle': out.push({ kind: 'circle', id, x: el.x, y: el.y, r: el.r, w: el.w, layer: el.layer }); break;
+      case 'text': out.push({
+        kind: 'text', id, x: el.x, y: el.y, size: el.size, th: el.th,
+        rot: ((el.rot % 360) + 360) % 360, text: el.text, mirror: el.mirror, layer: el.layer,
+      }); break;
+      default: break;
+    }
+  });
+  return out;
+}
 
 /** Трансформация локальных координат компонента в мировые */
 export function compTF(c: Comp): (p: Pt) => Pt {
@@ -21,7 +47,7 @@ function remapLayer(l: string, side: 'top' | 'bottom'): string {
   return l;
 }
 
-/** Преобразование встроенного примитива компонента (макрос) */
+/** Преобразование примитива, встроенного в компонент (локальные координаты → плата) */
 function xformEmbedded(e: Entity, c: Comp, tf: (p: Pt) => Pt, idx: string): Entity[] {
   const bottom = c.side === 'bottom';
   const rl = (l: LayerId) => remapLayer(l, c.side) as LayerId;
@@ -70,66 +96,7 @@ export function expandComp(c: Comp): Entity[] {
     const tf = compTF(c);
     return c.ents.flatMap((e, i) => xformEmbedded(e, c, tf, c.id + ':' + i));
   }
-  const entry = LIB[c.lib];
-  if (!entry) return [];
-  const tf = compTF(c);
-  const out: Entity[] = [];
-  entry.build().forEach((el, i) => {
-    const id = c.id + ':' + i;
-    switch (el.kind) {
-      case 'pad': {
-        const p = tf(el);
-        out.push({ kind: 'pad', id, x: p.x, y: p.y, shape: el.shape, size: el.size, drill: el.drill });
-        break;
-      }
-      case 'smd': {
-        const p = tf(el);
-        out.push({
-          kind: 'smd', id, x: p.x, y: p.y, w: el.w, h: el.h,
-          rot: (el.rot + c.rot + 360) % 180,
-          layer: remapLayer(el.layer, c.side) as 'k1' | 'k2',
-        });
-        break;
-      }
-      case 'hole': {
-        const p = tf(el);
-        out.push({ kind: 'hole', id, x: p.x, y: p.y, d: el.d });
-        break;
-      }
-      case 'line': {
-        const a = tf({ x: el.x1, y: el.y1 }), b = tf({ x: el.x2, y: el.y2 });
-        out.push({ kind: 'line', id, x1: a.x, y1: a.y, x2: b.x, y2: b.y, w: el.w, layer: remapLayer(el.layer, c.side) as LayerId });
-        break;
-      }
-      case 'rect': {
-        const a = tf({ x: el.x, y: el.y }), b = tf({ x: el.x + el.w, y: el.y + el.h });
-        out.push({
-          kind: 'rect', id,
-          x: Math.min(a.x, b.x), y: Math.min(a.y, b.y),
-          w: Math.abs(a.x - b.x), h: Math.abs(a.y - b.y),
-          filled: false, th: el.th, layer: remapLayer(el.layer, c.side) as LayerId,
-        });
-        break;
-      }
-      case 'circle': {
-        const p = tf(el);
-        out.push({ kind: 'circle', id, x: p.x, y: p.y, r: el.r, w: el.w, layer: remapLayer(el.layer, c.side) as LayerId });
-        break;
-      }
-      case 'text': {
-        // подписи выводов макроса: при установке на нижнюю сторону зеркалим
-        const p = tf(el);
-        const rot = (((c.side === 'bottom' ? c.rot - el.rot : c.rot + el.rot) % 360) + 360) % 360;
-        out.push({
-          kind: 'text', id, x: p.x, y: p.y, size: el.size, th: el.th, rot,
-          text: el.text, mirror: c.side === 'bottom' ? !el.mirror : el.mirror,
-          layer: remapLayer(el.layer, c.side) as LayerId,
-        });
-        break;
-      }
-    }
-  });
-  return out;
+  return []; // каталога макросов больше нет: деталь хранит свои примитивы
 }
 
 /** Весь документ -> плоский список примитивов */
@@ -142,38 +109,5 @@ export function expandDoc(entities: Entity[]): Entity[] {
   return out;
 }
 
-/** Локальный bbox элементов макроса */
-export function libBBox(els: LibEl[]): [number, number, number, number] {
-  let x1 = 1e9, y1 = 1e9, x2 = -1e9, y2 = -1e9;
-  const grow = (ax: number, ay: number) => {
-    x1 = Math.min(x1, ax); y1 = Math.min(y1, ay);
-    x2 = Math.max(x2, ax); y2 = Math.max(y2, ay);
-  };
-  for (const el of els) {
-    switch (el.kind) {
-      case 'pad': grow(el.x - el.size / 2, el.y - el.size / 2); grow(el.x + el.size / 2, el.y + el.size / 2); break;
-      case 'smd': grow(el.x - el.w / 2, el.y - el.h / 2); grow(el.x + el.w / 2, el.y + el.h / 2); break;
-      case 'hole': grow(el.x - el.d / 2, el.y - el.d / 2); grow(el.x + el.d / 2, el.y + el.d / 2); break;
-      case 'line': {
-        const m = el.w / 2;
-        grow(Math.min(el.x1, el.x2) - m, Math.min(el.y1, el.y2) - m);
-        grow(Math.max(el.x1, el.x2) + m, Math.max(el.y1, el.y2) + m);
-        break;
-      }
-      case 'rect': grow(el.x, el.y); grow(el.x + el.w, el.y + el.h); break;
-      case 'circle': grow(el.x - el.r, el.y - el.r); grow(el.x + el.r, el.y + el.r); break;
-      case 'text': {
-        // как в model.entBBox: (x,y) — левый нижний угол, ширина ≈ 0.8 × высота на символ
-        const w = el.text.length * el.size * 0.8;
-        const h = el.size;
-        const a = (el.rot * Math.PI) / 180, ca = Math.cos(a), sa = Math.sin(a);
-        for (const [xx, yy] of [[0, 0], [w, 0], [w, h], [0, h]]) {
-          grow(el.x + xx * ca - yy * sa, el.y + xx * sa + yy * ca);
-        }
-        break;
-      }
-    }
-  }
-  if (x1 > x2) return [-2.54, -2.54, 2.54, 2.54];
-  return [x1, y1, x2, y2];
-}
+/** Локальный габарит примитивов генератора (одна математика с model.entBBox) */
+export const libBBox = bboxOf;

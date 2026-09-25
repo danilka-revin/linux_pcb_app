@@ -4,6 +4,8 @@ import { createElement } from 'react';
 import { renderToString } from 'react-dom/server.browser';
 import { boardInventory } from '../src/pcb/inventory';
 import { lay6ToDoc } from '../src/pcb/lay6';
+import { generate } from '../src/pcb/gen';
+import { libElsToEnts } from '../src/pcb/expand';
 import * as M from '../src/pcb/model';
 import { InventoryDialog } from '../src/ui/inventory';
 
@@ -36,10 +38,14 @@ assert.deepEqual(stats.drills, [
 assert.equal(boardInventory([]).totals.holes, 0);
 assert.deepEqual(boardInventory([]).pads, []);
 
-// Embedded macros and built-in components count their actual pads exactly once.
+// Детали кладутся на плату со своими примитивами (генератор → comp.ents) и
+// считаются ровно один раз, без двойного счёта вложенных выводов.
+const dip8 = generate('dip 8');
+const pins = (prefix: string): M.Entity[] =>
+  libElsToEnts(dip8.els).filter((e) => e.kind === 'pad').map((e, i) => ({ ...e, id: `${prefix}${i}` }) as M.Entity);
 const comps: M.Entity[] = [
   { id: 'macro', kind: 'comp', lib: '', name: 'Macro', x: 10, y: 10, rot: 90, side: 'bottom', bl: [0, 0, 10, 10], ents: [pad('x'), pad('y')] },
-  { id: 'dip', kind: 'comp', lib: 'dip8', name: 'DIP-8', x: 30, y: 30, rot: 180, side: 'top', bl: [0, 0, 10, 10] },
+  { id: 'dip', kind: 'comp', lib: '', name: 'DIP-8', x: 30, y: 30, rot: 180, side: 'top', bl: dip8.bl, ents: pins('d') },
 ];
 assert.equal(boardInventory(comps).totals.pads, 10);
 assert.equal(boardInventory(comps).totals.holes, 10);

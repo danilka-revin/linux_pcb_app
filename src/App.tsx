@@ -2,12 +2,14 @@
 // фирменный стиль «пчелиный»: оса с молнией, золото на графите; тёмная и светлая темы).
 import { Fragment, useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from 'react';
 import * as M from './pcb/model';
-import { expandComp, expandDoc, libBBox } from './pcb/expand';
-import { lay6ToDoc, docToLay6, lmkToEnts, entsToLmk, hasLay6Magic } from './pcb/lay6';
+import { expandComp, expandDoc, libElsToEnts } from './pcb/expand';
+import { lay6ToDoc, docToLay6, hasLay6Magic, lmkToEnts } from './pcb/lay6';
 import {
-  loadUserMacros, saveUserMacros, makeMacro, addUserMacro, macroKey, splitMacroName, type UserMacro,
+  addMacro, buildTree, createFolder, exportJSON, importJSON, loadStore, makeMacro,
+  moveMacro, removeFolder, removeMacro, renameFolder, safeName, saveStore, updateMacro,
+  type Macro, type Store,
 } from './pcb/userlib';
-import { LIB } from './pcb/library';
+import { generate } from './pcb/gen';
 import {
   CANVAS_UI, COLORS, drawEnt, drawFlat, renderPrint, setCanvasTheme, toWorld, zOrdered,
   type ThemeId, type View,
@@ -21,12 +23,13 @@ import { autoroute, clearanceAt, pickEndpoint, endpointOf, type RouteEnd } from 
 import { copperComponents, type NetRouteResult } from './pcb/netroute';
 import { NetsPanel, NET_COLORS } from './ui/nets';
 import { InventoryDialog } from './ui/inventory';
-import { download, makeZip, unzip } from './pcb/zip';
+import { download, makeZip } from './pcb/zip';
 import { Ic } from './ui/icons';
 import {
-  LayersPanel, LibraryPanel, PropsPanel, TOOLS, libSpecText,
+  LayersPanel, PropsPanel, TOOLS,
   type Defs, type ToolId,
 } from './ui/panels';
+import { GenPanel, MacroTree, genSpecText } from './ui/genpanel';
 import {
   AboutDialog, ColorsDialog, ExportDialog, NewBoardDialog, PanelizeDialog, type ExportPngOpts,
 } from './ui/dialogs';
@@ -74,12 +77,41 @@ type Drag =
   | { mode: 'marquee'; startWorld: M.Pt; curWorld: M.Pt };
 
 const AUTOSAVE_KEY = 'lauaut.autosave';
+const QUERY_KEY = 'lauaut.genQuery';
+const loadQuery = (): string => {
+  try {
+    return globalThis.localStorage?.getItem(QUERY_KEY) ?? 'dip 8';
+  } catch {
+    return 'dip 8';
+  }
+};
+const saveQuery = (q: string): void => {
+  try {
+    globalThis.localStorage?.setItem(QUERY_KEY, q);
+  } catch {
+    /* приватный режим — не страшно */
+  }
+};
+
+/** Деталь, готовая к установке: сущности + габарит + откуда взялась */
+interface Detail {
+  name: string;
+  ents: M.Entity[];
+  bl: [number, number, number, number];
+  spec?: string;
+  note?: string;
+  /** строка генератора, из которой деталь получилась */
+  query?: string;
+  /** id сохранённой детали (для «обновить») */
+  macroId?: string;
+}
 const DEFS_KEY = 'lauaut.defs';
 const UI_KEY = 'lauaut.ui';
 
 /** Группы кнопок тулбара, настраиваемые конструктором интерфейса. */
 const GROUP_DEFS: { id: string; label: string }[] = [
   { id: 'file', label: 'Файл' },
+  { id: 'gen', label: 'Генератор деталей' },
   { id: 'undo', label: 'Отмена / повтор' },
   { id: 'tools', label: 'Инструменты (вертикальный док у холста)' },
   { id: 'grid', label: 'Сетка и углы' },
@@ -107,10 +139,10 @@ const TOOL_KEYS: Partial<Record<ToolId2, string>> = {
   line: '6', text: '7', ruler: '8', route: '9', probe: '0',
 };
 
-/** Вкладки левой колонки: «Слои» и «Библиотека». */
+/** Вкладки левой колонки: «Слои» и «Детали» (генератор + личная библиотека). */
 const LEFT_TABS: { id: LeftTabId; label: string }[] = [
   { id: 'layers', label: 'Слои' },
-  { id: 'lib', label: 'Библиотека' },
+  { id: 'lib', label: 'Детали' },
 ];
 type LeftTabId = 'layers' | 'lib';
 const LEFT_TAB_NAMES: Record<string, string> = Object.fromEntries(LEFT_TABS.map((t) => [t.id, t.label]));
@@ -247,17 +279,53 @@ export default function App() {
   const [activeCu, setActiveCu] = useState<'k1' | 'k2'>('k1');
   const [mouse, setMouse] = useState({ px: -100, py: -100, wx: 0, wy: 0 });
   const [size, setSize] = useState({ w: 640, h: 480 });
-  const [placeLib, setPlaceLib] = useState<string | null>(null);
-  // макрос, открытый окном предпросмотра (ключ библиотеки или «u:имя»)
-  const [libPrev, setLibPrev] = useState<string | null>(null);
-  const [macros, setMacros] = useState<UserMacro[]>(loadUserMacros);
-  const persistMacros = useCallback((up: (prev: UserMacro[]) => UserMacro[]) => {
-    setMacros((prev) => {
-      const nx = up(prev);
-      saveUserMacros(nx);
+  // --- генератор деталей и личная библиотека (папки + сохранённые футпринты) ---
+  // «что ставим»: снапшот детали (чтобы правка строки не меняла призрак под курсором)
+  const [place, setPlace] = useState<Detail | null>(null);
+  // деталь, открытая крупным предпросмотром
+  const [preview, setPreview] = useState<Detail | null>(null);
+  const [query, setQueryRaw] = useState<string>(loadQuery);
+  const [store, setStore] = useState<Store>(loadStore);
+  const [libTab, setLibTab] = useState<'gen' | 'lib'>('gen');
+  const [libFilter, setLibFilter] = useState('');
+  const [collapsed, setCollapsed] = useState<Set<string>>(new Set());
+  // деталь из библиотеки, которую правим строкой генератора («Обновить»)
+  const [editId, setEditId] = useState<string | null>(null);
+  const patchStore = useCallback((fn: (s: Store) => Store) => {
+    setStore((prev) => {
+      const nx = fn(prev);
+      saveStore(nx);
       return nx;
     });
   }, []);
+  const setQuery = useCallback((q: string) => {
+    setQueryRaw(q);
+    saveQuery(q);
+  }, []);
+  // генерация — чистая функция строки: правка любого параметра = правка строки
+  const gen = useMemo(() => generate(query), [query]);
+  const tree = useMemo(() => buildTree(store, libFilter), [store, libFilter]);
+  const detailFromGen = useCallback((macroId?: string): Detail | null => {
+    if (!gen.ok || !gen.els || !gen.bl) return null;
+    return {
+      name: gen.title ?? gen.family?.title ?? 'Деталь',
+      ents: libElsToEnts(gen.els),
+      bl: gen.bl,
+      spec: genSpecText(gen),
+      note: gen.notes.join(' '),
+      query: gen.query,
+      macroId,
+    };
+  }, [gen]);
+  const detailFromMacro = (m: Macro): Detail => ({
+    name: m.name,
+    ents: m.ents,
+    bl: m.bl,
+    spec: `${m.ents.length} прим.${m.query ? ' · строка: ' + m.query : ''}`,
+    note: m.note,
+    query: m.query,
+    macroId: m.id,
+  });
   const [placeRot, setPlaceRot] = useState(0);
   const [placeSide, setPlaceSide] = useState<'top' | 'bottom'>('top');
   const [pasteTpl, setPasteTpl] = useState<M.Entity[] | null>(null);
@@ -339,8 +407,8 @@ export default function App() {
     px: number; py: number; wx: number; wy: number; rx: number; ry: number; alt: boolean;
   } | null>(null);
   const fileRef = useRef<HTMLInputElement>(null);
-  const lmkFileRef = useRef<HTMLInputElement>(null);
-  const lmkZipRef = useRef<HTMLInputElement>(null);
+  const libFileRef = useRef<HTMLInputElement>(null);
+  const genInputRef = useRef<HTMLDivElement>(null);
   const fitted = useRef(false);
   const selRef = useRef(sel);
   selRef.current = sel;
@@ -553,10 +621,10 @@ export default function App() {
     if (draft?.t === 'poly') { commitPoly(); return; }
     if (draft) { setDraft(null); return; }
     if (pasteTpl) { setPasteTpl(null); return; }
-    if (placeLib) { setPlaceLib(null); return; }
+    if (place) { setPlace(null); return; }
     if (probe) { setProbe(null); return; }
     if (sel.size) { setSel(new Set()); }
-  }, [draft, commitTrack, commitPoly, pasteTpl, placeLib, probe, sel.size, routeA, activeNet, routeMode, tool]);
+  }, [draft, commitTrack, commitPoly, pasteTpl, place, probe, sel.size, routeA, activeNet, routeMode, tool]);
 
   const setTool = useCallback((t: ToolId2) => {
     if (t !== tool) { finishOrCancel(); setToolRaw(t); }
@@ -679,21 +747,11 @@ export default function App() {
   }, [doc]);
 
   const openFile = useCallback((f: File) => {
-    const name = f.name.toLowerCase();
     f.arrayBuffer().then((ab) => {
       try {
         if (hasLay6Magic(ab)) {
-          // Sprint-Layout: .lmk — макрос (в библиотеку), .lay6 — плата
-          if (name.endsWith('.lmk')) {
-            const { ents, warnings } = lmkToEnts(ab);
-            if (!ents.length) throw new Error('пустой макрос');
-            const m = makeMacro(f.name.replace(/\.lmk$/i, ''), ents);
-            persistMacros((prev) => addUserMacro(prev, m));
-            setPlaceLib('u:' + macroKey(m));
-            setToolRaw('comp');
-            if (warnings.length) alert('Замечания при импорте макроса:\n• ' + warnings.slice(0, 6).join('\n• '));
-            return;
-          }
+          // Sprint-Layout: .lay6 — плата. Макросы .lmk платой не хранятся:
+          // деталь рисует генератор по строке описания (.lmk грузится в библиотеку)
           const { doc: nd, warnings } = lay6ToDoc(ab);
           commit(nd);
           setSel(new Set());
@@ -714,77 +772,74 @@ export default function App() {
         alert('Не удалось открыть файл: неверный формат проекта.');
       }
     });
-  }, [commit, fit, persistMacros]);
+  }, [commit, fit]);
 
   const exportLay6 = useCallback(() => {
     const base = (doc.name || 'board').replace(/[^\wа-яА-ЯёЁ-]+/g, '_');
     download(`${base}.lay6`, new Blob([docToLay6(doc, expandDoc(doc.entities)).slice().buffer], { type: 'application/octet-stream' }));
   }, [doc]);
 
-  const exportLmk = useCallback(() => {
-    const selEnts = doc.entities.filter((e) => selRef.current.has(e.id));
-    if (!selEnts.length) return;
-    const name = (prompt('Имя макроса Sprint-Layout (можно «Папка/Имя»):', 'Макрос') || 'Макрос').trim() || 'Макрос';
-    const { name: base, folder } = splitMacroName(name);
-    download(`${folder ? folder + '_' : ''}${base}.lmk`, new Blob([entsToLmk(selEnts).slice().buffer], { type: 'application/octet-stream' }));
-    // и в локальную библиотеку — сразу
-    persistMacros((prev) => addUserMacro(prev, makeMacro(name, selEnts)));
-  }, [doc, persistMacros]);
+  // ---------- личная библиотека: сохранение выделенного, папки, резервная копия ----------
 
-  const importLmkFile = useCallback((f: File) => {
-    f.arrayBuffer().then((ab) => {
-      try {
-        if (!hasLay6Magic(ab)) throw new Error('формат');
-        const { ents } = lmkToEnts(ab);
-        if (!ents.length) throw new Error('пустой макрос');
-        const m = makeMacro(f.name.replace(/\.lmk$/i, ''), ents);
-        persistMacros((prev) => addUserMacro(prev, m));
-        setPlaceLib('u:' + macroKey(m));
-        setToolRaw('comp');
-      } catch {
-        alert('Не удалось импортировать макрос .lmk: неверный формат файла.');
-      }
-    });
-  }, [persistMacros]);
+  /** выделенное на плате → деталь в библиотеке (по имени; «Папка/Имя» не нужен — папка выбирается) */
+  const saveSelToLibrary = useCallback((name: string, folderId: string | null = null) => {
+    const ents = doc.entities.filter((e) => selRef.current.has(e.id));
+    if (!ents.length) return;
+    const m = makeMacro(name, ents, { folderId });
+    patchStore((st) => addMacro(st, m));
+    setLibTab('lib');
+    setEditId(m.id);
+  }, [doc, patchStore]);
 
-  // Пакетный импорт: ZIP-архив с макросами Sprint-Layout (.lmk)
-  const importLmkZip = useCallback(async (f: File) => {
-    let count = 0;
-    let last: string | null = null;
-    const warns: string[] = [];
-    try {
-      const files = await unzip(await f.arrayBuffer());
-      const lmks = [...files.entries()].filter(([n]) => n.toLowerCase().endsWith('.lmk'));
-      if (!lmks.length) {
-        alert('В архиве не найдено ни одного файла .lmk.');
-        return;
-      }
-      for (const [n, data] of lmks) {
-        const path = n.split(/[\\/]/);
-        const base = path.pop() || n;
-        const folder = path.filter(Boolean).join('/') || undefined; // папки архива → папки библиотеки
-        const name = base.replace(/\.lmk$/i, '');
-        try {
-          if (!hasLay6Magic(data)) throw new Error('формат');
-          const { ents, warnings } = lmkToEnts(data);
-          if (!ents.length) throw new Error('пустой макрос');
-          for (const w of warnings) warns.push(`${base}: ${w}`);
-          const m = makeMacro(name, ents, folder);
-          persistMacros((prev) => addUserMacro(prev, m));
-          count++;
-          last = macroKey(m);
-        } catch (e) {
-          warns.push(`${base}: ${e instanceof Error ? e.message : 'ошибка'}`);
-        }
-      }
-      const ok = count ? `Импортировано макросов: ${count}` : 'Ни один макрос не импортирован.';
-      alert(warns.length ? `${ok}\n\nЗамечания:\n• ${warns.slice(0, 10).join('\n• ')}` : ok);
-      if (last) { setPlaceLib('u:' + last); setToolRaw('comp'); }
-    } catch (e) {
-      alert('Не удалось открыть архив: ' + (e instanceof Error ? e.message : 'неверный формат') +
-        '\nОжидается ZIP с файлами .lmk.');
+  /** то, что нарисовал генератор → деталь в библиотеке */
+  const saveGenToLibrary = useCallback((name: string, folderId: string | null) => {
+    const d = detailFromGen();
+    if (!d) return;
+    const m = makeMacro(name, d.ents, { folderId, query: gen.query, bl: d.bl });
+    patchStore((st) => addMacro(st, m));
+    setEditId(m.id);
+    setPlace((prev) => (prev ? { ...prev, macroId: m.id } : prev));
+  }, [detailFromGen, gen.query, patchStore]);
+
+  /** «Обновить»: заменяем примитивы сохранённой детали текущей генерацией */
+  const updateGenMacro = useCallback(() => {
+    if (!editId) return;
+    const d = detailFromGen(editId);
+    if (!d) return;
+    patchStore((st) => updateMacro(st, editId, { ents: d.ents, bl: d.bl, query: gen.query }));
+    setPlace((prev) => (prev && prev.macroId === editId ? d : prev));
+  }, [detailFromGen, editId, gen.query, patchStore]);
+
+  const exportLibJson = useCallback(() => {
+    download('library.json', new Blob([exportJSON(store)], { type: 'application/json' }));
+  }, [store]);
+
+  /**
+   * Загрузка в свою библиотеку: JSON-бэкап (`library.json`) или макрос `.lmk`
+   * из Sprint-Layout — он становится обычной деталью (её можно править и переименовывать).
+   */
+  const importLibJson = useCallback((f: File) => {
+    if (/\.lmk$/i.test(f.name)) {
+      f.arrayBuffer().then((ab) => {
+        const { ents, warnings } = lmkToEnts(ab);
+        if (!ents.length) { alert('В файле нет примитивов — пустой или чужой .lmk.'); return; }
+        const name = safeName(f.name.replace(/\.[^.]+$/, ''), 'Деталь из .lmk');
+        patchStore((st) => addMacro(st, makeMacro(name, ents, { note: 'импорт из .lmk' })));
+        setLibTab('lib');
+        alert(`«${name}» — добавлено ${ents.length} примитивов.`
+          + (warnings.length ? `\nЗамечания: ${warnings.slice(0, 3).join('; ')}` : ''));
+      }).catch(() => alert('Не удалось прочитать .lmk.'));
+      return;
     }
-  }, [persistMacros]);
+    f.text().then((txt) => {
+      const r = importJSON(txt, store);
+      if (!r.ok) { alert(r.error); return; }
+      setStore(r.store);
+      saveStore(r.store);
+      setLibTab('lib');
+      alert(`Загружено деталей: ${r.added}`);
+    }).catch(() => alert('Не удалось прочитать файл.'));
+  }, [store, patchStore]);
 
   const exportGerber = useCallback(() => {
     const base = (doc.name || 'board').replace(/[^\wа-яА-ЯёЁ-]+/g, '_');
@@ -847,66 +902,59 @@ export default function App() {
     });
   }, []);
 
-  /** Поставить выбранный макрос в точку `at`; возвращает id компонента */
+  /** Поставить выбранную деталь в точку `at`; возвращает id компонента */
   const addComp = useCallback((at: M.Pt): string | null => {
-    if (!placeLib) return null;
-    if (placeLib.startsWith('u:')) {
-      const m = macros.find((x) => 'u:' + macroKey(x) === placeLib);
-      if (!m) return null;
-      const comp: M.Comp = {
-        id: M.uid(), kind: 'comp', lib: '', name: macroKey(m),
-        x: at.x, y: at.y, rot: placeRot, side: placeSide,
-        bl: m.bl.map((v) => v) as [number, number, number, number],
-        ents: m.ents.map((e) => ({ ...JSON.parse(JSON.stringify(e)), id: M.uid() } as M.Entity)),
-      };
-      addEnts([comp]);
-      return comp.id;
-    }
-    const entry = LIB[placeLib];
-    if (!entry) return null;
+    if (!place) return null;
     const comp: M.Comp = {
-      id: M.uid(), kind: 'comp', lib: placeLib, name: entry.name,
+      id: M.uid(), kind: 'comp', lib: '', name: place.name,
       x: at.x, y: at.y, rot: placeRot, side: placeSide,
-      bl: libBBox(entry.build()),
+      bl: place.bl.map((v) => v) as [number, number, number, number],
+      ents: place.ents.map((e) => ({ ...JSON.parse(JSON.stringify(e)), id: M.uid() } as M.Entity)),
     };
     addEnts([comp]);
     return comp.id;
-  }, [placeLib, placeRot, placeSide, addEnts, macros]);
+  }, [place, placeRot, placeSide, addEnts]);
 
-  // «Добавить на плату» из окна предпросмотра: ставим макрос в центр видимой
+  // «Добавить на плату» из окна предпросмотра: ставим деталь в центр видимой
   // области (с привязкой к сетке — как при обычном клике) и выделяем, чтобы
-  // сразу было видно, куда он встал.
+  // сразу было видно, куда она всталa.
   const addLibFromPreview = useCallback(() => {
     const id = addComp(snapPt(toWorld(view, size.w / 2, size.h / 2), false));
     if (id) setSel(new Set([id]));
-    setLibPrev(null);
+    setPreview(null);
   }, [addComp, snapPt, view, size]);
 
-  // Данные для окна предпросмотра макроса: макрос из библиотеки или «мой» —
-  // всё, что нужно и предпросмотру, и заголовку с характеристиками.
-  const libPrevInfo = useMemo(() => {
-    if (!libPrev) return null;
-    if (libPrev.startsWith('u:')) {
-      const m = macros.find((x) => 'u:' + macroKey(x) === libPrev);
-      if (!m) return null;
-      return {
-        title: macroKey(m),
-        spec: `мой макрос · ${m.ents.length} ${plur(m.ents.length, ['примитив', 'примитива', 'примитивов'])}`,
-        note: 'Макрос сохранён из выделенных элементов платы (правый клик → «В макрос»).',
-        ents: m.ents,
-        bl: m.bl,
-      };
-    }
-    const entry = LIB[libPrev];
-    if (!entry) return null;
-    return {
-      title: entry.name,
-      spec: libSpecText(entry),
-      note: entry.spec?.note,
-      entry,
-      els: entry.build(),
-    };
-  }, [libPrev, macros]);
+  // установка из строки генератора: снапшот замирает, чтобы правка строки
+  // не «поехала» под курсором
+  const placeFromGen = useCallback(() => {
+    const d = detailFromGen();
+    if (!d) return;
+    setPlace(d);
+    setToolRaw('comp');
+  }, [detailFromGen]);
+
+  /** деталь из дерева → ставим на плату */
+  const pickMacro = useCallback((m: Macro) => {
+    setPlace(detailFromMacro(m));
+    setToolRaw('comp');
+    setPreview(null);
+  }, []);
+
+  // имя детали из панели свойств: спрашиваем и складываем выделенное в библиотеку
+  const saveSelFromProps = useCallback(() => {
+    const n = (window.prompt('Имя детали для личной библиотеки:', 'Деталь') || '').trim();
+    if (!n) return;
+    const into = editId ? store.macros.find((m) => m.id === editId)?.folderId ?? null : null;
+    saveSelToLibrary(n, into);
+  }, [editId, saveSelToLibrary, store.macros]);
+
+  /** деталь из дерева → правим строкой генератора (если она была сгенерирована) */
+  const editMacro = useCallback((m: Macro) => {
+    if (m.query) setQuery(m.query);
+    setEditId(m.id);
+    setLibTab('gen');
+    setPreview(null);
+  }, [setQuery]);
 
   // ---------------- автотрассировка ----------------
   const changeNets = useCallback((nets: M.Net[]) => {
@@ -1232,7 +1280,7 @@ export default function App() {
       if (e.code === 'Escape') { routeWorker.current.terminate(); routeWorker.current = null; setRouting(null); setRouteMsg({ msg: 'Трассировка отменена. Плата не изменена.', ok: null }); }
       e.preventDefault(); return;
     }
-    if (dialog || libPrev) return;   // окно открыто — плату не трогаем
+    if (dialog || preview) return;   // окно открыто — плату не трогаем
     const t = e.target as HTMLElement;
     if (t && (t.tagName === 'INPUT' || t.tagName === 'TEXTAREA' || t.tagName === 'SELECT' || t.isContentEditable)) return;
     const ctrl = e.ctrlKey || e.metaKey;
@@ -1258,11 +1306,20 @@ export default function App() {
       case 'Escape': finishOrCancel(); break;
       case 'Delete': case 'Backspace': deleteSel(); break;
       case 'KeyR':
-        if (placeLib) setPlaceRot((r) => (r + 90) % 360);
+        if (place) setPlaceRot((r) => (r + 90) % 360);
         else rotateSel();
         break;
       case 'KeyM': mirrorSel(); break;
-      case 'KeyQ': if (placeLib) setPlaceSide((s) => (s === 'top' ? 'bottom' : 'top')); break;
+      case 'KeyQ': if (place) setPlaceSide((s) => (s === 'top' ? 'bottom' : 'top')); break;
+      // I — строка генератора: создать/поправить деталь, не снимая рук с клавиатуры
+      case 'KeyI':
+        if (!e.ctrlKey && !e.metaKey && !e.altKey && tool !== 'route') {
+          setLeftTab('lib'); setLibTab('gen');
+          const el = document.getElementById('gen-query') as HTMLInputElement | null;
+          el?.focus(); el?.select();
+          e.preventDefault();
+        }
+        break;
       case 'KeyL': {
         const other: 'k1' | 'k2' = activeCu === 'k1' ? 'k2' : 'k1';
         if (draft?.t === 'track') {
@@ -1304,7 +1361,7 @@ export default function App() {
     }
   }, [
     dialog, doc, undo, redo, saveFile, copySel, startPaste, duplicateSel, finishOrCancel,
-    deleteSel, placeLib, libPrev, rotateSel, mirrorSel, draft, activeCu, mouse.wx, mouse.wy, fit,
+    deleteSel, place, preview, rotateSel, mirrorSel, draft, activeCu, mouse.wx, mouse.wy, fit,
     zoomAt, size, nudge, defs.grid, defs.gridUnit, defs.snapOn, setDefs, setTool,
   ]);
 
@@ -1317,12 +1374,6 @@ export default function App() {
   }, []);
 
   // ---------------- отрисовка ----------------
-  const compBL = useMemo(() => {
-    const m = new Map<string, [number, number, number, number]>();
-    Object.values(LIB).forEach((e) => m.set(e.key, libBBox(e.build())));
-    return m;
-  }, []);
-
   // Плоский список примитивов в порядке отрисовки (площадки/переходы поверх
   // заливок) — развёртка компонентов строится при изменении платы, а не в кадре.
   const zEnts = useMemo(() => zOrdered(doc), [doc]);
@@ -1596,12 +1647,10 @@ export default function App() {
           id: 'g', kind: 'text', ...at, size: defs.textSize, th: defs.textTh, rot: defs.textRot,
           text: defs.text, mirror: defs.textMirror, layer: defs.textLayer,
         });
-        else if (tool === 'comp' && placeLib) {
-          const um = placeLib.startsWith('u:') ? macros.find((x) => 'u:' + macroKey(x) === placeLib) : undefined;
+        else if (tool === 'comp' && place) {
           ghost({
-            id: 'g', kind: 'comp', lib: um ? '' : placeLib, name: '', ...at, rot: placeRot, side: placeSide,
-            bl: um ? um.bl : compBL.get(placeLib) ?? [-2, -2, 2, 2],
-            ents: um?.ents,
+            id: 'g', kind: 'comp', lib: '', name: place.name, ...at, rot: placeRot, side: placeSide,
+            bl: place.bl, ents: place.ents,
           });
         }
         // буфер вставки
@@ -1667,10 +1716,15 @@ export default function App() {
   // настройки боковых колонок — мемо: идентичность объекта не должна меняться каждый кадр
   const sidesConf = useMemo(() => normalizeSides(uiConf.sides), [uiConf]);
   // полный порядок групп тулбара (включая скрытые) — для конструктора интерфейса
-  const uiOrder = useMemo(
-    () => (uiConf.ids.length ? uiConf.ids : GROUP_ORDER).filter((id) => GROUP_DEFS.some((g) => g.id === id)),
-    [uiConf],
-  );
+  const uiOrder = useMemo(() => {
+    const base = (uiConf.ids.length ? uiConf.ids : GROUP_ORDER).filter((id) => GROUP_DEFS.some((g) => g.id === id));
+    // группы, появившиеся в новой версии, дописываем в конец: старый сохранённый
+    // порядок интерфейса не должен прятать новые кнопки
+    const add = GROUP_ORDER.filter((id) => !base.includes(id));
+    if (!add.length) return base;
+    const tail = base[base.length - 1] === 'about' ? ['about'] : [];
+    return [...base.filter((id) => id !== 'about'), ...add, ...tail];
+  }, [uiConf]);
   const updButton = upd.Button;
 
   // ---------------- верхняя панель (одна строка, конструктор интерфейса) ----------------
@@ -1702,6 +1756,23 @@ export default function App() {
               { icon: 'inventory', label: 'Перечень площадок и отверстий…', onClick: () => setDialog('inventory') },
             ]}
           />
+        </div>
+      ),
+      gen: (
+        <div className="tb-group" key="gen">
+          <button
+            type="button"
+            className="tb-btn"
+            title="Генератор деталей (I): опишите корпус словами — шаг, размер, крепёж, подписи"
+            onClick={() => {
+              setLeftTab('lib');
+              setLibTab('gen');
+              const el = document.getElementById('gen-query') as HTMLInputElement | null;
+              el?.focus(); el?.select();
+            }}
+          >
+            <Ic n="gen" />
+          </button>
         </div>
       ),
       undo: (
@@ -1787,7 +1858,7 @@ export default function App() {
               <button
                 key={id}
                 type="button"
-                className={'tb-btn dock-btn' + (tool === id && !(id === 'comp' && !placeLib) ? ' active' : '')}
+                className={'tb-btn dock-btn' + (tool === id && !(id === 'comp' && !place) ? ' active' : '')}
                 title={`${t.name}${k ? ` (${k})` : ''} — ${t.hint}`}
                 onClick={() => setTool(id)}
               >
@@ -1798,7 +1869,7 @@ export default function App() {
         </Fragment>
       ))}
     </div>
-  ), [tool, placeLib, setTool]);
+  ), [tool, place, setTool]);
 
   // ---------------- боковые колонки (конструктор интерфейса) ----------------
   // Мемоизированы: при движении мыши колонки не перерисовываются.
@@ -1820,17 +1891,69 @@ export default function App() {
         </div>
       </>
     );
-    const renderLibPane = () => (
-      <LibraryPanel
-        picked={placeLib}
-        onPick={(k) => { setPlaceLib(k); setToolRaw('comp'); setLibPrev(k); }}
-        macros={macros}
-        onPickUser={(k) => { setPlaceLib('u:' + k); setToolRaw('comp'); setLibPrev('u:' + k); }}
-        onPreview={(k) => setLibPrev(k)}
-        onDelUser={(k) => { persistMacros((prev) => prev.filter((m) => macroKey(m) !== k)); if (placeLib === 'u:' + k) setPlaceLib(null); if (libPrev === 'u:' + k) setLibPrev(null); }}
-        onImportLmk={() => lmkFileRef.current?.click()}
-        onImportZip={() => lmkZipRef.current?.click()}
-      />
+    const macroCount = store.macros.length;
+    const renderGenPane = () => (
+      <>
+        <div className="tabs">
+          <button type="button" className={libTab === 'gen' ? 'on' : ''} onClick={() => setLibTab('gen')}>
+            Генератор
+          </button>
+          <button type="button" className={libTab === 'lib' ? 'on' : ''} onClick={() => setLibTab('lib')}>
+            Библиотека{macroCount ? ` (${macroCount})` : ''}
+          </button>
+        </div>
+        <div className="pane-scroll">
+          {libTab === 'gen' ? (
+            <div ref={genInputRef}>
+              <GenPanel
+                query={query}
+                onQuery={setQuery}
+                gen={gen}
+                store={store}
+                source={editId ? store.macros.find((m) => m.id === editId) ?? null : null}
+                onPlace={placeFromGen}
+                onPreview={() => { const d = detailFromGen(); if (d) setPreview(d); }}
+                onSave={saveGenToLibrary}
+                onUpdate={editId ? updateGenMacro : undefined}
+                onNewFolder={(n) => { patchStore((st) => createFolder(st, n, null)); setLibTab('lib'); }}
+              />
+            </div>
+          ) : (
+            <MacroTree
+              store={store}
+              tree={tree}
+              pickedId={place?.macroId ?? null}
+              filter={libFilter}
+              onFilter={setLibFilter}
+              collapsed={collapsed}
+              toggle={(id) => setCollapsed((prev) => {
+                const nx = new Set(prev);
+                if (nx.has(id)) nx.delete(id); else nx.add(id);
+                return nx;
+              })}
+              onPick={pickMacro}
+              onPreview={(m) => setPreview(detailFromMacro(m))}
+              onRename={(m, name) => patchStore((st) => updateMacro(st, m.id, { name }))}
+              onDelete={(m) => {
+                patchStore((st) => removeMacro(st, m.id));
+                if (place?.macroId === m.id) setPlace(null);
+                if (preview?.macroId === m.id) setPreview(null);
+                if (editId === m.id) setEditId(null);
+              }}
+              onMove={(m, folderId) => patchStore((st) => moveMacro(st, m.id, folderId))}
+              onNewFolder={(parentId) => patchStore((st) => createFolder(st, `Папка ${st.folders.length + 1}`, parentId))}
+              onRenameFolder={(id, name) => patchStore((st) => renameFolder(st, id, name))}
+              onDeleteFolder={(id) => {
+                const n = store.macros.filter((m) => m.folderId === id).length;
+                if (n && !confirm(`Удалить папку с деталями? Деталей в ней: ${n} (они переедут в корень).`)) return;
+                patchStore((st) => removeFolder(st, id, false));
+              }}
+              onExport={exportLibJson}
+              onImport={() => libFileRef.current?.click()}
+            />
+          )}
+        </div>
+      </>
     );
     return (
       <div className="side" style={{ width: clampW(sidesConf.leftW) }}>
@@ -1839,16 +1962,20 @@ export default function App() {
             <div className="tabs">
               {leftTabs.map((t) => (
                 <button key={t} type="button" className={activeLeft === t ? 'on' : ''} onClick={() => setLeftTab(t)}>
-                  {t === 'layers' ? 'Слои' : 'Библиотека'}
+                  {t === 'layers' ? 'Слои' : 'Детали'}
                 </button>
               ))}
             </div>
           )}
-          {activeLeft === 'layers' ? renderLayersPane() : renderLibPane()}
+          {activeLeft === 'layers' ? renderLayersPane() : renderGenPane()}
         </div>
       </div>
     );
-  }, [sidesConf, leftTab, activeCu, hidden, counts, doc, sel, placeLib, libPrev, macros, toggleHidden, persistMacros]);
+  }, [
+    sidesConf, leftTab, activeCu, hidden, counts, doc, sel, place, preview, gen, query, store, tree,
+    libTab, libFilter, collapsed, editId, toggleHidden, setQuery, setLeftTab,
+    placeFromGen, pickMacro, editMacro, saveGenToLibrary, updateGenMacro, exportLibJson, patchStore,
+  ]);
 
   const rightColumn = useMemo(() => (
     <div className="side right" style={{ width: clampW(sidesConf.rightW) }}>
@@ -1874,8 +2001,9 @@ export default function App() {
           selEnts={selEnts} patchEnt={patchEnt}
           doRotate={rotateSel} doMirror={mirrorSel} doDuplicate={duplicateSel} doDelete={deleteSel}
           doc={doc} setDocSize={setDocSize}
-          placeLib={placeLib} placeRot={placeRot} placeSide={placeSide}
-          setPlaceRot={setPlaceRot} setPlaceSide={setPlaceSide} cancelPlace={() => setPlaceLib(null)}
+          placeName={place?.name ?? null} placeRot={placeRot} placeSide={placeSide}
+          setPlaceRot={setPlaceRot} setPlaceSide={setPlaceSide} cancelPlace={() => setPlace(null)}
+          onSaveSel={selEnts.length ? saveSelFromProps : undefined}
           textRot={defs.textRot} setTextRot={(r) => setDefs({ textRot: r })}
           routeGroups={routeMode === 'nets'}
           routeInfo={{ ...routeMsg, msg: routeMode === 'nets' ? '' : routeMsg.msg, picking: routeA ? 'b' : 'a' }}
@@ -1888,8 +2016,8 @@ export default function App() {
     </div>
   ), [
     sidesConf, tool, routeMode, activeNet, doc, netGeometry, routeMsg, routeA, defs, activeCu,
-    selEnts, placeLib, placeRot, placeSide, view.s, changeNets, routeAll, patchEnt, rotateSel,
-    mirrorSel, duplicateSel, deleteSel, setDocSize, setDefs,
+    selEnts, place, placeRot, placeSide, view.s, changeNets, routeAll, patchEnt, rotateSel,
+    mirrorSel, duplicateSel, deleteSel, setDocSize, setDefs, saveSelFromProps,
   ]);
 
   // ---------------- разметка ----------------
@@ -1921,7 +2049,7 @@ export default function App() {
           />
           {showDock && toolDock}
           <input
-            ref={fileRef} type="file" accept=".json,.lay6,.lmk,application/json"
+            ref={fileRef} type="file" accept=".json,.lay6,application/json"
             style={{ display: 'none' }}
             onChange={(e) => {
               const f = e.target.files?.[0];
@@ -1930,20 +2058,11 @@ export default function App() {
             }}
           />
           <input
-            ref={lmkFileRef} type="file" accept=".lmk"
+            ref={libFileRef} type="file" accept=".json,application/json,.lmk"
             style={{ display: 'none' }}
             onChange={(e) => {
               const f = e.target.files?.[0];
-              if (f) importLmkFile(f);
-              e.target.value = '';
-            }}
-          />
-          <input
-            ref={lmkZipRef} type="file" accept=".zip,application/zip"
-            style={{ display: 'none' }}
-            onChange={(e) => {
-              const f = e.target.files?.[0];
-              if (f) importLmkZip(f);
+              if (f) importLibJson(f);
               e.target.value = '';
             }}
           />
@@ -1987,23 +2106,21 @@ export default function App() {
           <button className="btn" autoFocus onClick={cancelRouting}>Отменить (Esc)</button>
         </div>
       </div>}
-      {libPrev && <LibPreviewDialog
-        title={libPrevInfo?.title ?? 'Предпросмотр макроса'}
-        spec={libPrevInfo?.spec}
-        note={libPrevInfo?.note}
-        onClose={() => setLibPrev(null)}
-        onAdd={placeLib ? addLibFromPreview : undefined}
+      {preview && <LibPreviewDialog
+        title={preview.name}
+        spec={preview.spec}
+        note={preview.note ?? (preview.query ? 'строка генератора: ' + preview.query : undefined)}
+        onClose={() => setPreview(null)}
+        onAdd={addLibFromPreview}
         rot={placeRot} side={placeSide}
         onRot={setPlaceRot} onSide={setPlaceSide}
-        {...(libPrevInfo?.entry
-          ? { libKey: libPrevInfo.entry.key, els: libPrevInfo.els }
-          : { ents: libPrevInfo?.ents, bl: libPrevInfo?.bl })}
+        ents={preview.ents} bl={preview.bl}
       />}
       {dialog === 'new' && <NewBoardDialog onOk={newBoardDlg} onClose={() => setDialog(null)} />}
       {dialog === 'export' && (
         <ExportDialog
-          onGerber={exportGerber} onPng={exportPng} onLay6={exportLay6} onLmk={exportLmk}
-          selCount={sel.size} onClose={() => setDialog(null)}
+          onGerber={exportGerber} onPng={exportPng} onLay6={exportLay6}
+          onClose={() => setDialog(null)}
         />
       )}
       {dialog === 'panelize' && (

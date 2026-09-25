@@ -1,11 +1,5 @@
-// Боковые панели: слои, библиотека компонентов, свойства.
-import { useMemo, useState, type ReactNode } from 'react';
-import {
-  CATS, LIB, type LibEntry,
-} from '../pcb/library';
-import { libBBox } from '../pcb/expand';
-import type { UserMacro } from '../pcb/userlib';
-import { macroKey } from '../pcb/userlib';
+// Боковые панели: слои и свойства выделенного.
+import { type ReactNode } from 'react';
 import { LAYERS, fmt, type Doc, type Entity, type LayerId, type PadShape } from '../pcb/model';
 import type { GridStyle, GridUnit } from '../pcb/grid';
 import { fmtGridFull, GRID_STEPS_MM, gridPresets, isPresetStep, gridSummary } from '../pcb/grid';
@@ -89,19 +83,6 @@ export const plural = (n: number, forms: [string, string, string]): string => {
   return b === 1 ? forms[0] : b >= 2 && b <= 4 ? forms[1] : forms[2];
 };
 
-/** Краткая характеристика макроса для панели библиотеки */
-export function libSpecText(e: LibEntry): string {
-  const sp = e.spec;
-  if (!sp) return '';
-  const parts: string[] = [];
-  if (sp.pins) parts.push(`${sp.pins} ${plural(sp.pins, ['вывод', 'вывода', 'выводов'])}`);
-  if (sp.smd) parts.push(`${sp.smd} SMD-${plural(sp.smd, ['площадка', 'площадки', 'площадок'])}`);
-  if (sp.holes) parts.push(`${sp.holes} ${plural(sp.holes, ['отверстие', 'отверстия', 'отверстий'])}`);
-  if (sp.pitch) parts.push(`шаг ${sp.pitch} мм`);
-  if (sp.labels) parts.push(`подписи: ${sp.labels}`);
-  return parts.join(' · ');
-}
-
 // ---------- панель слоёв ----------
 export function LayersPanel({
   activeCu, setActiveCu, hidden, toggleHidden, counts,
@@ -143,113 +124,6 @@ export function LayersPanel({
         Активный слой меди используется для дорожек и SMD. Переключение также: клавиша <span className="kbd">L</span>.
       </div>
     </div>
-  );
-}
-
-// ---------- библиотека ----------
-export function LibraryPanel({
-  picked, onPick, onPreview,
-  macros, onPickUser, onDelUser, onImportLmk, onImportZip,
-}: {
-  picked: string | null;
-  onPick: (key: string) => void;
-  /** открыть предпросмотр макроса всплывающим окном */
-  onPreview: (key: string) => void;
-  macros: UserMacro[];
-  onPickUser: (name: string) => void;
-  onDelUser: (name: string) => void;
-  onImportLmk: () => void;
-  onImportZip: () => void;
-}) {
-  const [q, setQ] = useState('');
-  const pickedEntry = picked && !picked.startsWith('u:') ? LIB[picked] : undefined;
-  const pickedUser = picked && picked.startsWith('u:')
-    ? macros.find((m) => 'u:' + macroKey(m) === picked)
-    : undefined;
-  // элементы выбранного макроса строит предпросмотр (окно LibPreviewDialog)
-  const list = useMemo(() => {
-    const items = Object.values(LIB);
-    const f = q.trim().toLowerCase();
-    return CATS.map((cat) => ({
-      cat,
-      items: items.filter((e) => e.cat === cat && (!f || e.name.toLowerCase().includes(f))),
-    })).filter((g) => g.items.length);
-  }, [q]);
-  const f = q.trim().toLowerCase();
-  const myMacros = macros.filter((m) => !f || m.name.toLowerCase().includes(f));
-  // выбранный макрос: одна строка вместо миниатюры — сам предпросмотр
-  // открывается всплывающим окном (см. LibPreviewDialog)
-  const pickedName = pickedUser ? macroKey(pickedUser) : pickedEntry?.name;
-  const pickedSpec = pickedUser
-    ? `мой макрос · ${pickedUser.ents.length} ${plural(pickedUser.ents.length, ['примитив', 'примитива', 'примитивов'])}`
-    : pickedEntry ? libSpecText(pickedEntry) : '';
-  return (
-    <>
-      <div className="search">
-        <input placeholder="Поиск компонента…" value={q} onChange={(e) => setQ(e.target.value)} />
-      </div>
-      {picked && pickedName && (
-        <div className="lib-sel">
-          <span className="nm" title={pickedSpec ? `${pickedName}\n${pickedSpec}` : pickedName}>
-            {pickedName}
-            {pickedSpec && <span className="sp">{pickedSpec}</span>}
-          </span>
-          <button
-            type="button"
-            className="btn"
-            title={`Показать макрос крупно и поставить его на плату${pickedSpec ? '\n' + pickedSpec : ''}`}
-            onClick={() => onPreview(picked)}
-          >Предпросмотр и установка…</button>
-        </div>
-      )}
-      <div className="lib-list">
-        <div>
-          <div className="cat">
-            Мои макросы (.lmk)
-            <span style={{ float: 'right', display: 'inline-flex', gap: 4 }}>
-              <button className="btn tiny" onClick={onImportLmk}
-                title="Импортировать макрос Sprint-Layout (.lmk) в библиотеку">Импорт…</button>
-              <button className="btn tiny" onClick={onImportZip}
-                title="Импортировать ZIP-архив с макросами Sprint-Layout (.lmk) в библиотеку">Архив…</button>
-            </span>
-          </div>
-          {myMacros.length === 0 && (
-            <div className="lib-hint">Пусто. Импортируйте .lmk или сохраните выделенное как макрос (правый клик → «В макрос»).</div>
-          )}
-          {myMacros.map((m) => (
-            <div
-              key={m.name}
-              className={'lib-item' + (picked === 'u:' + m.name ? ' picked' : '')}
-              onClick={() => onPickUser(m.name)}
-              title={`Макрос: ${m.ents.length} прим. Нажмите и установите кликом`}
-            >
-              {m.name}
-              <span
-                className="lib-del"
-                title="Удалить макрос"
-                onClick={(ev) => { ev.stopPropagation(); onDelUser(m.name); }}
-              >×</span>
-            </div>
-          ))}
-        </div>
-        {list.map((g) => (
-          <div key={g.cat}>
-            <div className="cat">{g.cat}</div>
-            {g.items.map((e) => (
-              <div
-                key={e.key}
-                className={'lib-item' + (picked === e.key ? ' picked' : '')}
-                onClick={() => onPick(e.key)}
-                title={`${e.name}${libSpecText(e) ? '\n' + libSpecText(e) : ''}${e.spec?.note ? '\n' + e.spec.note : ''}\nНажмите и установите на плату кликом`}
-              >
-                <span className="lib-name">{e.name}</span>
-                {libSpecText(e) && <span className="lib-spec">{libSpecText(e)}</span>}
-              </div>
-            ))}
-          </div>
-        ))}
-      </div>
-    </>
   );
 }
 
@@ -373,8 +247,8 @@ export function PropsPanel({
   tool, defs, setDefs, activeCu, setActiveCu,
   selEnts, patchEnt, doRotate, doMirror, doDuplicate, doDelete,
   doc, setDocSize,
-  placeLib, placeRot, placeSide, setPlaceRot, setPlaceSide, cancelPlace,
-  textRot, setTextRot, routeInfo, routeGroups,
+  placeName, placeRot, placeSide, setPlaceRot, setPlaceSide, cancelPlace,
+  textRot, setTextRot, routeInfo, routeGroups, onSaveSel,
 }: {
   tool: ToolId;
   defs: Defs;
@@ -386,7 +260,9 @@ export function PropsPanel({
   doRotate: () => void; doMirror: () => void; doDuplicate: () => void; doDelete: () => void;
   doc: Doc;
   setDocSize: (w: number, h: number) => void;
-  placeLib: string | null;
+  /** что ставим: название детали из генератора или из библиотеки */
+  placeName?: string | null;
+  onSaveSel?: () => void;
   placeRot: number; placeSide: 'top' | 'bottom';
   setPlaceRot: (r: number) => void; setPlaceSide: (s: 'top' | 'bottom') => void;
   cancelPlace: () => void;
@@ -413,17 +289,27 @@ export function PropsPanel({
           <button className="btn" onClick={doDuplicate} title="Ctrl+D">Дублировать</button>
           <button className="btn danger" onClick={doDelete} title="Del">Удалить</button>
         </div>
+        {onSaveSel && (
+          <div className="row">
+            <button
+              className="btn"
+              onClick={onSaveSel}
+              title="Сложить выделенное в деталь личной библиотеки, чтобы поставить её ещё раз в другом месте"
+            >
+              Сохранить в библиотеку…
+            </button>
+          </div>
+        )}
       </div>
     );
   }
 
-  // --- установка компонента ---
-  if (tool === 'comp' && placeLib) {
-    const entry = LIB[placeLib];
+  // --- установка детали ---
+  if (tool === 'comp' && placeName) {
     return (
       <div className="props">
-        <h3>Установка компонента</h3>
-        <div className="sub">{entry?.name}</div>
+        <h3>Установка детали</h3>
+        <div className="sub">{placeName}</div>
         <SI label="Сторона" value={placeSide} options={[['top', 'Сверху'], ['bottom', 'Снизу (зерк.)']]} on={(v) => setPlaceSide(v as 'top' | 'bottom')} />
         <SI label="Поворот" value={String(placeRot)} options={[['0', '0°'], ['90', '90°'], ['180', '180°'], ['270', '270°']]} on={(v) => setPlaceRot(Number(v))} />
         <div className="row">
@@ -431,8 +317,8 @@ export function PropsPanel({
           <button className="btn" onClick={cancelPlace}>Отмена (Esc)</button>
         </div>
         <div className="hint">
-          Кликните на плате — компонент будет установлен. Клавиша <span className="kbd">Q</span> меняет сторону.
-          Кнопка <b>«Добавить на плату»</b> в окне предпросмотра ставит макрос в центр вида.
+          Кликните на плате — деталь будет установлена. <span className="kbd">Q</span> — сторона,
+          <span className="kbd">R</span> — поворот, <span className="kbd">Esc</span> — отмена.
         </div>
       </div>
     );
