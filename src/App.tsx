@@ -1,6 +1,6 @@
 // PSBees — редактор печатных плат для Linux и Windows (аналог Sprint-Layout;
 // фирменный стиль «пчелиный»: оса с молнией, золото на графите; тёмная и светлая темы).
-import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from 'react';
+import { Fragment, useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from 'react';
 import * as M from './pcb/model';
 import { expandComp, expandDoc, libBBox } from './pcb/expand';
 import { lay6ToDoc, docToLay6, lmkToEnts, entsToLmk, hasLay6Magic } from './pcb/lay6';
@@ -8,9 +8,12 @@ import {
   loadUserMacros, saveUserMacros, makeMacro, addUserMacro, macroKey, splitMacroName, type UserMacro,
 } from './pcb/userlib';
 import { LIB } from './pcb/library';
-import { CANVAS_UI, COLORS, drawDoc, drawEnt, renderPrint, setCanvasTheme, toWorld, type ThemeId, type View } from './pcb/render';
 import {
-  cycleGrid, drawGrid, fmtGridFull, gridSummary, nearestRef, normalizeGrid, snapPoint,
+  CANVAS_UI, COLORS, drawEnt, drawFlat, renderPrint, setCanvasTheme, toWorld, zOrdered,
+  type ThemeId, type View,
+} from './pcb/render';
+import {
+  collectRefs, cycleGrid, drawGrid, fmtGridFull, gridSummary, nearestRefPts, snapPoint,
   type GridConf,
 } from './pcb/grid';
 import { productionFiles } from './pcb/gerber';
@@ -30,6 +33,7 @@ import {
 import { GridDialog, GridQuickPanel, GridToolbar, gridOf } from './ui/grid';
 import { applyCustomColors, loadCustomColors, saveCustomColors, type CustomColors } from './ui/palette';
 import { UiBuilderDialog, useUpdater } from './ui/updater';
+import { MenuBtn } from './ui/widgets';
 
 type ToolId2 = ToolId;
 
@@ -76,14 +80,31 @@ const UI_KEY = 'lauaut.ui';
 const GROUP_DEFS: { id: string; label: string }[] = [
   { id: 'file', label: 'Файл' },
   { id: 'undo', label: 'Отмена / повтор' },
-  { id: 'tools', label: 'Инструменты' },
+  { id: 'tools', label: 'Инструменты (вертикальный док у холста)' },
   { id: 'grid', label: 'Сетка и углы' },
   { id: 'layer', label: 'Слой K1 / K2' },
   { id: 'view', label: 'Вид' },
-  { id: 'about', label: 'Кнопка „Обновить“ и «О программе»' },
+  { id: 'about', label: 'Тема, «Обновить» и «О программе»' },
 ];
 const GROUP_ORDER: string[] = GROUP_DEFS.map((g) => g.id);
 const GROUP_NAMES: Record<string, string> = Object.fromEntries(GROUP_DEFS.map((g) => [g.id, g.label]));
+
+/**
+ * Инструменты рисования вынесены из верхней панели в вертикальный док у холста
+ * (как в Sprint-Layout/KiCad): верхняя панель остаётся в одну строку.
+ * Группы дока разделены тонкими линиями: выбор и анализ → медь → графика → прочее.
+ */
+const TOOL_GROUPS: ToolId2[][] = [
+  ['select', 'route', 'probe'],
+  ['track', 'pad', 'smd', 'via', 'hole'],
+  ['line', 'rect', 'circle', 'fill', 'text'],
+  ['ruler', 'comp'],
+];
+/** Цифровые горячие клавиши инструментов (для подсказок) */
+const TOOL_KEYS: Partial<Record<ToolId2, string>> = {
+  select: '1', track: '2', pad: '3', via: '4', hole: '5',
+  line: '6', text: '7', ruler: '8', route: '9', probe: '0',
+};
 
 /** Вкладки левой колонки: «Слои» и «Библиотека». */
 const LEFT_TABS: { id: LeftTabId; label: string }[] = [
@@ -252,7 +273,12 @@ export default function App() {
   const routeWorker = useRef<Worker | null>(null);
   const docRef = useRef(doc);
   docRef.current = doc;
-  useEffect(() => () => routeWorker.current?.terminate(), []);
+  useEffect(() => () => {
+    routeWorker.current?.terminate();
+    cancelAnimationFrame(baseRaf.current);
+    cancelAnimationFrame(overRaf.current);
+    cancelAnimationFrame(moveRaf.current);
+  }, []);
   const netGeometry = useMemo(() => {
     const ends = new Map<string, RouteEnd>();
     if (tool === 'route' && routeMode === 'nets') for (const e of expandDoc(doc.entities)) {
@@ -297,7 +323,18 @@ export default function App() {
   const drag = useRef<Drag | null>(null);
   const clipboard = useRef<M.Entity[]>([]);
   const wrapRef = useRef<HTMLDivElement>(null);
-  const canvasRef = useRef<HTMLCanvasElement>(null);
+  // два слоя холста: базовый (сетка + плата + выделение) и оверлей (черновики,
+  // фантомы, перекрестие). Движение мыши перерисовывает только лёгкий оверлей —
+  // дорогая база обновляется, лишь когда меняются плата/вид/слои/выделение.
+  const baseRef = useRef<HTMLCanvasElement>(null);
+  const overRef = useRef<HTMLCanvasElement>(null);
+  const baseRaf = useRef(0);
+  const overRaf = useRef(0);
+  // обработка pointermove не чаще кадра (rAF): мышь шлёт события до 125+ Гц
+  const moveRaf = useRef(0);
+  const moveData = useRef<{
+    px: number; py: number; wx: number; wy: number; rx: number; ry: number; alt: boolean;
+  } | null>(null);
   const fileRef = useRef<HTMLInputElement>(null);
   const lmkFileRef = useRef<HTMLInputElement>(null);
   const lmkZipRef = useRef<HTMLInputElement>(null);
@@ -394,21 +431,22 @@ export default function App() {
     defs.grid, defs.gridUnit, defs.gridStyle, defs.gridDiv, defs.gridMajor,
     defs.gridOx, defs.gridOy, defs.snapOn, defs.snapObj, defs.snapPx,
   ]);
-  // точки, к которым «прилипает» курсор при привязке к объектам
-  const snapRefs = useMemo(
-    () => (defs.snapOn && defs.snapObj ? expandDoc(doc.entities) : []),
+  // точки, к которым «прилипает» курсор при привязке к объектам: плоский
+  // массив строится один раз при изменении платы, а не на каждое движение мыши
+  const snapPts = useMemo(
+    () => (defs.snapOn && defs.snapObj ? collectRefs(expandDoc(doc.entities)) : null),
     [defs.snapOn, defs.snapObj, doc.entities],
   );
 
   const snapPt = useCallback((w: M.Pt, fine: boolean): M.Pt => {
     if (fine) return w;                       // Alt — временно без привязки
     if (!defs.snapOn) return w;
-    if (snapRefs.length) {
-      const hit = nearestRef(snapRefs, w, defs.snapPx / Math.max(view.s, 0.01));
+    if (snapPts && snapPts.length) {
+      const hit = nearestRefPts(snapPts, w, defs.snapPx / Math.max(view.s, 0.01));
       if (hit) return hit;
     }
     return snapPoint(w, gridConf);
-  }, [defs.snapOn, defs.snapPx, snapRefs, gridConf, view.s]);
+  }, [defs.snapOn, defs.snapPx, snapPts, gridConf, view.s]);
 
   const constrain = useCallback((from: M.Pt, to: M.Pt): M.Pt => {
     if (defs.angle === 'free') return to;
@@ -787,13 +825,15 @@ export default function App() {
 
   // ---------------- указатель ----------------
   const getPos = (e: { clientX: number; clientY: number }) => {
-    const r = canvasRef.current!.getBoundingClientRect();
+    const r = overRef.current!.getBoundingClientRect();
     return { px: e.clientX - r.left, py: e.clientY - r.top };
   };
 
   const zoomAt = useCallback((px: number, py: number, factor: number) => {
     setView((v) => {
-      const ns = M.clamp(v.s * factor, 1, 500);
+      // диапазон шире, чем у fit() (0.2…120): иначе после «показать всю плату»
+      // для крупной платы колесо вниз давало скачок к 100%
+      const ns = M.clamp(v.s * factor, 0.05, 2000);
       const w = toWorld(v, px, py);
       return {
         s: ns,
@@ -829,17 +869,17 @@ export default function App() {
   }, [placeLib, placeRot, placeSide, addEnts, macros]);
 
   // ---------------- автотрассировка ----------------
-  const changeNets = (nets: M.Net[]) => {
+  const changeNets = useCallback((nets: M.Net[]) => {
     commit({ ...doc, nets });
     setRouteMsg({ msg: '', ok: null });
-  };
-  const cancelRouting = () => {
+  }, [doc, commit]);
+  const cancelRouting = useCallback(() => {
     routeWorker.current?.terminate();
     routeWorker.current = null;
     setRouting(null);
     setRouteMsg({ msg: 'Трассировка отменена. Плата не изменена.', ok: null });
-  };
-  const routeAll = () => {
+  }, []);
+  const routeAll = useCallback(() => {
     if (routeWorker.current) return;
     setRouteA(null);
     setActiveNet(null);
@@ -874,7 +914,7 @@ export default function App() {
       routeWorker.current?.terminate(); routeWorker.current = null; setRouting(null);
       setRouteMsg({ msg: 'Не удалось запустить фоновую трассировку. Плата не изменена.', ok: false });
     }
-  };
+  }, [doc, commit, defs]);
   const routeClick = useCallback((w: M.Pt, sp: M.Pt) => {
     const tol = 3 / view.s + 0.05;
     let end = pickEndpoint(doc.entities, w, tol);
@@ -1073,32 +1113,45 @@ export default function App() {
     }
   };
 
-  const onPointerMove = (e: React.PointerEvent<HTMLCanvasElement>) => {
-    const { px, py } = getPos(e);
-    const w = toWorld(view, px, py);
-    const sp = snapPt(w, e.altKey);
-    setMouse({ px, py, wx: sp.x, wy: sp.y });
+  // Применение последнего движения мыши: состояние курсора и drag-операции
+  // обновляются одним пакетом не чаще раза в кадр (см. onPointerMove).
+  const flushMove = useCallback(() => {
+    moveRaf.current = 0;
+    const m = moveData.current;
+    if (!m) return;
+    setMouse({ px: m.px, py: m.py, wx: m.wx, wy: m.wy });
     const d = drag.current;
     if (!d) return;
     if (d.mode === 'pan') {
-      setView({ ...d.view0, ox: d.view0.ox + (px - d.startPx.x), oy: d.view0.oy + (py - d.startPx.y) });
+      setView({ ...d.view0, ox: d.view0.ox + (m.px - d.startPx.x), oy: d.view0.oy + (m.py - d.startPx.y) });
     } else if (d.mode === 'move') {
-      const mdx = w.x - d.startWorld.x, mdy = w.y - d.startWorld.y;
+      const mdx = m.rx - d.startWorld.x, mdy = m.ry - d.startWorld.y;
       if (!d.moved && Math.hypot(mdx, mdy) * view.s < 4) return;
       d.moved = true;
-      const sdx = e.altKey ? mdx : M.snap(mdx, defs.grid);
-      const sdy = e.altKey ? mdy : M.snap(mdy, defs.grid);
+      const sdx = m.alt ? mdx : M.snap(mdx, defs.grid);
+      const sdy = m.alt ? mdy : M.snap(mdy, defs.grid);
       const nd = M.cloneDoc(d.doc0);
       nd.entities.forEach((ent) => {
         if (selRef.current.has(ent.id)) M.translateEnt(ent, sdx, sdy);
       });
       setDoc(nd);
-    } else if (d.mode === 'marquee') {
-      d.curWorld = w;
     }
+  }, [view.s, defs.grid]);
+
+  const onPointerMove = (e: React.PointerEvent<HTMLCanvasElement>) => {
+    const { px, py } = getPos(e);
+    const w = toWorld(view, px, py);
+    const sp = snapPt(w, e.altKey);
+    moveData.current = { px, py, wx: sp.x, wy: sp.y, rx: w.x, ry: w.y, alt: e.altKey };
+    const d = drag.current;
+    // рамку выделения обновляем синхронно — её читает onPointerUp
+    if (d && d.mode === 'marquee') d.curWorld = w;
+    if (!moveRaf.current) moveRaf.current = requestAnimationFrame(flushMove);
   };
 
   const onPointerUp = (e: React.PointerEvent<HTMLCanvasElement>) => {
+    // дожидаться кадра нельзя: применяем последнее движение сразу
+    if (moveRaf.current) { cancelAnimationFrame(moveRaf.current); flushMove(); }
     const d = drag.current;
     drag.current = null;
     if (!d) return;
@@ -1230,288 +1283,327 @@ export default function App() {
     return m;
   }, []);
 
+  // Плоский список примитивов в порядке отрисовки (площадки/переходы поверх
+  // заливок) — развёртка компонентов строится при изменении платы, а не в кадре.
+  const zEnts = useMemo(() => zOrdered(doc), [doc]);
+
+  // ---------------- отрисовка: базовый слой (сетка + плата) ----------------
+  // Перерисовывается только когда меняются плата/вид/слои/выделение/тема —
+  // движение мыши базовый слой НЕ трогает. Кадровые запросы схлопываются (rAF).
   useEffect(() => {
-    const cv = canvasRef.current;
+    const cv = baseRef.current;
     if (!cv) return;
-    const dpr = window.devicePixelRatio || 1;
-    if (cv.width !== Math.round(size.w * dpr)) cv.width = Math.round(size.w * dpr);
-    if (cv.height !== Math.round(size.h * dpr)) cv.height = Math.round(size.h * dpr);
-    cv.style.width = size.w + 'px';
-    cv.style.height = size.h + 'px';
-    const ctx = cv.getContext('2d')!;
-    ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+    cancelAnimationFrame(baseRaf.current);
+    baseRaf.current = requestAnimationFrame(() => {
+      baseRaf.current = 0;
+      const dpr = window.devicePixelRatio || 1;
+      if (cv.width !== Math.round(size.w * dpr)) cv.width = Math.round(size.w * dpr);
+      if (cv.height !== Math.round(size.h * dpr)) cv.height = Math.round(size.h * dpr);
+      cv.style.width = size.w + 'px';
+      cv.style.height = size.h + 'px';
+      const ctx = cv.getContext('2d')!;
+      ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
 
-    // фон
-    ctx.fillStyle = COLORS.bg;
-    ctx.fillRect(0, 0, size.w, size.h);
+      // фон
+      ctx.fillStyle = COLORS.bg;
+      ctx.fillRect(0, 0, size.w, size.h);
 
-    // сетка (шаг, вид, подразбиение, «главные» линии и начало — из настроек)
-    drawGrid(ctx, gridConf, view, size.w, size.h, {
-      minor: COLORS.grid, major: COLORS.gridMajor, origin: COLORS.gridOrigin,
-    });
+      // сетка (шаг, вид, подразбиение, «главные» линии и начало — из настроек)
+      drawGrid(ctx, gridConf, view, size.w, size.h, {
+        minor: COLORS.grid, major: COLORS.gridMajor, origin: COLORS.gridOrigin,
+      }, dpr);
 
-    // оси начала координат
-    if (defs.showAxes) {
-      ctx.strokeStyle = COLORS.axes;
-      ctx.lineWidth = 1;
-      const o = toPx(0, 0);
-      ctx.beginPath();
-      if (o.px >= 0 && o.px <= size.w) { ctx.moveTo(o.px + 0.5, 0); ctx.lineTo(o.px + 0.5, size.h); }
-      if (o.py >= 0 && o.py <= size.h) { ctx.moveTo(0, o.py + 0.5); ctx.lineTo(size.w, o.py + 0.5); }
-      ctx.stroke();
-    }
-
-    // документ
-    drawDoc(ctx, view, doc, hidden);
-
-    // выделение
-    if (sel.size) {
-      ctx.save();
-      for (const ent of doc.entities) {
-        if (!sel.has(ent.id)) continue;
-        drawEnt(ctx, view, ent, { tint: COLORS.sel, alpha: 0.5, hidden: new Set() });
-        const b = M.entBBox(ent);
-        const p1 = toPx(b[0], b[1]), p2 = toPx(b[2], b[3]);
-        ctx.strokeStyle = COLORS.sel;
-        ctx.setLineDash([4, 3]);
+      // оси начала координат
+      if (defs.showAxes) {
+        ctx.strokeStyle = COLORS.axes;
         ctx.lineWidth = 1;
-        ctx.strokeRect(Math.min(p1.px, p2.px) - 2.5, Math.min(p1.py, p2.py) - 2.5,
-          Math.abs(p2.px - p1.px) + 5, Math.abs(p2.py - p1.py) + 5);
-        ctx.setLineDash([]);
+        const o = toPx(0, 0);
+        ctx.beginPath();
+        if (o.px >= 0 && o.px <= size.w) { ctx.moveTo(o.px + 0.5, 0); ctx.lineTo(o.px + 0.5, size.h); }
+        if (o.py >= 0 && o.py <= size.h) { ctx.moveTo(0, o.py + 0.5); ctx.lineTo(size.w, o.py + 0.5); }
+        ctx.stroke();
       }
-      ctx.restore();
-    }
 
-    // «Тест цепи»: подсветка всей электрической цепи
-    if (probe && probeData) {
-      ctx.save();
-      for (const e of probeData.flat) {
-        if (!probe.ents.has(e.id)) continue;
-        drawEnt(ctx, view, e, { tint: COLORS.probe, alpha: 0.55, hidden: new Set() });
-      }
-      ctx.restore();
-    }
-
-    // черновик дорожки
-    if (draft?.t === 'track' && draft.pts.length) {
-      const pts = draft.pts;
-      ctx.lineCap = 'round';
-      ctx.lineJoin = 'round';
-      for (let i = 0; i < pts.length - 1; i++) {
-        ctx.strokeStyle = pts[i].layer === 'k1' ? COLORS.k1 : COLORS.k2;
-        ctx.lineWidth = Math.max(defs.trackW * view.s, 1);
-        const a = toPx(pts[i].x, pts[i].y), b = toPx(pts[i + 1].x, pts[i + 1].y);
-        ctx.beginPath(); ctx.moveTo(a.px, a.py); ctx.lineTo(b.px, b.py); ctx.stroke();
-      }
-      // резиновый сегмент к курсору
-      const last = pts[pts.length - 1];
-      const c = constrain(last, { x: mouse.wx, y: mouse.wy });
-      const a = toPx(last.x, last.y), b = toPx(c.x, c.y);
-      ctx.globalAlpha = 0.5;
-      ctx.strokeStyle = activeCu === 'k1' ? COLORS.k1 : COLORS.k2;
-      ctx.beginPath(); ctx.moveTo(a.px, a.py); ctx.lineTo(b.px, b.py); ctx.stroke();
-      ctx.globalAlpha = 1;
-      ctx.fillStyle = CANVAS_UI.ink;
-      pts.forEach((p) => {
-        const q = toPx(p.x, p.y);
-        ctx.fillRect(q.px - 1.5, q.py - 1.5, 3, 3);
+      // документ: примитивы вне видимого прямоугольника не рисуются
+      const cA = toWorld(view, 0, 0), cB = toWorld(view, size.w, size.h);
+      const clipPad = 4 / view.s + 2;
+      drawFlat(ctx, view, zEnts, hidden, {
+        x1: Math.min(cA.x, cB.x) - clipPad, x2: Math.max(cA.x, cB.x) + clipPad,
+        y1: Math.min(cA.y, cB.y) - clipPad, y2: Math.max(cA.y, cB.y) + clipPad,
       });
-    }
 
-    // черновик полигона
-    if (draft?.t === 'poly' && draft.pts.length) {
-      const pts = [...draft.pts, { x: mouse.wx, y: mouse.wy }];
-      ctx.beginPath();
-      const p0 = toPx(pts[0].x, pts[0].y);
-      ctx.moveTo(p0.px, p0.py);
-      for (let i = 1; i < pts.length; i++) {
-        const q = toPx(pts[i].x, pts[i].y);
-        ctx.lineTo(q.px, q.py);
+      // выделение
+      if (sel.size) {
+        ctx.save();
+        for (const ent of doc.entities) {
+          if (!sel.has(ent.id)) continue;
+          drawEnt(ctx, view, ent, { tint: COLORS.sel, alpha: 0.5, hidden: new Set() });
+          const b = M.entBBox(ent);
+          const p1 = toPx(b[0], b[1]), p2 = toPx(b[2], b[3]);
+          ctx.strokeStyle = COLORS.sel;
+          ctx.setLineDash([4, 3]);
+          ctx.lineWidth = 1;
+          ctx.strokeRect(Math.min(p1.px, p2.px) - 2.5, Math.min(p1.py, p2.py) - 2.5,
+            Math.abs(p2.px - p1.px) + 5, Math.abs(p2.py - p1.py) + 5);
+          ctx.setLineDash([]);
+        }
+        ctx.restore();
       }
-      const col = activeCu === 'k1' ? COLORS.k1 : COLORS.k2;
-      ctx.globalAlpha = 0.3;
-      ctx.fillStyle = col;
-      ctx.fill();
-      ctx.globalAlpha = 1;
-      ctx.setLineDash([5, 4]);
-      ctx.strokeStyle = col;
-      ctx.lineWidth = 1.2;
-      ctx.stroke();
-      ctx.setLineDash([]);
-    }
 
-    // черновики линий/прямоугольников/окружностей
-    if (draft?.t === 'line') {
-      const p2 = constrain(draft.p1, { x: mouse.wx, y: mouse.wy });
-      const a = toPx(draft.p1.x, draft.p1.y), b = toPx(p2.x, p2.y);
-      ctx.setLineDash([5, 4]);
-      ctx.strokeStyle = CANVAS_UI.ink;
-      ctx.lineWidth = 1;
-      ctx.beginPath(); ctx.moveTo(a.px, a.py); ctx.lineTo(b.px, b.py); ctx.stroke();
-      ctx.setLineDash([]);
-    }
-    if (draft?.t === 'rect') {
-      const a = toPx(draft.p1.x, draft.p1.y), b = toPx(mouse.wx, mouse.wy);
-      ctx.setLineDash([5, 4]);
-      ctx.strokeStyle = CANVAS_UI.ink;
-      ctx.strokeRect(Math.min(a.px, b.px), Math.min(a.py, b.py), Math.abs(b.px - a.px), Math.abs(b.py - a.py));
-      ctx.setLineDash([]);
-    }
-    if (draft?.t === 'circle') {
-      const a = toPx(draft.c.x, draft.c.y);
-      const rr = Math.hypot(mouse.wx - draft.c.x, mouse.wy - draft.c.y);
-      ctx.setLineDash([5, 4]);
-      ctx.strokeStyle = CANVAS_UI.ink;
-      ctx.beginPath(); ctx.arc(a.px, a.py, rr * view.s, 0, Math.PI * 2); ctx.stroke();
-      ctx.setLineDash([]);
-      ctx.fillStyle = CANVAS_UI.labelInk;
-      ctx.font = '11px monospace';
-      ctx.fillText('R ' + M.fmt(rr), a.px + 10, a.py - 8);
-    }
-
-    // линейка
-    if (draft?.t === 'ruler' && draft.pts.length) {
-      const a0 = draft.pts[0];
-      const b0 = draft.pts.length > 1 ? draft.pts[1] : { x: mouse.wx, y: mouse.wy };
-      const a = toPx(a0.x, a0.y), b = toPx(b0.x, b0.y);
-      ctx.strokeStyle = '#7ac0ff';
-      ctx.setLineDash([6, 4]);
-      ctx.lineWidth = 1;
-      ctx.beginPath(); ctx.moveTo(a.px, a.py); ctx.lineTo(b.px, b.py); ctx.stroke();
-      ctx.setLineDash([]);
-      const dx = b0.x - a0.x, dy = b0.y - a0.y;
-      const len = Math.hypot(dx, dy);
-      const label = `${M.fmt(len)} мм (${M.fmt(M.mm2mil(len), 1)} mil)  Δx ${M.fmt(dx)} Δy ${M.fmt(dy)}`;
-      ctx.font = '11px monospace';
-      const tw = ctx.measureText(label).width;
-      const lx = (a.px + b.px) / 2 + 12, ly = (a.py + b.py) / 2 - 10;
-      ctx.fillStyle = CANVAS_UI.labelBg;
-      ctx.fillRect(lx - 4, ly - 12, tw + 8, 17);
-      ctx.fillStyle = '#7ac0ff';
-      ctx.fillText(label, lx, ly);
-      [[a.px, a.py], [b.px, b.py]].forEach(([x, y]) => {
-        ctx.fillStyle = '#7ac0ff';
-        ctx.fillRect(x - 2, y - 2, 4, 4);
-      });
-    }
-
-    // автотрассировка: зоны зазора вокруг отверстий (ближе дорожка не подойдёт)
-    if (tool === 'route' && defs.rtHoleClear > 0) {
-      ctx.save();
-      ctx.strokeStyle = 'rgba(255,180,60,.45)';
-      ctx.lineWidth = 1;
-      ctx.setLineDash([3, 3]);
-      for (const e of expandDoc(doc.entities)) {
-        let r = 0;
-        if (e.kind === 'pad' && e.drill > 0) r = e.size / 2;
-        else if (e.kind === 'via') r = e.size / 2;
-        else if (e.kind === 'hole') r = e.d / 2;
-        else continue;
-        const q = toPx(e.x, e.y);
-        const rr = (r + defs.rtHoleClear) * view.s;
-        if (q.px < -rr || q.py < -rr || q.px > size.w + rr || q.py > size.h + rr) continue;
-        ctx.beginPath(); ctx.arc(q.px, q.py, rr, 0, Math.PI * 2); ctx.stroke();
+      // «Тест цепи»: подсветка всей электрической цепи
+      if (probe && probeData) {
+        ctx.save();
+        for (const e of probeData.flat) {
+          if (!probe.ents.has(e.id)) continue;
+          drawEnt(ctx, view, e, { tint: COLORS.probe, alpha: 0.55, hidden: new Set() });
+        }
+        ctx.restore();
       }
-      ctx.restore();
-    }
 
-    // Цветные группы и воздушные связи; это подсказки, не медь.
-    if (tool === 'route' && routeMode === 'nets') {
-      ctx.save();
-      ctx.font = '11px sans-serif';
-      (doc.nets ?? []).forEach((net, i) => {
-        const points = net.pads.map((id) => netGeometry.ends.get(id)).filter((p): p is RouteEnd => !!p);
-        ctx.strokeStyle = ctx.fillStyle = NET_COLORS[i % NET_COLORS.length];
-        ctx.globalAlpha = activeNet && activeNet !== net.id ? 0.45 : 0.95;
-        ctx.lineWidth = activeNet === net.id ? 2 : 1;
-        ctx.setLineDash([4, 5]);
-        const first = points[0];
-        if (first) for (const p of points.slice(1)) {
-          if (netGeometry.comp.get(first.entId!) === netGeometry.comp.get(p.entId!)) continue;
-          const a = toPx(first.x, first.y), b = toPx(p.x, p.y);
+      // автотрассировка: зоны зазора вокруг отверстий (ближе дорожка не подойдёт)
+      if (tool === 'route' && defs.rtHoleClear > 0) {
+        ctx.save();
+        ctx.strokeStyle = 'rgba(255,180,60,.45)';
+        ctx.lineWidth = 1;
+        ctx.setLineDash([3, 3]);
+        for (const e of zEnts) {
+          let r = 0;
+          if (e.kind === 'pad' && e.drill > 0) r = e.size / 2;
+          else if (e.kind === 'via') r = e.size / 2;
+          else if (e.kind === 'hole') r = e.d / 2;
+          else continue;
+          const q = toPx(e.x, e.y);
+          const rr = (r + defs.rtHoleClear) * view.s;
+          if (q.px < -rr || q.py < -rr || q.px > size.w + rr || q.py > size.h + rr) continue;
+          ctx.beginPath(); ctx.arc(q.px, q.py, rr, 0, Math.PI * 2); ctx.stroke();
+        }
+        ctx.restore();
+      }
+
+      // Цветные группы и воздушные связи; это подсказки, не медь.
+      if (tool === 'route' && routeMode === 'nets') {
+        ctx.save();
+        ctx.font = '11px sans-serif';
+        (doc.nets ?? []).forEach((net, i) => {
+          const points = net.pads.map((id) => netGeometry.ends.get(id)).filter((p): p is RouteEnd => !!p);
+          ctx.strokeStyle = ctx.fillStyle = NET_COLORS[i % NET_COLORS.length];
+          ctx.globalAlpha = activeNet && activeNet !== net.id ? 0.45 : 0.95;
+          ctx.lineWidth = activeNet === net.id ? 2 : 1;
+          ctx.setLineDash([4, 5]);
+          const first = points[0];
+          if (first) for (const p of points.slice(1)) {
+            if (netGeometry.comp.get(first.entId!) === netGeometry.comp.get(p.entId!)) continue;
+            const a = toPx(first.x, first.y), b = toPx(p.x, p.y);
+            ctx.beginPath(); ctx.moveTo(a.px, a.py); ctx.lineTo(b.px, b.py); ctx.stroke();
+          }
+          ctx.setLineDash([]);
+          for (const p of points) {
+            const q = toPx(p.x, p.y), r = Math.max(6, p.r * view.s + 3);
+            ctx.beginPath(); ctx.arc(q.px, q.py, r, 0, Math.PI * 2); ctx.stroke();
+            ctx.fillText(net.name, q.px + r + 3, q.py - r);
+          }
+        });
+        ctx.restore();
+      }
+    });
+  }, [
+    doc, zEnts, view, hidden, sel, probe, probeData, gridConf, defs.showAxes,
+    defs.rtHoleClear, size, tool, routeMode, activeNet, netGeometry, theme, colors, toPx,
+  ]);
+
+  // ---------------- отрисовка: оверлей (черновики, фантомы, перекрестие) ----------------
+  // Лёгкий слой поверх платы: обновляется при движении курсора и рисовании,
+  // но это несколько штрихов — тяжёлая база при этом не перерисовывается.
+  useEffect(() => {
+    const cv = overRef.current;
+    if (!cv) return;
+    cancelAnimationFrame(overRaf.current);
+    overRaf.current = requestAnimationFrame(() => {
+      overRaf.current = 0;
+      const dpr = window.devicePixelRatio || 1;
+      if (cv.width !== Math.round(size.w * dpr)) cv.width = Math.round(size.w * dpr);
+      if (cv.height !== Math.round(size.h * dpr)) cv.height = Math.round(size.h * dpr);
+      cv.style.width = size.w + 'px';
+      cv.style.height = size.h + 'px';
+      const ctx = cv.getContext('2d')!;
+      ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+      ctx.clearRect(0, 0, size.w, size.h);
+
+      // черновик дорожки
+      if (draft?.t === 'track' && draft.pts.length) {
+        const pts = draft.pts;
+        ctx.lineCap = 'round';
+        ctx.lineJoin = 'round';
+        for (let i = 0; i < pts.length - 1; i++) {
+          ctx.strokeStyle = pts[i].layer === 'k1' ? COLORS.k1 : COLORS.k2;
+          ctx.lineWidth = Math.max(defs.trackW * view.s, 1);
+          const a = toPx(pts[i].x, pts[i].y), b = toPx(pts[i + 1].x, pts[i + 1].y);
           ctx.beginPath(); ctx.moveTo(a.px, a.py); ctx.lineTo(b.px, b.py); ctx.stroke();
         }
-        ctx.setLineDash([]);
-        for (const p of points) {
-          const q = toPx(p.x, p.y), r = Math.max(6, p.r * view.s + 3);
-          ctx.beginPath(); ctx.arc(q.px, q.py, r, 0, Math.PI * 2); ctx.stroke();
-          ctx.fillText(net.name, q.px + r + 3, q.py - r);
+        // резиновый сегмент к курсору
+        const last = pts[pts.length - 1];
+        const c = constrain(last, { x: mouse.wx, y: mouse.wy });
+        const a = toPx(last.x, last.y), b = toPx(c.x, c.y);
+        ctx.globalAlpha = 0.5;
+        ctx.strokeStyle = activeCu === 'k1' ? COLORS.k1 : COLORS.k2;
+        ctx.beginPath(); ctx.moveTo(a.px, a.py); ctx.lineTo(b.px, b.py); ctx.stroke();
+        ctx.globalAlpha = 1;
+        ctx.fillStyle = CANVAS_UI.ink;
+        pts.forEach((p) => {
+          const q = toPx(p.x, p.y);
+          ctx.fillRect(q.px - 1.5, q.py - 1.5, 3, 3);
+        });
+      }
+
+      // черновик полигона
+      if (draft?.t === 'poly' && draft.pts.length) {
+        const pts = [...draft.pts, { x: mouse.wx, y: mouse.wy }];
+        ctx.beginPath();
+        const p0 = toPx(pts[0].x, pts[0].y);
+        ctx.moveTo(p0.px, p0.py);
+        for (let i = 1; i < pts.length; i++) {
+          const q = toPx(pts[i].x, pts[i].y);
+          ctx.lineTo(q.px, q.py);
         }
-      });
-      ctx.restore();
-    }
+        const col = activeCu === 'k1' ? COLORS.k1 : COLORS.k2;
+        ctx.globalAlpha = 0.3;
+        ctx.fillStyle = col;
+        ctx.fill();
+        ctx.globalAlpha = 1;
+        ctx.setLineDash([5, 4]);
+        ctx.strokeStyle = col;
+        ctx.lineWidth = 1.2;
+        ctx.stroke();
+        ctx.setLineDash([]);
+      }
 
-    // автотрассировка: первая точка и резиновая линия
-    if (tool === 'route' && routeA) {
-      const a = toPx(routeA.x, routeA.y);
-      ctx.strokeStyle = COLORS.sel;
-      ctx.lineWidth = 2;
-      ctx.beginPath(); ctx.arc(a.px, a.py, Math.max(routeA.r * view.s + 4, 8), 0, Math.PI * 2); ctx.stroke();
-      ctx.setLineDash([6, 5]);
-      ctx.lineWidth = 1;
-      ctx.beginPath(); ctx.moveTo(a.px, a.py); ctx.lineTo(mouse.px, mouse.py); ctx.stroke();
-      ctx.setLineDash([]);
-    }
+      // черновики линий/прямоугольников/окружностей
+      if (draft?.t === 'line') {
+        const p2 = constrain(draft.p1, { x: mouse.wx, y: mouse.wy });
+        const a = toPx(draft.p1.x, draft.p1.y), b = toPx(p2.x, p2.y);
+        ctx.setLineDash([5, 4]);
+        ctx.strokeStyle = CANVAS_UI.ink;
+        ctx.lineWidth = 1;
+        ctx.beginPath(); ctx.moveTo(a.px, a.py); ctx.lineTo(b.px, b.py); ctx.stroke();
+        ctx.setLineDash([]);
+      }
+      if (draft?.t === 'rect') {
+        const a = toPx(draft.p1.x, draft.p1.y), b = toPx(mouse.wx, mouse.wy);
+        ctx.setLineDash([5, 4]);
+        ctx.strokeStyle = CANVAS_UI.ink;
+        ctx.strokeRect(Math.min(a.px, b.px), Math.min(a.py, b.py), Math.abs(b.px - a.px), Math.abs(b.py - a.py));
+        ctx.setLineDash([]);
+      }
+      if (draft?.t === 'circle') {
+        const a = toPx(draft.c.x, draft.c.y);
+        const rr = Math.hypot(mouse.wx - draft.c.x, mouse.wy - draft.c.y);
+        ctx.setLineDash([5, 4]);
+        ctx.strokeStyle = CANVAS_UI.ink;
+        ctx.beginPath(); ctx.arc(a.px, a.py, rr * view.s, 0, Math.PI * 2); ctx.stroke();
+        ctx.setLineDash([]);
+        ctx.fillStyle = CANVAS_UI.labelInk;
+        ctx.font = '11px monospace';
+        ctx.fillText('R ' + M.fmt(rr), a.px + 10, a.py - 8);
+      }
 
-    // фантомы размещения
-    const ghost = (ent: M.Entity) => drawEnt(ctx, view, ent, { alpha: 0.55, hidden: new Set() });
-    if (!sel.size && !drag.current) {
-      const at = { x: mouse.wx, y: mouse.wy };
-      if (tool === 'pad') ghost({ id: 'g', kind: 'pad', ...at, shape: defs.padShape, size: defs.padSize, drill: defs.padDrill });
-      else if (tool === 'via') ghost({ id: 'g', kind: 'via', ...at, size: defs.viaSize, drill: defs.viaDrill });
-      else if (tool === 'hole') ghost({ id: 'g', kind: 'hole', ...at, d: defs.holeD });
-      else if (tool === 'smd') ghost({ id: 'g', kind: 'smd', ...at, w: defs.smdW, h: defs.smdH, rot: 0, layer: activeCu });
-      else if (tool === 'text' && defs.text.trim()) ghost({
-        id: 'g', kind: 'text', ...at, size: defs.textSize, th: defs.textTh, rot: defs.textRot,
-        text: defs.text, mirror: defs.textMirror, layer: defs.textLayer,
-      });
-      else if (tool === 'comp' && placeLib) {
-        const um = placeLib.startsWith('u:') ? macros.find((x) => 'u:' + macroKey(x) === placeLib) : undefined;
-        ghost({
-          id: 'g', kind: 'comp', lib: um ? '' : placeLib, name: '', ...at, rot: placeRot, side: placeSide,
-          bl: um ? um.bl : compBL.get(placeLib) ?? [-2, -2, 2, 2],
-          ents: um?.ents,
+      // линейка
+      if (draft?.t === 'ruler' && draft.pts.length) {
+        const a0 = draft.pts[0];
+        const b0 = draft.pts.length > 1 ? draft.pts[1] : { x: mouse.wx, y: mouse.wy };
+        const a = toPx(a0.x, a0.y), b = toPx(b0.x, b0.y);
+        ctx.strokeStyle = '#7ac0ff';
+        ctx.setLineDash([6, 4]);
+        ctx.lineWidth = 1;
+        ctx.beginPath(); ctx.moveTo(a.px, a.py); ctx.lineTo(b.px, b.py); ctx.stroke();
+        ctx.setLineDash([]);
+        const dx = b0.x - a0.x, dy = b0.y - a0.y;
+        const len = Math.hypot(dx, dy);
+        const label = `${M.fmt(len)} мм (${M.fmt(M.mm2mil(len), 1)} mil)  Δx ${M.fmt(dx)} Δy ${M.fmt(dy)}`;
+        ctx.font = '11px monospace';
+        const tw = ctx.measureText(label).width;
+        const lx = (a.px + b.px) / 2 + 12, ly = (a.py + b.py) / 2 - 10;
+        ctx.fillStyle = CANVAS_UI.labelBg;
+        ctx.fillRect(lx - 4, ly - 12, tw + 8, 17);
+        ctx.fillStyle = '#7ac0ff';
+        ctx.fillText(label, lx, ly);
+        [[a.px, a.py], [b.px, b.py]].forEach(([x, y]) => {
+          ctx.fillStyle = '#7ac0ff';
+          ctx.fillRect(x - 2, y - 2, 4, 4);
         });
       }
-      // буфер вставки
-      if (pasteTpl) {
-        const bb = M.unionBBox(pasteTpl.map(M.entBBox));
-        pasteTpl.forEach((tpl) => {
-          const c = JSON.parse(JSON.stringify(tpl)) as M.Entity;
-          M.translateEnt(c, at.x - bb[0], at.y - bb[1]);
-          drawEnt(ctx, view, c, { alpha: 0.55, tint: COLORS.sel, hidden: new Set() });
-        });
+
+      // автотрассировка: первая точка и резиновая линия
+      if (tool === 'route' && routeA) {
+        const a = toPx(routeA.x, routeA.y);
+        ctx.strokeStyle = COLORS.sel;
+        ctx.lineWidth = 2;
+        ctx.beginPath(); ctx.arc(a.px, a.py, Math.max(routeA.r * view.s + 4, 8), 0, Math.PI * 2); ctx.stroke();
+        ctx.setLineDash([6, 5]);
+        ctx.lineWidth = 1;
+        ctx.beginPath(); ctx.moveTo(a.px, a.py); ctx.lineTo(mouse.px, mouse.py); ctx.stroke();
+        ctx.setLineDash([]);
       }
-    }
 
-    // рамка выделения
-    if (drag.current?.mode === 'marquee') {
-      const d = drag.current;
-      const a = toPx(d.startWorld.x, d.startWorld.y), b = toPx(d.curWorld.x, d.curWorld.y);
-      ctx.fillStyle = 'rgba(79,140,255,.08)';
-      ctx.fillRect(Math.min(a.px, b.px), Math.min(a.py, b.py), Math.abs(b.px - a.px), Math.abs(b.py - a.py));
-      ctx.setLineDash([4, 3]);
-      ctx.strokeStyle = COLORS.sel;
-      ctx.strokeRect(Math.min(a.px, b.px) + 0.5, Math.min(a.py, b.py) + 0.5, Math.abs(b.px - a.px), Math.abs(b.py - a.py));
-      ctx.setLineDash([]);
-    }
+      // фантомы размещения
+      const ghost = (ent: M.Entity) => drawEnt(ctx, view, ent, { alpha: 0.55, hidden: new Set() });
+      if (!sel.size && !drag.current) {
+        const at = { x: mouse.wx, y: mouse.wy };
+        if (tool === 'pad') ghost({ id: 'g', kind: 'pad', ...at, shape: defs.padShape, size: defs.padSize, drill: defs.padDrill });
+        else if (tool === 'via') ghost({ id: 'g', kind: 'via', ...at, size: defs.viaSize, drill: defs.viaDrill });
+        else if (tool === 'hole') ghost({ id: 'g', kind: 'hole', ...at, d: defs.holeD });
+        else if (tool === 'smd') ghost({ id: 'g', kind: 'smd', ...at, w: defs.smdW, h: defs.smdH, rot: 0, layer: activeCu });
+        else if (tool === 'text' && defs.text.trim()) ghost({
+          id: 'g', kind: 'text', ...at, size: defs.textSize, th: defs.textTh, rot: defs.textRot,
+          text: defs.text, mirror: defs.textMirror, layer: defs.textLayer,
+        });
+        else if (tool === 'comp' && placeLib) {
+          const um = placeLib.startsWith('u:') ? macros.find((x) => 'u:' + macroKey(x) === placeLib) : undefined;
+          ghost({
+            id: 'g', kind: 'comp', lib: um ? '' : placeLib, name: '', ...at, rot: placeRot, side: placeSide,
+            bl: um ? um.bl : compBL.get(placeLib) ?? [-2, -2, 2, 2],
+            ents: um?.ents,
+          });
+        }
+        // буфер вставки
+        if (pasteTpl) {
+          const bb = M.unionBBox(pasteTpl.map(M.entBBox));
+          pasteTpl.forEach((tpl) => {
+            const c = JSON.parse(JSON.stringify(tpl)) as M.Entity;
+            M.translateEnt(c, at.x - bb[0], at.y - bb[1]);
+            drawEnt(ctx, view, c, { alpha: 0.55, tint: COLORS.sel, hidden: new Set() });
+          });
+        }
+      }
 
-    // перекрестие курсора
-    if (mouse.px >= 0 && mouse.px <= size.w && mouse.py >= 0 && mouse.py <= size.h) {
-      ctx.strokeStyle = 'rgba(255,255,255,.13)';
-      ctx.lineWidth = 1;
-      ctx.beginPath();
-      ctx.moveTo(0, mouse.py + 0.5); ctx.lineTo(size.w, mouse.py + 0.5);
-      ctx.moveTo(mouse.px + 0.5, 0); ctx.lineTo(mouse.px + 0.5, size.h);
-      ctx.stroke();
-      const lbl = `X ${M.fmt(mouse.wx)}  Y ${M.fmt(mouse.wy)}`;
-      ctx.font = '10px monospace';
-      ctx.fillStyle = 'rgba(20,22,26,.85)';
-      const tw = ctx.measureText(lbl).width;
-      ctx.fillRect(mouse.px + 10, mouse.py - 22, tw + 8, 15);
-      ctx.fillStyle = '#9aa3ad';
-      ctx.fillText(lbl, mouse.px + 14, mouse.py - 11);
-    }
+      // рамка выделения
+      if (drag.current?.mode === 'marquee') {
+        const d = drag.current;
+        const a = toPx(d.startWorld.x, d.startWorld.y), b = toPx(d.curWorld.x, d.curWorld.y);
+        ctx.fillStyle = 'rgba(79,140,255,.08)';
+        ctx.fillRect(Math.min(a.px, b.px), Math.min(a.py, b.py), Math.abs(b.px - a.px), Math.abs(b.py - a.py));
+        ctx.setLineDash([4, 3]);
+        ctx.strokeStyle = COLORS.sel;
+        ctx.strokeRect(Math.min(a.px, b.px) + 0.5, Math.min(a.py, b.py) + 0.5, Math.abs(b.px - a.px), Math.abs(b.py - a.py));
+        ctx.setLineDash([]);
+      }
+
+      // перекрестие курсора
+      if (mouse.px >= 0 && mouse.px <= size.w && mouse.py >= 0 && mouse.py <= size.h) {
+        ctx.strokeStyle = CANVAS_UI.crosshair;
+        ctx.lineWidth = 1;
+        ctx.beginPath();
+        ctx.moveTo(0, mouse.py + 0.5); ctx.lineTo(size.w, mouse.py + 0.5);
+        ctx.moveTo(mouse.px + 0.5, 0); ctx.lineTo(mouse.px + 0.5, size.h);
+        ctx.stroke();
+        const lbl = `X ${M.fmt(mouse.wx)}  Y ${M.fmt(mouse.wy)}`;
+        ctx.font = '10px monospace';
+        ctx.fillStyle = CANVAS_UI.labelBg;
+        const tw = ctx.measureText(lbl).width;
+        ctx.fillRect(mouse.px + 10, mouse.py - 22, tw + 8, 15);
+        ctx.fillStyle = CANVAS_UI.labelInk;
+        ctx.fillText(lbl, mouse.px + 14, mouse.py - 11);
+      }
+    });
   });
 
   // ---------------- производные для UI ----------------
@@ -1529,143 +1621,201 @@ export default function App() {
 
   const selEnts = useMemo(() => doc.entities.filter((e) => sel.has(e.id)), [doc, sel]);
   const toolMeta = TOOLS.find((t) => t.id === tool)!;
-  const toggleHidden = (l: M.LayerId) =>
-    setHidden((h) => { const n = new Set(h); if (n.has(l)) n.delete(l); else n.add(l); return n; });
+  const toggleHidden = useCallback((l: M.LayerId) =>
+    setHidden((h) => { const n = new Set(h); if (n.has(l)) n.delete(l); else n.add(l); return n; }), []);
 
-  const tb = (
-    n: string, title: string, onClick: () => void, opts?: { active?: boolean; disabled?: boolean },
-  ) => (
-    <button key={n} className={'tb-btn' + (opts?.active ? ' active' : '')} title={title}
-      onClick={onClick} disabled={opts?.disabled}>
-      <Ic n={n} />
-    </button>
+  // настройки боковых колонок — мемо: идентичность объекта не должна меняться каждый кадр
+  const sidesConf = useMemo(() => normalizeSides(uiConf.sides), [uiConf]);
+  // полный порядок групп тулбара (включая скрытые) — для конструктора интерфейса
+  const uiOrder = useMemo(
+    () => (uiConf.ids.length ? uiConf.ids : GROUP_ORDER).filter((id) => GROUP_DEFS.some((g) => g.id === id)),
+    [uiConf],
   );
+  const updButton = upd.Button;
 
-  // ---------------- группы тулбара (конструктор интерфейса) ----------------
-  const tbGroups: Record<string, ReactNode> = {
-    file: (
-      <div className="tb-group" key="file">
-        {tb('new', 'Новая плата', () => setDialog('new'))}
-        {tb('open', 'Открыть проект (Ctrl+O)', () => fileRef.current?.click())}
-        {tb('save', 'Сохранить проект (Ctrl+S)', saveFile)}
-        {tb('gerber', 'Экспорт Gerber/PNG (Ctrl+E)', () => setDialog('export'))}
-        {tb('panel', 'Размножить плату (панелизация)', () => setDialog('panelize'))}
-        {tb('inventory', 'Перечень площадок и отверстий', () => setDialog('inventory'))}
-      </div>
-    ),
-    undo: (
-      <div className="tb-group" key="undo">
-        {tb('undo', 'Отменить (Ctrl+Z)', undo, { disabled: !past.current.length })}
-        {tb('redo', 'Повторить (Ctrl+Y)', redo, { disabled: !future.current.length })}
-      </div>
-    ),
-    tools: (
-      <div className="tb-group" key="tools">
-        {TOOLS.map((t) => tb(t.icon, `${t.name}${t.id === 'track' ? ' (2)' : t.id === 'route' ? ' (9)' : t.id === 'probe' ? ' (0)' : ''}`, () => setTool(t.id), { active: tool === t.id && !(t.id === 'comp' && !placeLib) }))}
-      </div>
-    ),
-    grid: (
-      <div className="tb-group" key="grid">
-        <GridToolbar
-          defs={defs} setDefs={setDefs} scale={view.s}
-          onOpen={() => setDialog('grid')}
-        />
-      </div>
-    ),
-    layer: (
-      <div className="tb-group" key="layer">
-        <button className={'tb-btn cu' + (activeCu === 'k1' ? ' active' : '')}
-          style={{ borderColor: COLORS.k1, color: activeCu === 'k1' ? 'var(--text)' : COLORS.k1 }}
-          title="Активный слой: верхняя медь (L)" onClick={() => setActiveCu('k1')}>K1</button>
-        <button className={'tb-btn cu' + (activeCu === 'k2' ? ' active' : '')}
-          style={{ borderColor: COLORS.k2, color: activeCu === 'k2' ? 'var(--text)' : COLORS.k2 }}
-          title="Активный слой: нижняя медь (L)" onClick={() => setActiveCu('k2')}>K2</button>
-      </div>
-    ),
-    view: (
-      <div className="tb-group" key="view">
-        {tb('zoomin', 'Приблизить (+)', () => zoomAt(size.w / 2, size.h / 2, 1.3))}
-        {tb('zoomout', 'Отдалить (−)', () => zoomAt(size.w / 2, size.h / 2, 1 / 1.3))}
-        {tb('fit', 'Показать всю плату (F)', () => fit())}
-        {tb('mirror', view.mir ? 'Вид снизу — включён' : 'Вид сверху / переключить на вид снизу',
-          () => setView((v) => ({ ...v, mir: !v.mir })), { active: view.mir })}
-      </div>
-    ),
-    about: (
-      <div className="tb-group" key="about">
-        {tb('uib', 'Конструктор интерфейса', () => setDialog('uib'))}
-        {tb(theme === 'dark' ? 'sun' : 'moon',
-          theme === 'dark' ? 'Включить светлую тему' : 'Включить тёмную тему',
-          () => setTheme(theme === 'dark' ? 'light' : 'dark'))}
-        {tb('palette', 'Цвета интерфейса', () => setDialog('colors'))}
-        {upd.Button}
-        {tb('about', 'О программе', () => setDialog('about'))}
-      </div>
-    ),
-  };
+  // ---------------- верхняя панель (одна строка, конструктор интерфейса) ----------------
+  // Мемоизирована: движение мыши не пересобирает шапку (в ней, среди прочего,
+  // выпадающий список шага сетки почти на сотню позиций). Редкие действия
+  // («Экспорт», «Интерфейс») убраны в компактные выпадающие меню.
+  const toolbar = useMemo(() => {
+    const tb = (
+      n: string, title: string, onClick: () => void, opts?: { active?: boolean; disabled?: boolean },
+    ) => (
+      <button key={n} type="button" className={'tb-btn' + (opts?.active ? ' active' : '')} title={title}
+        onClick={onClick} disabled={opts?.disabled}>
+        <Ic n={n} />
+      </button>
+    );
 
-  // порядок групп тулбара: сохранённый в localStorage, иначе порядок по умолчанию
-  const uiOrder = (uiConf.ids.length ? uiConf.ids : GROUP_ORDER)
-    .filter((id) => GROUP_DEFS.some((g) => g.id === id));
-  const uiHidden = new Set(uiConf.hidden);
-  const toShow = uiOrder.filter((id) => !uiHidden.has(id));
+    const groups: Record<string, ReactNode> = {
+      file: (
+        <div className="tb-group" key="file">
+          {tb('new', 'Новая плата', () => setDialog('new'))}
+          {tb('open', 'Открыть проект (Ctrl+O)', () => fileRef.current?.click())}
+          {tb('save', 'Сохранить проект (Ctrl+S)', saveFile)}
+          <MenuBtn
+            title="Экспорт и операции с платой"
+            items={[
+              { icon: 'gerber', label: 'Экспорт Gerber / PNG…', kbd: 'Ctrl+E', onClick: () => setDialog('export') },
+              { icon: 'panel', label: 'Размножить плату (панелизация)…', onClick: () => setDialog('panelize') },
+              { sep: true },
+              { icon: 'inventory', label: 'Перечень площадок и отверстий…', onClick: () => setDialog('inventory') },
+            ]}
+          />
+        </div>
+      ),
+      undo: (
+        <div className="tb-group" key="undo">
+          {tb('undo', 'Отменить (Ctrl+Z)', undo, { disabled: !past.current.length })}
+          {tb('redo', 'Повторить (Ctrl+Y)', redo, { disabled: !future.current.length })}
+        </div>
+      ),
+      grid: (
+        <div className="tb-group" key="grid">
+          <GridToolbar
+            defs={defs} setDefs={setDefs} scale={view.s}
+            onOpen={() => setDialog('grid')}
+          />
+        </div>
+      ),
+      layer: (
+        <div className="tb-group" key="layer">
+          <button type="button" className={'tb-btn cu' + (activeCu === 'k1' ? ' active' : '')}
+            style={{ borderColor: COLORS.k1, color: activeCu === 'k1' ? 'var(--text)' : COLORS.k1 }}
+            title="Активный слой: верхняя медь (L)" onClick={() => setActiveCu('k1')}>K1</button>
+          <button type="button" className={'tb-btn cu' + (activeCu === 'k2' ? ' active' : '')}
+            style={{ borderColor: COLORS.k2, color: activeCu === 'k2' ? 'var(--text)' : COLORS.k2 }}
+            title="Активный слой: нижняя медь (L)" onClick={() => setActiveCu('k2')}>K2</button>
+        </div>
+      ),
+      view: (
+        <div className="tb-group" key="view">
+          {tb('zoomin', 'Приблизить (+)', () => zoomAt(size.w / 2, size.h / 2, 1.3))}
+          {tb('zoomout', 'Отдалить (−)', () => zoomAt(size.w / 2, size.h / 2, 1 / 1.3))}
+          {tb('fit', 'Показать всю плату (F)', () => fit())}
+          {tb('mirror', view.mir ? 'Вид снизу — включён' : 'Вид сверху / переключить на вид снизу',
+            () => setView((v) => ({ ...v, mir: !v.mir })), { active: view.mir })}
+        </div>
+      ),
+      about: (
+        <div className="tb-group" key="about">
+          {tb(theme === 'dark' ? 'sun' : 'moon',
+            theme === 'dark' ? 'Включить светлую тему' : 'Включить тёмную тему',
+            () => setTheme(theme === 'dark' ? 'light' : 'dark'))}
+          {updButton}
+          <MenuBtn
+            align="right"
+            title="Интерфейс и справка"
+            items={[
+              { icon: 'uib', label: 'Конструктор интерфейса…', onClick: () => setDialog('uib') },
+              { icon: 'palette', label: 'Цвета интерфейса…', onClick: () => setDialog('colors') },
+              { sep: true },
+              { icon: 'about', label: 'О программе', onClick: () => setDialog('about') },
+            ]}
+          />
+        </div>
+      ),
+    };
+
+    // порядок групп: сохранённый в localStorage, иначе порядок по умолчанию;
+    // «Инструменты» (tools) теперь живут в вертикальном доке у холста
+    const hiddenSet = new Set(uiConf.hidden);
+    const order = uiOrder.filter((id) => id !== 'tools' && !hiddenSet.has(id));
+    return (
+      <div className="toolbar">
+        <div className="brand">
+          <span className="brandmark"><BeeMark /></span>
+          <span className="brandtext"><b>PS<em>Bees</em></b><small>PCB · LINUX · WINDOWS · SPRINT-LAYOUT</small></span>
+        </div>
+        {order.map((id) => groups[id])}
+      </div>
+    );
+  }, [uiConf, uiOrder, defs, view.s, view.mir, activeCu, size, theme, updButton, saveFile, undo, redo, fit, zoomAt, setDefs]);
+
+  // ---------------- док инструментов у холста ----------------
+  // Группа «Инструменты» конструктора интерфейса управляет видимостью дока.
+  const showDock = !uiConf.hidden.includes('tools');
+  const toolDock = useMemo(() => (
+    <div className="tool-dock" role="toolbar" aria-label="Инструменты">
+      {TOOL_GROUPS.map((grp, gi) => (
+        <Fragment key={gi}>
+          {gi > 0 && <div className="dock-sep" />}
+          {grp.map((id) => {
+            const t = TOOLS.find((x) => x.id === id)!;
+            const k = TOOL_KEYS[id];
+            return (
+              <button
+                key={id}
+                type="button"
+                className={'tb-btn dock-btn' + (tool === id && !(id === 'comp' && !placeLib) ? ' active' : '')}
+                title={`${t.name}${k ? ` (${k})` : ''} — ${t.hint}`}
+                onClick={() => setTool(id)}
+              >
+                <Ic n={t.icon} />
+              </button>
+            );
+          })}
+        </Fragment>
+      ))}
+    </div>
+  ), [tool, placeLib, setTool]);
 
   // ---------------- боковые колонки (конструктор интерфейса) ----------------
-  const sidesConf = normalizeSides(uiConf.sides);
-  const leftTabs: LeftTabId[] = sidesConf.leftTabs.length ? sidesConf.leftTabs : ['layers', 'lib'];
-  // активная вкладка левой колонки: выбранная вручную, если она видна; иначе первая
-  const activeLeft: LeftTabId = leftTabs.includes(leftTab) ? leftTab : leftTabs[0];
-
-  const renderLayersPane = () => (
-    <>
-      <LayersPanel
-        activeCu={activeCu} setActiveCu={setActiveCu}
-        hidden={hidden} toggleHidden={toggleHidden} counts={counts}
+  // Мемоизированы: при движении мыши колонки не перерисовываются.
+  const leftColumn = useMemo(() => {
+    const leftTabs: LeftTabId[] = sidesConf.leftTabs.length ? sidesConf.leftTabs : ['layers', 'lib'];
+    // активная вкладка левой колонки: выбранная вручную, если она видна; иначе первая
+    const activeLeft: LeftTabId = leftTabs.includes(leftTab) ? leftTab : leftTabs[0];
+    const renderLayersPane = () => (
+      <>
+        <LayersPanel
+          activeCu={activeCu} setActiveCu={setActiveCu}
+          hidden={hidden} toggleHidden={toggleHidden} counts={counts}
+        />
+        <div style={{ flex: 1 }} />
+        <div className="hint" style={{ padding: '0 12px 10px' }}>
+          Плата: {M.fmt(doc.w)} × {M.fmt(doc.h)} мм<br />
+          Элементов: {doc.entities.length} · Выделено: {sel.size}
+          <button type="button" className="btn inventory-open" onClick={() => setDialog('inventory')}>Площадки и отверстия…</button>
+        </div>
+      </>
+    );
+    const renderLibPane = () => (
+      <LibraryPanel
+        picked={placeLib}
+        onPick={(k) => { setPlaceLib(k); setToolRaw('comp'); }}
+        macros={macros}
+        onPickUser={(k) => { setPlaceLib('u:' + k); setToolRaw('comp'); }}
+        onDelUser={(k) => { persistMacros((prev) => prev.filter((m) => macroKey(m) !== k)); if (placeLib === 'u:' + k) setPlaceLib(null); }}
+        onImportLmk={() => lmkFileRef.current?.click()}
+        onImportZip={() => lmkZipRef.current?.click()}
       />
-      <div style={{ flex: 1 }} />
-      <div className="hint" style={{ padding: '0 12px 10px' }}>
-        Плата: {M.fmt(doc.w)} × {M.fmt(doc.h)} мм<br />
-        Элементов: {doc.entities.length} · Выделено: {sel.size}
-        <button className="btn inventory-open" onClick={() => setDialog('inventory')}>Площадки и отверстия…</button>
+    );
+    return (
+      <div className="side" style={{ width: clampW(sidesConf.leftW) }}>
+        <div className="pane-full">
+          {leftTabs.length > 1 && (
+            <div className="tabs">
+              {leftTabs.map((t) => (
+                <button key={t} type="button" className={activeLeft === t ? 'on' : ''} onClick={() => setLeftTab(t)}>
+                  {t === 'layers' ? 'Слои' : 'Библиотека'}
+                </button>
+              ))}
+            </div>
+          )}
+          {activeLeft === 'layers' ? renderLayersPane() : renderLibPane()}
+        </div>
       </div>
-    </>
-  );
-  const renderLibPane = () => (
-    <LibraryPanel
-      picked={placeLib}
-      onPick={(k) => { setPlaceLib(k); setToolRaw('comp'); }}
-      macros={macros}
-      onPickUser={(k) => { setPlaceLib('u:' + k); setToolRaw('comp'); }}
-      onDelUser={(k) => { persistMacros((prev) => prev.filter((m) => macroKey(m) !== k)); if (placeLib === 'u:' + k) setPlaceLib(null); }}
-      onImportLmk={() => lmkFileRef.current?.click()}
-      onImportZip={() => lmkZipRef.current?.click()}
-    />
-  );
+    );
+  }, [sidesConf, leftTab, activeCu, hidden, counts, doc, sel, placeLib, macros, toggleHidden, persistMacros]);
 
-  const leftColumn = (
-    <div className="side" style={{ width: clampW(sidesConf.leftW) }}>
-      <div className="pane-full">
-        {leftTabs.length > 1 && (
-          <div className="tabs">
-            {leftTabs.map((t) => (
-              <button key={t} className={activeLeft === t ? 'on' : ''} onClick={() => setLeftTab(t)}>
-                {t === 'layers' ? 'Слои' : 'Библиотека'}
-              </button>
-            ))}
-          </div>
-        )}
-        {activeLeft === 'layers' ? renderLayersPane() : renderLibPane()}
-      </div>
-    </div>
-  );
-
-  const rightColumn = (
+  const rightColumn = useMemo(() => (
     <div className="side right" style={{ width: clampW(sidesConf.rightW) }}>
       <div className="pane-full">
         {tool === 'route' && <>
           <div className="props route-modes">
-            <button className={'btn' + (routeMode === 'pair' ? ' primary' : '')} onClick={() => { setRouteMode('pair'); setRouteA(null); setSel(new Set()); setRouteMsg({ msg: '', ok: null }); }}>Две точки</button>
-            <button className={'btn' + (routeMode === 'nets' ? ' primary' : '')} onClick={() => { setRouteMode('nets'); setRouteA(null); setSel(new Set()); setRouteMsg({ msg: '', ok: null }); }}>Группы / вся плата</button>
+            <button type="button" className={'btn' + (routeMode === 'pair' ? ' primary' : '')} onClick={() => { setRouteMode('pair'); setRouteA(null); setSel(new Set()); setRouteMsg({ msg: '', ok: null }); }}>Две точки</button>
+            <button type="button" className={'btn' + (routeMode === 'nets' ? ' primary' : '')} onClick={() => { setRouteMode('nets'); setRouteA(null); setSel(new Set()); setRouteMsg({ msg: '', ok: null }); }}>Группы / вся плата</button>
           </div>
           {routeMode === 'nets' && <NetsPanel nets={doc.nets ?? []} active={activeNet} setActive={setActiveNet}
             ends={netGeometry.ends} comp={netGeometry.comp} info={routeMsg} onChange={changeNets} onRoute={routeAll}
@@ -1695,33 +1845,40 @@ export default function App() {
         />
       </div>
     </div>
-  );
+  ), [
+    sidesConf, tool, routeMode, activeNet, doc, netGeometry, routeMsg, routeA, defs, activeCu,
+    selEnts, placeLib, placeRot, placeSide, view.s, changeNets, routeAll, patchEnt, rotateSel,
+    mirrorSel, duplicateSel, deleteSel, setDocSize, setDefs,
+  ]);
 
   // ---------------- разметка ----------------
   return (
     <>
-      <div className="toolbar">
-        <div className="brand">
-          <span className="brandmark"><BeeMark /></span>
-          <span><b>PS<em>Bees</em></b><small>PCB · LINUX · WINDOWS · SPRINT-LAYOUT</small></span>
-        </div>
-        {toShow.map((id) => tbGroups[id])}
-      </div>
+      {toolbar}
 
       <div className="main">
         {leftColumn}
 
         <div className="canvas-wrap" ref={wrapRef}>
+          {/* базовый слой: сетка + плата (не реагирует на мышь) */}
+          <canvas ref={baseRef} className="canvas-base" />
+          {/* оверлей: черновики, фантомы, перекрестие; принимает события */}
           <canvas
-            ref={canvasRef}
+            ref={overRef}
+            className="canvas-over"
             onPointerDown={onPointerDown}
             onPointerMove={onPointerMove}
             onPointerUp={onPointerUp}
             onDoubleClick={onDblClick}
             onWheel={onWheel}
             onContextMenu={(e) => e.preventDefault()}
-            onPointerLeave={() => setMouse((m) => ({ ...m, px: -100, py: -100 }))}
+            onPointerLeave={() => {
+              if (moveRaf.current) { cancelAnimationFrame(moveRaf.current); moveRaf.current = 0; }
+              moveData.current = null;
+              setMouse((m) => ({ ...m, px: -100, py: -100 }));
+            }}
           />
+          {showDock && toolDock}
           <input
             ref={fileRef} type="file" accept=".json,.lay6,.lmk,application/json"
             style={{ display: 'none' }}

@@ -84,30 +84,35 @@ body {
 button { font: inherit; color: inherit; background: none; border: none; }
 :focus-visible { outline: 2px solid var(--accent); outline-offset: -1px; }
 
-/* ---------- верхняя панель (шапка) ---------- */
+/* ---------- верхняя панель (шапка) ----------
+   Всегда в одну строку: инструменты рисования вынесены в вертикальный док у
+   холста, редкие действия — в выпадающие меню, на узких окнах бренд сжимается. */
 .toolbar {
-  display: flex; align-items: center; gap: 3px;
-  padding: 6px 12px; background: var(--surface); border-bottom: 1px solid var(--line);
-  flex-wrap: wrap;
+  display: flex; align-items: center; gap: 2px;
+  padding: 5px 10px; background: var(--surface); border-bottom: 1px solid var(--line);
+  flex-wrap: nowrap; overflow: hidden; flex: none; min-height: 44px;
 }
-.brand { display: flex; align-items: center; gap: 10px; margin: 0 14px 0 2px; color: var(--text); }
+.brand { display: flex; align-items: center; gap: 8px; margin: 0 8px 0 0; color: var(--text); flex: none; }
 /* логотип без рамки и подложки — у самой картинки свои закругления */
 .brandmark {
-  width: 40px; height: 40px; border-radius: 10px; flex: none;
+  width: 32px; height: 32px; border-radius: 9px; flex: none;
   display: grid; place-items: center;
   overflow: hidden;
 }
-.brandmark img { width: 40px; height: 40px; display: block; }
+.brandmark img { width: 32px; height: 32px; display: block; }
 .brand > span { display: block; }
-.brand b { font-weight: 700; font-size: 13.5px; letter-spacing: .07em; }
+.brand b { font-weight: 700; font-size: 13px; letter-spacing: .07em; white-space: nowrap; }
 .brand em { color: var(--accent-text); font-style: normal; font-weight: 700; }
-.brand small { display: block; font-size: 8.5px; color: var(--muted); font-weight: 500; letter-spacing: 1px; margin-top: 1px; }
+.brand small { display: block; font-size: 7.5px; color: var(--muted); font-weight: 500; letter-spacing: 1px; margin-top: 1px; white-space: nowrap; }
+/* узкое окно: сначала прячем подпись бренда, потом и имя */
+@media (max-width: 1060px) { .brand small { display: none; } }
+@media (max-width: 920px) { .brandtext { display: none; } }
 
-.tb-group { display: flex; align-items: center; gap: 2px; padding: 0 9px; border-right: 1px solid var(--line); }
+.tb-group { display: flex; align-items: center; gap: 2px; padding: 0 6px; border-right: 1px solid var(--line); flex: none; }
 .tb-group:last-child { border-right: none; }
 .tb-btn {
   display: flex; align-items: center; justify-content: center;
-  width: 32px; height: 30px; border-radius: 8px; color: var(--text-2); cursor: pointer; flex: none;
+  width: 30px; height: 28px; border-radius: 8px; color: var(--text-2); cursor: pointer; flex: none;
 }
 .tb-btn:hover { background: var(--surface-2); color: var(--text); }
 .tb-btn:disabled { opacity: .35; cursor: default; }
@@ -120,9 +125,51 @@ button { font: inherit; color: inherit; background: none; border: none; }
 }
 .tb-sel {
   background: var(--surface-2); border: 1px solid var(--line); color: var(--text);
-  height: 27px; border-radius: 8px; padding: 0 6px; cursor: pointer;
+  height: 27px; border-radius: 8px; padding: 0 6px; cursor: pointer; flex: none;
 }
 .tb-sel:focus { outline: none; border-color: var(--accent); }
+/* выбор шага сетки: компактная ширина, длинный текст обрезается */
+.tb-sel-grid { width: 104px; text-overflow: ellipsis; }
+@media (max-width: 1180px) { .tb-sel-grid { width: 78px; } }
+
+/* ---------- выпадающие меню тулбара ---------- */
+.tb-menu { position: relative; display: flex; flex: none; }
+/* позиция задаётся инлайном (fixed, портал к body) — шапка меню не обрезает */
+.tb-pop {
+  z-index: 120;
+  min-width: 240px; padding: 5px;
+  background: var(--surface); border: 1px solid var(--line); border-radius: 10px;
+  box-shadow: var(--shadow);
+  display: flex; flex-direction: column; gap: 1px;
+}
+.tb-pop-item {
+  display: flex; align-items: center; gap: 9px; width: 100%;
+  padding: 7px 9px; border-radius: 7px; cursor: pointer;
+  color: var(--text-2); font-size: 12.5px; text-align: left; white-space: nowrap;
+}
+.tb-pop-item:hover { background: var(--surface-2); color: var(--text); }
+.tb-pop-item:disabled { opacity: .4; cursor: default; }
+.tb-pop-item:disabled:hover { background: none; }
+.tb-pop-ico { width: 16px; flex: none; }
+.tb-pop-label { flex: 1; }
+.tb-pop-kbd { color: var(--muted); font-size: 11px; margin-left: 14px; }
+.tb-pop-sep { height: 1px; background: var(--line); margin: 4px 6px; }
+
+/* ---------- вертикальный док инструментов у холста ---------- */
+.tool-dock {
+  position: absolute; left: 8px; top: 8px; z-index: 5;
+  display: flex; flex-direction: column; align-items: center; gap: 2px;
+  padding: 5px 4px; max-height: calc(100% - 16px); overflow-y: auto; overflow-x: hidden;
+  background: var(--surface); /* запасной вариант без color-mix */
+  background: color-mix(in srgb, var(--surface) 88%, transparent);
+  border: 1px solid var(--line); border-radius: 11px;
+  box-shadow: 0 6px 18px rgba(0, 0, 0, .28);
+  backdrop-filter: blur(3px);
+  scrollbar-width: none;
+}
+.tool-dock::-webkit-scrollbar { width: 0; height: 0; }
+.tool-dock .dock-btn { width: 32px; height: 30px; }
+.dock-sep { width: 20px; height: 1px; background: var(--line); margin: 3px 0; flex: none; }
 
 /* кнопка «Обновить» в шапке */
 .tb-btn.upd-btn { width: auto; padding: 0 9px; gap: 5px; font-size: 11.5px; font-weight: 600; height: 26px; }
@@ -321,6 +368,9 @@ input, select, textarea { user-select: text; }
 
 .canvas-wrap { flex: 1; position: relative; min-width: 0; background: var(--page); }
 canvas { position: absolute; inset: 0; cursor: crosshair; display: block; }
+/* базовый слой (сетка + плата) не принимает события — они у оверлея */
+.canvas-base { pointer-events: none; }
+.canvas-over { touch-action: none; }
 
 /* ---------- панель свойств ---------- */
 .props { padding: 4px 14px 20px; }
@@ -496,7 +546,7 @@ canvas { position: absolute; inset: 0; cursor: crosshair; display: block; }
 .tb-glyph { font-size: 14px; line-height: 1; letter-spacing: -1px; }
 .modal.grid-dlg { width: 640px; max-width: calc(100vw - 32px); }
 .grid-preview {
-  display: block; width: 100%; height: 120px; border: 1px solid var(--line);
+  display: block; width: 100%; height: 150px; border: 1px solid var(--line);
   border-radius: 9px; background: var(--page);
 }
 .grid-presets { max-height: 220px; overflow-y: auto; margin-top: 6px; padding-right: 4px; }
@@ -527,8 +577,8 @@ canvas { position: absolute; inset: 0; cursor: crosshair; display: block; }
 }
 
 /* предпросмотр макроса в библиотеке */
-.lib-prev { padding: 6px 8px 8px; border-bottom: 1px solid var(--line2, #2a2f3a); }
-.lib-prev canvas, .lib-preview { display: block; width: 100%; border-radius: 6px; border: 1px solid var(--line2, #2a2f3a); background: #0f1115; }
+.lib-prev { padding: 6px 8px 8px; border-bottom: 1px solid var(--line); }
+.lib-prev canvas, .lib-preview { display: block; width: 100%; border-radius: 6px; border: 1px solid var(--line); background: var(--page); }
 .lib-prev-title { margin-top: 6px; font-weight: 600; font-size: 12px; }
 .lib-prev-spec { margin-top: 2px; font-size: 11px; opacity: .75; }
 .lib-prev-note { margin-top: 3px; font-size: 10.5px; opacity: .55; line-height: 1.35; }

@@ -246,6 +246,34 @@ export function nearestRef(ents: Entity[], p: Pt, tol: number): Pt | null {
   return best;
 }
 
+/**
+ * Все характерные точки списка примитивов одним массивом.
+ * Строится один раз при изменении документа (см. App), а не на каждое
+ * движение мыши — поиск привязки в кадре не создаёт мусора.
+ */
+export function collectRefs(ents: Entity[]): Pt[] {
+  const out: Pt[] = [];
+  for (const e of ents) {
+    const pts = refPoints(e);
+    for (let i = 0; i < pts.length; i++) out.push(pts[i]);
+  }
+  return out;
+}
+
+/** Ближайшая точка из заранее построенного списка (быстрый путь nearestRef). */
+export function nearestRefPts(pts: Pt[] | null | undefined, p: Pt, tol: number): Pt | null {
+  if (!pts || !pts.length || !(tol > 0)) return null;
+  let best: Pt | null = null;
+  let bestD2 = tol * tol;
+  for (let i = 0; i < pts.length; i++) {
+    const q = pts[i];
+    const dx = q.x - p.x, dy = q.y - p.y;
+    const d2 = dx * dx + dy * dy; // сравниваем квадраты — без sqrt на точку
+    if (d2 <= bestD2) { bestD2 = d2; best = q; }
+  }
+  return best;
+}
+
 // ------------------------------------------------------------------ отрисовка
 
 export interface GridView {
@@ -301,7 +329,12 @@ export interface GridColors {
 }
 
 /**
- * Отрисовка сетки. Возвращает число нарисованных узлов (для тестов/отладки).
+ * Отрисовка сетки. Возвращает число узлов решётки (для тестов/отладки).
+ *
+ * Производительность: однотипные метки копятся в один путь и красятся одним
+ * fill()/stroke() — десятки тысяч узлов не тормозят кадр (раньше каждая точка
+ * была отдельным fillRect). Координаты выравниваются по сетке device-пикселей
+ * (параметр dpr), поэтому линии и точки crisp, без «размытия» на HIDPI.
  */
 export function drawGrid(
   ctx: CanvasRenderingContext2D,
@@ -310,6 +343,7 @@ export function drawGrid(
   wPx: number,
   hPx: number,
   col: GridColors,
+  dpr = 1,
 ): number {
   const X = (x: number): number => v.ox + x * v.s * (v.mir ? -1 : 1);
   const Y = (y: number): number => v.oy - y * v.s;
@@ -338,81 +372,92 @@ export function drawGrid(
   const vx = (i: number): number => X(c.ox + i * gridStep);
   const vy = (j: number): number => Y(c.oy + j * gridStep);
 
+  // ---- выравнивание по device-пикселям (dpr) ----
+  const d = dpr > 0 ? dpr : 1;
+  /** CSS-размер полосы в целое число device-пикселей (≥ 1) */
+  const devW = (cssW: number): number => Math.max(1, Math.round(cssW * d)) / d;
+  /** край полосы шириной wCss так, чтобы она легла ровно в device-пиксели */
+  const edge = (p: number, wCss: number): number => Math.round(p * d - (wCss * d) / 2) / d;
+  /** центр штриха (полу-пиксель для нечётной device-толщины, целый — для чётной) */
+  const mid = (p: number, wCss: number): number => {
+    const half = Math.round(wCss * d) % 2 ? 0.5 : 0;
+    return (Math.round(p * d - half) + half) / d;
+  };
+
   let drawn = 0;
+
   if (c.style === 'lines') {
-    // мелкое подразбиение
+    const wSub = devW(0.7), wMin = devW(1), wMaj = devW(1.25);
+    // мелкое подразбиение — один путь, одна закраска
     if (st.sub !== null) {
-      ctx.strokeStyle = col.minor;
-      ctx.lineWidth = 1;
+      ctx.fillStyle = col.minor;
       ctx.beginPath();
       const si0 = Math.floor((x1 - c.ox) / st.sub) - 1, si1 = Math.ceil((x2 - c.ox) / st.sub) + 1;
       const sj0 = Math.floor((y1 - c.oy) / st.sub) - 1, sj1 = Math.ceil((y2 - c.oy) / st.sub) + 1;
-      for (let i = si0; i <= si1; i++) {
-        const px = Math.round(X(c.ox + i * st.sub)) + 0.5;
-        ctx.moveTo(px, 0); ctx.lineTo(px, hPx);
-      }
-      for (let j = sj0; j <= sj1; j++) {
-        const py = Math.round(Y(c.oy + j * st.sub)) + 0.5;
-        ctx.moveTo(0, py); ctx.lineTo(wPx, py);
-      }
-      ctx.stroke();
+      for (let i = si0; i <= si1; i++) ctx.rect(edge(X(c.ox + i * st.sub), wSub), 0, wSub, hPx);
+      for (let j = sj0; j <= sj1; j++) ctx.rect(0, edge(Y(c.oy + j * st.sub), wSub), wPx, wSub);
+      ctx.fill();
     }
     // решётка по шагу привязки
-    ctx.strokeStyle = st.sub !== null ? col.major : col.minor;
-    ctx.lineWidth = 1;
+    ctx.fillStyle = st.sub !== null ? col.major : col.minor;
     ctx.beginPath();
-    for (let i = i0; i <= i1; i++) {
-      const px = Math.round(vx(i)) + 0.5;
-      ctx.moveTo(px, 0); ctx.lineTo(px, hPx);
-      drawn++;
-    }
-    for (let j = j0; j <= j1; j++) {
-      const py = Math.round(vy(j)) + 0.5;
-      ctx.moveTo(0, py); ctx.lineTo(wPx, py);
-      drawn++;
-    }
-    ctx.stroke();
+    for (let i = i0; i <= i1; i++) { ctx.rect(edge(vx(i), wMin), 0, wMin, hPx); drawn++; }
+    for (let j = j0; j <= j1; j++) { ctx.rect(0, edge(vy(j), wMin), wPx, wMin); drawn++; }
+    ctx.fill();
     // «главные» линии
     if (st.major !== null) {
-      ctx.strokeStyle = col.major;
-      ctx.lineWidth = 1;
+      ctx.fillStyle = col.major;
       ctx.beginPath();
-      for (let i = i0; i <= i1; i++) if (isMajor(i)) {
-        const px = Math.round(vx(i)) + 0.5;
-        ctx.moveTo(px, 0); ctx.lineTo(px, hPx);
-      }
-      for (let j = j0; j <= j1; j++) if (isMajor(j)) {
-        const py = Math.round(vy(j)) + 0.5;
-        ctx.moveTo(0, py); ctx.lineTo(wPx, py);
-      }
-      ctx.stroke();
+      for (let i = i0; i <= i1; i++) if (isMajor(i)) ctx.rect(edge(vx(i), wMaj), 0, wMaj, hPx);
+      for (let j = j0; j <= j1; j++) if (isMajor(j)) ctx.rect(0, edge(vy(j), wMaj), wPx, wMaj);
+      ctx.fill();
     }
     return drawn;
   }
 
-  // точки и перекрестия
-  ctx.fillStyle = col.minor;
+  // ---- точки и перекрестия ----
+  // Слишком плотная решётка: рисуем только «главные» узлы. При шаге ~5 px
+  // мелкие точки сливаются в сплошной шум — нечитаемы, а путь из десятков
+  // тысяч rect() тормозил бы каждый кадр панорамирования.
+  const dense = (i1 - i0 + 1) * (j1 - j0 + 1) > 45000;
+  const dMinor = devW(1.15);
+  const dMajor = Math.max(2, Math.round(1.9 * d)) / d;
+  const wCross = devW(1);
+  const majorsX: number[] = [], majorsY: number[] = [];
+
+  if (c.style === 'dots' && !dense) {
+    ctx.fillStyle = col.minor;
+    ctx.beginPath();
+  }
   for (let i = i0; i <= i1; i++) {
+    const px = vx(i);
     for (let j = j0; j <= j1; j++) {
-      const px = vx(i), py = vy(j);
       drawn++;
-      const maj = isMajor(i) && isMajor(j);
-      if (maj) {
-        ctx.fillStyle = col.major;
-        if (c.style === 'cross') {
-          ctx.strokeStyle = col.major;
-          ctx.lineWidth = 1;
-          ctx.beginPath();
-          ctx.moveTo(px - 3.5, py + 0.5); ctx.lineTo(px + 3.5, py + 0.5);
-          ctx.moveTo(px + 0.5, py - 3.5); ctx.lineTo(px + 0.5, py + 3.5);
-          ctx.stroke();
-        } else {
-          ctx.fillRect(px - 1, py - 1, 2, 2);
-        }
-        ctx.fillStyle = col.minor;
-      } else if (c.style === 'dots') {
-        ctx.fillRect(px - 0.6, py - 0.6, 1.2, 1.2);
+      if (isMajor(i) && isMajor(j)) { majorsX.push(px); majorsY.push(vy(j)); continue; }
+      if (c.style === 'dots' && !dense)
+        ctx.rect(edge(px, dMinor), edge(vy(j), dMinor), dMinor, dMinor);
+    }
+  }
+  if (c.style === 'dots' && !dense) ctx.fill();
+
+  // «главные» узлы: квадраты (точки) или перекрестия — одним путём
+  if (majorsX.length) {
+    if (c.style === 'dots') {
+      ctx.fillStyle = col.major;
+      ctx.beginPath();
+      for (let k = 0; k < majorsX.length; k++)
+        ctx.rect(edge(majorsX[k], dMajor), edge(majorsY[k], dMajor), dMajor, dMajor);
+      ctx.fill();
+    } else {
+      ctx.strokeStyle = col.major;
+      ctx.lineWidth = wCross;
+      ctx.beginPath();
+      for (let k = 0; k < majorsX.length; k++) {
+        const cx = mid(majorsX[k], wCross), cy = mid(majorsY[k], wCross);
+        ctx.moveTo(cx - 3.5, cy); ctx.lineTo(cx + 3.5, cy);
+        ctx.moveTo(cx, cy - 3.5); ctx.lineTo(cx, cy + 3.5);
       }
+      ctx.stroke();
     }
   }
   return drawn;

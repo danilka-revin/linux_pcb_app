@@ -131,24 +131,39 @@ function fakeCtx(): { ctx: CanvasRenderingContext2D; calls: Call[] } {
 }
 const view: G.GridView = { s: 8, ox: 100, oy: 100, mir: false };
 {
+  // точки: все метки копятся в один путь (rect) и красятся одним fill —
+  // никаких десятков тысяч fillRect на кадр
   const { ctx, calls } = fakeCtx();
   const n = G.drawGrid(ctx, c1, view, 300, 200, { minor: '#111', major: '#222', origin: '#333' });
   assert(n > 0, 'точки нарисованы');
-  assert.equal(calls.filter((c) => c.m === 'fillRect').length, n, 'каждая точка — один fillRect');
+  assert.equal(calls.filter((c) => c.m === 'rect').length, n, 'каждый узел — один rect в общем пути');
+  const fills = calls.filter((c) => c.m === 'fill').length;
+  assert(fills >= 1 && fills <= 2, `закраска батчами (fill: ${fills} ≤ 2)`);
+  assert.equal(calls.filter((c) => c.m === 'fillRect').length, 0, 'отдельных fillRect больше нет');
   assert(calls.some((c) => c.m === 'arc'), 'начало сетки отмечено окружностью');
+}
+{
+  // dpr: точки остаются на узлах решётки и при масштабировании контекста
+  const { ctx, calls } = fakeCtx();
+  const n = G.drawGrid(ctx, c1, view, 300, 200, { minor: '#111', major: '#222', origin: '#333' }, 2);
+  assert(n > 0);
+  for (const c of calls) for (const a of c.a) assert(Number.isFinite(a), 'координаты конечны (dpr=2): ' + c.m);
 }
 {
   const { ctx, calls } = fakeCtx();
   const n = G.drawGrid(ctx, G.normalizeGrid({ ...c1, style: 'lines', div: 5, major: 10 }), view, 300, 200,
     { minor: '#111', major: '#222', origin: '#333' });
-  assert(n > 0 && calls.filter((c) => c.m === 'moveTo').length >= n, 'линии сетки нарисованы');
+  // линии тоже батчами: rect-ов не меньше числа узлов решётки, fill — по числу проходов
+  assert(n > 0 && calls.filter((c) => c.m === 'rect').length >= n, 'линии сетки нарисованы батчами');
+  const fills = calls.filter((c) => c.m === 'fill').length;
+  assert(fills >= 1 && fills <= 3, `проходы линий: sub + решётка + главные (fill: ${fills})`);
 }
 {
   const { ctx, calls } = fakeCtx();
   const n = G.drawGrid(ctx, G.normalizeGrid({ ...c1, style: 'none' }), view, 300, 200,
     { minor: '#111', major: '#222', origin: '#333' });
   assert.equal(n, 0, 'сетка выключена — узлов не рисуем');
-  assert.equal(calls.filter((c) => c.m === 'fillRect').length, 0);
+  assert.equal(calls.filter((c) => c.m === 'rect').length, 0);
   assert.equal(calls.filter((c) => c.m === 'arc').length, 1, 'но начало сетки остаётся видимым');
 }
 {
@@ -159,21 +174,41 @@ const view: G.GridView = { s: 8, ox: 100, oy: 100, mir: false };
   for (const c of calls) for (const a of c.a) assert(Number.isFinite(a), 'координаты конечны: ' + c.m);
 }
 {
-  // перекрестия: рисуются только по «главным» узлам
+  // перекрестия: рисуются только по «главным» узлам и одним батчем (один stroke)
   const { ctx, calls } = fakeCtx();
   const n = G.drawGrid(ctx, G.normalizeGrid({ ...c1, style: 'cross', major: 5 }), view, 300, 200,
     { minor: '#111', major: '#222', origin: '#333' });
-  const crosses = calls.filter((c) => c.m === 'stroke').length;
-  assert(n > 0 && crosses > 0 && crosses < n, `перекрестий меньше узлов (${crosses} < ${n})`);
+  const strokes = calls.filter((c) => c.m === 'stroke').length;
+  const moves = calls.filter((c) => c.m === 'moveTo').length;
+  assert(n > 0, 'узлы посчитаны');
+  assert(strokes > 0 && strokes <= 2, `перекрестия одним путем: stroke ${strokes} (начало + батч)`);
+  assert(moves > 4 && moves < n * 2, `штрихов меньше, чем узлов (moveTo ${moves} при n ${n})`);
 }
 {
   // смещение начала сетки учитывается
   const { ctx, calls } = fakeCtx();
   G.drawGrid(ctx, G.normalizeGrid({ ...c1, ox: 0.5, oy: 0.5, style: 'dots' }), view, 300, 200,
     { minor: '#111', major: '#222', origin: '#333' });
-  const xs = calls.filter((c) => c.m === 'fillRect').map((c) => c.a[0]);
+  const xs = calls.filter((c) => c.m === 'rect').map((c) => c.a[0]);
   const onGrid = xs.every((px) => Math.abs(((px - (100 + 0.5 * 8)) / (1.27 * 8)) % 1) < 0.02 || true);
   assert(onGrid, 'сетка со смещением рисуется от начала');
 }
 
-console.log(`GRID OK: ${presets.length} пресетов, юниты, привязка (сетка+объекты), 4 стиля отрисовки`);
+// ---------------------------------------------------------------- быстрый поиск привязки
+{
+  // collectRefs + nearestRefPts: тот же результат, что nearestRef, но список
+  // точек строится один раз (в кадре — только перебор без аллокаций)
+  const pts = G.collectRefs(ents);
+  assert(pts.length > 0, 'collectRefs возвращает точки');
+  for (const p of [{ x: 10.1, y: 10.05 }, { x: 5, y: 0.1 }, { x: 22.2, y: 0.1 }, { x: 100, y: 100 }]) {
+    const tol = p.x > 50 ? 0.5 : 1;
+    assert.deepEqual(G.nearestRefPts(pts, p, tol), G.nearestRef(ents, p, tol),
+      `nearestRefPts совпадает с nearestRef в (${p.x}; ${p.y})`);
+  }
+  assert.deepEqual(G.nearestRefPts(pts, { x: 10.1, y: 10.05 }, 0.5), { x: 10, y: 10 }, 'притяжение к площадке (по списку)');
+  assert.equal(G.nearestRefPts(pts, { x: 100, y: 100 }, 0.5), null, 'далеко — нет привязки (по списку)');
+  assert.equal(G.nearestRefPts(null, { x: 10, y: 10 }, 1), null, 'пустой список — null');
+  assert.equal(G.nearestRefPts(pts, { x: 10, y: 10 }, 0), null, 'нулевой радиус — null');
+}
+
+console.log(`GRID OK: ${presets.length} пресетов, юниты, привязка (сетка+объекты), 4 стиля отрисовки (батчи), быстрый поиск`);

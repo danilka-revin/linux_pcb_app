@@ -3,7 +3,7 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import {
   DIV_OPTIONS, GRID_GROUPS, GRID_STYLE_NAME, MAJOR_OPTIONS, drawGrid, fmtGridFull,
-  fmtUnit, fromMm, gridPresets, gridSummary, isPresetStep, normalizeGrid, toMm,
+  fmtUnit, gridPresets, gridSummary, isPresetStep, normalizeGrid, toMm,
   type GridConf, type GridStyle, type GridUnit,
 } from '../pcb/grid';
 import { COLORS } from '../pcb/render';
@@ -60,12 +60,13 @@ export function GridToolbar({ defs, setDefs, onOpen, scale }: CommonProps) {
     return [...g.entries()];
   }, [presets]);
   const summary = gridSummary(normalizeGrid({ ...gridOf(defs) }), scale);
+  // короткая подпись текущего шага — тулбар узкий, полная информация в title
+  const shortStep = `${fmtUnit(defs.grid, unit)} ${unit}`;
 
   return (
     <>
       <select
-        className="tb-sel"
-        style={{ maxWidth: 168 }}
+        className="tb-sel tb-sel-grid"
         title={`Шаг сетки: ${fmtGridFull(defs.grid)}\nВсего вариантов: ${presets.length}. Ctrl+G — настройки сетки, G — следующий шаг.`}
         value={known ? String(defs.grid) : 'custom'}
         onChange={(e) => {
@@ -73,11 +74,12 @@ export function GridToolbar({ defs, setDefs, onOpen, scale }: CommonProps) {
           setDefs({ grid: parseFloat(e.target.value) });
         }}
       >
-        {!known && <option value="custom">Своя: {fmtUnit(defs.grid, unit)} {unit === 'mil' ? 'mil' : 'мм'}</option>}
+        {!known && <option value="custom">своя: {shortStep}</option>}
         {groups.map(([g, items]) => (
           <optgroup key={g} label={g}>
             {items.map((p) => (
-              <option key={p.mm} value={p.mm}>{p.label}</option>
+              // короткая подпись — тулбар узкий; полная (мм + mil) есть в title и в диалоге
+              <option key={p.mm} value={p.mm} title={p.label}>{fmtUnit(p.mm, unit)} {unit}</option>
             ))}
           </optgroup>
         ))}
@@ -109,15 +111,15 @@ export function GridToolbar({ defs, setDefs, onOpen, scale }: CommonProps) {
       >
         <IcGrid n="magnet" />
       </button>
-      <button className="tb-btn" title="Настройки сетки (Ctrl+G)" onClick={onOpen}>
-        <IcGrid n="grid" />
-      </button>
       <button
         className={'tb-btn' + (defs.angle !== 'free' ? ' active' : '')}
-        title={`Углы прокладки: ${defs.angle === '45' ? '45°' : defs.angle === '90' ? '90°' : 'свободно'}`}
+        title={`Углы прокладки: ${defs.angle === '45' ? '45°' : defs.angle === '90' ? '90°' : 'свободно'}\nКлик — переключить (45° → 90° → свободно)`}
         onClick={() => setDefs({ angle: defs.angle === '45' ? '90' : defs.angle === '90' ? 'free' : '45' })}
       >
         <IcGrid n={defs.angle === '45' ? 'angle45' : defs.angle === '90' ? 'angle90' : 'anglefree'} />
+      </button>
+      <button className="tb-btn" title="Настройки сетки (Ctrl+G)" onClick={onOpen}>
+        <IcGrid n="grid" />
       </button>
     </>
   );
@@ -247,28 +249,96 @@ export function GridDialog({ defs, setDefs, onClose, cursor }: GridDialogProps) 
     return [...m.entries()];
   }, [g.unit]);
 
-  // живой предпросмотр: столько клеток, сколько влезает, + подписи шага
+  // Живой предпросмотр: масштаб подбирается так, чтобы показанный шаг был
+  // ровно тем, что настроен (без автоматического укрупнения displaySteps),
+  // а подразбиение не пропадало. Перерисовка — только на смену настроек,
+  // размера окна или темы (не на каждое движение мыши!).
+  const pv = { step: g.step, style: g.style, div: g.div, major: g.major, unit: g.unit };
   useEffect(() => {
     const cv = previewRef.current;
     if (!cv) return;
-    const dpr = window.devicePixelRatio || 1;
-    const w = cv.clientWidth || 320, h = 120;
-    cv.width = Math.round(w * dpr);
-    cv.height = Math.round(h * dpr);
-    const ctx = cv.getContext('2d');
-    if (!ctx) return;
-    ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
-    ctx.fillStyle = COLORS.bg;
-    ctx.fillRect(0, 0, w, h);
-    const cols = 12;
-    const s = Math.min(80, w / (cols * g.step));
-    drawGrid(ctx, g, { s, ox: w / 2, oy: h - 24, mir: false }, w, h, {
-      minor: COLORS.grid, major: COLORS.gridMajor, origin: COLORS.gridOrigin,
-    });
-    ctx.fillStyle = COLORS.axes;
-    ctx.font = '11px system-ui, sans-serif';
-    ctx.fillText(`${cols} клеток по ${fmtGridFull(g.step)}`, 8, 14);
-  }, [g]);
+    const draw = (): void => {
+      const dpr = window.devicePixelRatio || 1;
+      const w = cv.clientWidth || 320;
+      const h = cv.clientHeight || 150;
+      if (cv.width !== Math.round(w * dpr)) cv.width = Math.round(w * dpr);
+      if (cv.height !== Math.round(h * dpr)) cv.height = Math.round(h * dpr);
+      const ctx = cv.getContext('2d');
+      if (!ctx) return;
+      ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+      ctx.fillStyle = COLORS.bg;
+      ctx.fillRect(0, 0, w, h);
+
+      // начало сетки — левее центра и ниже середины, чтобы влезли подписи
+      const originX = Math.round(w * 0.18) + 0.5;
+      const originY = Math.round(h * 0.72) + 0.5;
+      const conf: GridConf = normalizeGrid({
+        step: pv.step, unit: pv.unit, style: pv.style, div: pv.div, major: pv.major,
+        ox: 0, oy: 0, snap: false, snapObj: false, snapPx: 10,
+      });
+
+      if (pv.style === 'none') {
+        // сетка выключена: показываем только начало и пояснение
+        drawGrid(ctx, conf, { s: 8, ox: originX, oy: originY, mir: false }, w, h, {
+          minor: COLORS.grid, major: COLORS.gridMajor, origin: COLORS.gridOrigin,
+        }, dpr);
+        ctx.fillStyle = COLORS.gridOrigin;
+        ctx.font = '12px system-ui, sans-serif';
+        ctx.textAlign = 'center';
+        ctx.fillText('Сетка выключена — видно только начало координат', w / 2, 26);
+        ctx.font = '11px system-ui, sans-serif';
+        ctx.fillText('Привязка курсора при этом продолжает работать', w / 2, 44);
+        ctx.textAlign = 'left';
+        return;
+      }
+
+      // клетка показанного шага в px: крупная, чтобы подразбиение (÷div)
+      // не отсекалось минимальным порогом и всё было читаемо
+      const div = Math.max(1, Math.round(pv.div) || 1);
+      const cellPx = Math.max(24, Math.min(7.5 * div, w / 6.5));
+      const s = cellPx / Math.max(pv.step, 1e-6);
+      drawGrid(ctx, conf, { s, ox: originX, oy: originY, mir: false }, w, h, {
+        minor: COLORS.grid, major: COLORS.gridMajor, origin: COLORS.gridOrigin,
+      }, dpr);
+
+      // ---- размерная стрелка одного шага (от начала сетки по X) ----
+      const xa = originX, xb = originX + cellPx, ya = 20.5;
+      ctx.strokeStyle = COLORS.sel;
+      ctx.fillStyle = COLORS.sel;
+      ctx.lineWidth = 1;
+      ctx.beginPath();
+      ctx.moveTo(xa + 0.5, ya + 4); ctx.lineTo(xa + 0.5, ya - 4);
+      ctx.moveTo(xb + 0.5, ya + 4); ctx.lineTo(xb + 0.5, ya - 4);
+      ctx.moveTo(xa + 0.5, ya); ctx.lineTo(xb + 0.5, ya);
+      ctx.stroke();
+      ctx.font = '11px system-ui, sans-serif';
+      const stepLabel = `шаг: ${fmtUnit(pv.step, pv.unit)} ${pv.unit === 'mil' ? 'mil' : 'мм'}`;
+      ctx.textAlign = 'left';
+      ctx.fillText(stepLabel, xb + 10, ya + 4);
+
+      // ---- легенда (справа снизу): что показывают «главные» и подразбиение ----
+      const notes: string[] = [];
+      if (div > 1) notes.push(`мелкие линии: 1/${div} шага`);
+      const major = Math.max(1, Math.round(pv.major) || 1);
+      if (major > 1 && pv.style !== 'cross') notes.push(`главные линии: каждые ${major} узлов`);
+      if (major > 1 && pv.style === 'cross') notes.push(`перекрестия: каждые ${major} узлов`);
+      if (notes.length) {
+        ctx.fillStyle = COLORS.gridOrigin;
+        ctx.font = '10.5px system-ui, sans-serif';
+        ctx.textAlign = 'right';
+        notes.forEach((t, i) => ctx.fillText(t, w - 8, h - 10 - (notes.length - 1 - i) * 14));
+        ctx.textAlign = 'left';
+      }
+    };
+    draw();
+    const ro = new ResizeObserver(draw);
+    ro.observe(cv);
+    window.addEventListener('psbees:theme', draw);
+    return () => {
+      ro.disconnect();
+      window.removeEventListener('psbees:theme', draw);
+    };
+  }, [pv.step, pv.style, pv.div, pv.major, pv.unit]);
 
   const applyStep = () => {
     const v = parseFloat(stepText.replace(',', '.'));
@@ -293,7 +363,7 @@ export function GridDialog({ defs, setDefs, onClose, cursor }: GridDialogProps) 
         </>
       }
     >
-      <canvas ref={previewRef} className="grid-preview" style={{ width: '100%', height: 120 }} />
+      <canvas ref={previewRef} className="grid-preview" />
 
       <div className="sect">
         <h3>Шаг сетки — {GRID_GROUPS.join(' · ')}: {gridPresets('mm').length} вариантов</h3>
