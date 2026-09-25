@@ -4,7 +4,6 @@ import {
   CATS, LIB, type LibEntry,
 } from '../pcb/library';
 import { libBBox } from '../pcb/expand';
-import { LibPreview } from './libpreview';
 import type { UserMacro } from '../pcb/userlib';
 import { macroKey } from '../pcb/userlib';
 import { LAYERS, fmt, type Doc, type Entity, type LayerId, type PadShape } from '../pcb/model';
@@ -149,11 +148,13 @@ export function LayersPanel({
 
 // ---------- библиотека ----------
 export function LibraryPanel({
-  picked, onPick,
+  picked, onPick, onPreview,
   macros, onPickUser, onDelUser, onImportLmk, onImportZip,
 }: {
   picked: string | null;
   onPick: (key: string) => void;
+  /** открыть предпросмотр макроса всплывающим окном */
+  onPreview: (key: string) => void;
   macros: UserMacro[];
   onPickUser: (name: string) => void;
   onDelUser: (name: string) => void;
@@ -165,8 +166,7 @@ export function LibraryPanel({
   const pickedUser = picked && picked.startsWith('u:')
     ? macros.find((m) => 'u:' + macroKey(m) === picked)
     : undefined;
-  // элементы выбранного макроса строим один раз (а не на каждый рендер панели)
-  const pickedEls = useMemo(() => (pickedEntry ? pickedEntry.build() : undefined), [pickedEntry]);
+  // элементы выбранного макроса строит предпросмотр (окно LibPreviewDialog)
   const list = useMemo(() => {
     const items = Object.values(LIB);
     const f = q.trim().toLowerCase();
@@ -177,34 +177,29 @@ export function LibraryPanel({
   }, [q]);
   const f = q.trim().toLowerCase();
   const myMacros = macros.filter((m) => !f || m.name.toLowerCase().includes(f));
+  // выбранный макрос: одна строка вместо миниатюры — сам предпросмотр
+  // открывается всплывающим окном (см. LibPreviewDialog)
+  const pickedName = pickedUser ? macroKey(pickedUser) : pickedEntry?.name;
+  const pickedSpec = pickedUser
+    ? `мой макрос · ${pickedUser.ents.length} ${plural(pickedUser.ents.length, ['примитив', 'примитива', 'примитивов'])}`
+    : pickedEntry ? libSpecText(pickedEntry) : '';
   return (
     <>
       <div className="search">
         <input placeholder="Поиск компонента…" value={q} onChange={(e) => setQ(e.target.value)} />
       </div>
-      {pickedUser && (
-        <div className="lib-prev">
-          <LibPreview ents={pickedUser.ents} bl={pickedUser.bl} height={140} />
-          <div className="lib-prev-title">{macroKey(pickedUser)}</div>
-          <div className="lib-prev-spec">
-            мой макрос · {pickedUser.ents.length} {plural(pickedUser.ents.length, ['примитив', 'примитива', 'примитивов'])}
-          </div>
-          <div className="lib-prev-note">Нажмите на плату, чтобы поставить.</div>
-        </div>
-      )}
-      {pickedEntry && (
-        <div className="lib-prev">
-          <LibPreview
-            libKey={pickedEntry.key}
-            els={pickedEls}
-            height={140}
-          />
-          <div className="lib-prev-title">{pickedEntry.name}</div>
-          <div className="lib-prev-spec">{libSpecText(pickedEntry)}</div>
-          {pickedEntry.spec?.note && <div className="lib-prev-note">{pickedEntry.spec.note}</div>}
-          <div className="lib-prev-note">
-            Нажмите на плату, чтобы поставить. R — поворот, сторона — в тулбаре.
-          </div>
+      {picked && pickedName && (
+        <div className="lib-sel">
+          <span className="nm" title={pickedSpec ? `${pickedName}\n${pickedSpec}` : pickedName}>
+            {pickedName}
+            {pickedSpec && <span className="sp">{pickedSpec}</span>}
+          </span>
+          <button
+            type="button"
+            className="btn"
+            title={`Показать макрос крупно и поставить его на плату${pickedSpec ? '\n' + pickedSpec : ''}`}
+            onClick={() => onPreview(picked)}
+          >Предпросмотр и установка…</button>
         </div>
       )}
       <div className="lib-list">
@@ -435,7 +430,10 @@ export function PropsPanel({
           <button className="btn" onClick={() => setPlaceRot((placeRot + 90) % 360)}>Повернуть (R)</button>
           <button className="btn" onClick={cancelPlace}>Отмена (Esc)</button>
         </div>
-        <div className="hint">Кликните на плате — компонент будет установлен. Клавиша <span className="kbd">Q</span> меняет сторону.</div>
+        <div className="hint">
+          Кликните на плате — компонент будет установлен. Клавиша <span className="kbd">Q</span> меняет сторону.
+          Кнопка <b>«Добавить на плату»</b> в окне предпросмотра ставит макрос в центр вида.
+        </div>
       </div>
     );
   }

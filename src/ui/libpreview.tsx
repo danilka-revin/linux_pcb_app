@@ -1,12 +1,16 @@
-// Мини-предпросмотр макроса в панели библиотеки: компонент на фоне сетки,
-// с точкой привязки (0;0), габаритной рамкой с размерами в мм и адаптивной
-// масштабной линейкой. Перерисовка — по изменению входа, размера и темы.
+// Мини-предпросмотр макроса: компонент на фоне сетки, с точкой привязки (0;0),
+// габаритной рамкой с размерами в мм и адаптивной масштабной линейкой.
+// Перерисовка — по изменению входа, размера и темы.
+// LibPreviewDialog — тот же предпросмотр, но всплывающим окном поверх платы:
+// ничего не перекрывается холстом, а «Добавить на плату» ставит макрос в центр
+// вида — целиться курсором в список не нужно.
 import { useEffect, useRef } from 'react';
 import { COLORS, drawDoc, type View } from '../pcb/render';
 import { drawGrid, type GridConf } from '../pcb/grid';
 import { libBBox } from '../pcb/expand';
 import { fmt, type Comp, type Doc } from '../pcb/model';
 import type { LibEl } from '../pcb/library';
+import { Modal, SI } from './widgets';
 
 export interface LibPreviewProps {
   /** макрос библиотеки (элементы строятся на месте) */
@@ -19,6 +23,28 @@ export interface LibPreviewProps {
   height?: number;
   /** мм вокруг макроса */
   pad?: number;
+  /** поворот макроса при установке, ° (0/90/180/270) */
+  rot?: number;
+  /** сторона установки */
+  side?: 'top' | 'bottom';
+}
+
+/**
+ * Габарит макроса после поворота/переноса на другую сторону — та же формула,
+ * что у compTF (expand.ts), но для четырёх углов рамки: предпросмотр кадрируем
+ * по реально нарисованному компоненту.
+ */
+function rotBBox(
+  bl: [number, number, number, number], rot: number, side: 'top' | 'bottom',
+): [number, number, number, number] {
+  const a = (rot * Math.PI) / 180, ca = Math.cos(a), sa = Math.sin(a);
+  const m = side === 'bottom' ? -1 : 1;
+  const pts = [[bl[0], bl[1]], [bl[2], bl[1]], [bl[2], bl[3]], [bl[0], bl[3]]].map(([x, y]) => {
+    const xx = x * m;
+    return [xx * ca - y * sa, xx * sa + y * ca];
+  });
+  const xs = pts.map((p2) => p2[0]), ys = pts.map((p2) => p2[1]);
+  return [Math.min(...xs), Math.min(...ys), Math.max(...xs), Math.max(...ys)];
 }
 
 /** «Красивый» шаг фоновой сетки: минимальный, дающий клетку ≥ 16 px */
@@ -36,7 +62,9 @@ function niceBar(scale: number, maxPx: number): number | null {
   return best;
 }
 
-export function LibPreview({ els, ents, bl, libKey, height = 140, pad = 1.5 }: LibPreviewProps) {
+export function LibPreview({
+  els, ents, bl, libKey, height = 140, pad = 1.5, rot = 0, side = 'top',
+}: LibPreviewProps) {
   const ref = useRef<HTMLCanvasElement>(null);
 
   useEffect(() => {
@@ -55,13 +83,16 @@ export function LibPreview({ els, ents, bl, libKey, height = 140, pad = 1.5 }: L
       ctx.fillStyle = COLORS.bg;
       ctx.fillRect(0, 0, w, h);
 
+      const localBL = bl ?? (els ? libBBox(els) : [-1, -1, 1, 1]);
       const comp: Comp = {
         id: 'preview', kind: 'comp', lib: libKey ?? '', name: '',
-        x: 0, y: 0, rot: 0, side: 'top',
-        bl: bl ?? (els ? libBBox(els) : [-1, -1, 1, 1]),
+        x: 0, y: 0, rot, side,
+        bl: localBL,
         ...(ents ? { ents } : {}),
       };
-      const [x1, y1, x2, y2] = comp.bl;
+      // габарит — уже с учётом поворота и стороны: рамка, кадрирование и
+      // подпись размеров совпадают с тем, что встанет на плату
+      const [x1, y1, x2, y2] = rotBBox(localBL, rot, side);
       const bw = Math.max(0.5, x2 - x1), bh = Math.max(0.5, y2 - y1);
       // поля: слева/снизу — линейка и размеры, сверху/справа — подпись габарита
       const m = 18;
@@ -144,7 +175,95 @@ export function LibPreview({ els, ents, bl, libKey, height = 140, pad = 1.5 }: L
       ro.disconnect();
       window.removeEventListener('psbees:theme', draw);
     };
-  }, [els, ents, bl, libKey, height, pad]);
+  }, [els, ents, bl, libKey, height, pad, rot, side]);
 
   return <canvas ref={ref} className="lib-preview" style={{ width: '100%', height }} />;
+}
+
+export interface LibPreviewDialogProps extends LibPreviewProps {
+  /** название макроса — в заголовок окна */
+  title: string;
+  /** характеристики строкой: «8 выводов · шаг 2.54 мм» */
+  spec?: string;
+  /** примечание к макросу (подписи выводов и т. п.) */
+  note?: string;
+  /** поставить макрос в центр видимой области платы */
+  onAdd?: () => void;
+  /** смена поворота/стороны будущей установки (клавиши R и Q прямо в окне) */
+  onRot?: (rot: number) => void;
+  onSide?: (side: 'top' | 'bottom') => void;
+  onClose: () => void;
+}
+
+/**
+ * Предпросмотр макроса отдельным окном поверх платы. Поворот (R) и сторону (Q)
+ * видно прямо здесь, а «Добавить на плату» ставит макрос в центр вида — целиться
+ * курсором мимо списка библиотеки больше не нужно.
+ */
+export function LibPreviewDialog({
+  title, spec, note, onAdd, onRot, onSide, onClose,
+  rot = 0, side = 'top', height = 340, ...pv
+}: LibPreviewDialogProps) {
+  // R/Q действуют, пока окно открыто (общий обработчик платы в это время спит)
+  useEffect(() => {
+    if (!onRot && !onSide) return;
+    const h = (e: KeyboardEvent): void => {
+      if (e.ctrlKey || e.metaKey || e.altKey) return;
+      if (e.code === 'KeyR' && onRot) { onRot((rot + 90) % 360); e.preventDefault(); }
+      else if (e.code === 'KeyQ' && onSide) { onSide(side === 'top' ? 'bottom' : 'top'); e.preventDefault(); }
+    };
+    window.addEventListener('keydown', h);
+    return () => window.removeEventListener('keydown', h);
+  }, [rot, side, onRot, onSide]);
+
+  return (
+    <Modal
+      title={title}
+      className="libpv"
+      onClose={onClose}
+      foot={<>
+        <button className="btn" onClick={onClose}>Закрыть</button>
+        <span style={{ flex: 1 }} />
+        {onAdd && (
+          <button
+            className="btn primary"
+            onClick={onAdd}
+            title="Поставить макрос в центр видимой области платы (с привязкой к сетке)"
+          >
+            Добавить на плату
+          </button>
+        )}
+      </>}
+    >
+      <LibPreview {...pv} rot={rot} side={side} height={height} />
+      {(onRot || onSide) && (
+        <div className="row libpv-row">
+          {onRot && (
+            <SI
+              label="Поворот"
+              value={String(rot)}
+              options={[['0', '0°'], ['90', '90°'], ['180', '180°'], ['270', '270°']]}
+              on={(v) => onRot((Number(v) + 360) % 360)}
+            />
+          )}
+          {onSide && (
+            <SI
+              label="Сторона"
+              value={side}
+              options={[['top', 'Сверху (K1)'], ['bottom', 'Снизу (K2)']]}
+              on={(v) => onSide(v === 'bottom' ? 'bottom' : 'top')}
+            />
+          )}
+        </div>
+      )}
+      {spec && <div className="libpv-spec">{spec}</div>}
+      {note && <div className="libpv-note">{note}</div>}
+      <div className="libpv-note">
+        Перекрестие — точка привязки макроса (0;0): за неё он «берётся» курсором при
+        установке кликом. «Добавить на плату» ставит макрос в центр вида, после чего
+        можно доставлять копии кликами по плате. <span className="kbd">R</span> — поворот,
+        {' '}<span className="kbd">Q</span> — сторона, <span className="kbd">Esc</span> — закрыть.
+      </div>
+    </Modal>
+  );
 }
