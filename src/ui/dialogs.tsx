@@ -1,6 +1,8 @@
 // Диалоги приложения.
 import { useState } from 'react';
 import { Modal, NI, TI } from './widgets';
+import { ACCENT_PRESETS, THEME_BASE, type CustomColors } from './palette';
+import type { ThemeId } from '../pcb/render';
 
 export interface ExportPngOpts {
   layer: 'k1' | 'k2' | 's1' | 's2' | 'outline';
@@ -153,6 +155,86 @@ export function PanelizeDialog({
   );
 }
 
+/** Кастомизация цветов интерфейса: акцент, фон, панели, текст. Живой предпросмотр. */
+export function ColorsDialog({
+  colors, theme, setColors, onClose,
+}: {
+  colors: CustomColors;
+  theme: ThemeId;
+  setColors: (c: CustomColors) => void;
+  onClose: () => void;
+}) {
+  const base = THEME_BASE[theme];
+  const set = (k: keyof CustomColors, v: string) => setColors({ ...colors, [k]: v });
+  const reset = (k: keyof CustomColors) => {
+    const next = { ...colors };
+    delete next[k];
+    setColors(next);
+  };
+  const fields: [keyof CustomColors, string][] = [
+    ['page', 'Фон'],
+    ['surface', 'Панели'],
+    ['text', 'Текст'],
+  ];
+  return (
+    <Modal
+      title="Цвета интерфейса"
+      onClose={onClose}
+      foot={
+        <>
+          <button className="btn" onClick={() => setColors({})}>Сбросить всё</button>
+          <button className="btn primary" onClick={onClose}>Готово</button>
+        </>
+      }
+    >
+      <h3 style={{ margin: '4px 0 6px', fontSize: 13 }}>Акцентный цвет</h3>
+      <div className="swatches">
+        <button
+          className={'swatch auto' + (colors.accent ? '' : ' on')}
+          title="Как в теме" onClick={() => reset('accent')}
+        />
+        {ACCENT_PRESETS.map((p) => (
+          <button
+            key={p.hex}
+            className={'swatch' + (colors.accent?.toLowerCase() === p.hex ? ' on' : '')}
+            title={p.name}
+            style={{ background: p.hex }}
+            onClick={() => set('accent', p.hex)}
+          />
+        ))}
+        <label className="swatch custom" title="Свой цвет">
+          <input
+            type="color"
+            value={colors.accent ?? base.accent}
+            onChange={(e) => set('accent', e.target.value)}
+          />
+        </label>
+      </div>
+
+      <h3 style={{ margin: '16px 0 6px', fontSize: 13 }}>Фон, панели и текст</h3>
+      <div className="color-fields">
+        {fields.map(([k, label]) => (
+          <span className="color-field" key={k}>
+            <input
+              type="color"
+              value={colors[k] ?? base[k]}
+              onChange={(e) => set(k, e.target.value)}
+            />
+            {label}
+            {colors[k] && (
+              <button className="color-reset" title="Вернуть цвет темы" onClick={() => reset(k)}>×</button>
+            )}
+          </span>
+        ))}
+      </div>
+      <p>
+        Изменения применяются сразу и сохраняются в браузере. «Сбросить всё»
+        возвращает палитру текущей темы (тёмной или светлой).
+      </p>
+    </Modal>
+  );
+}
+
 export function AboutDialog({ version, onClose }: { version: string | null; onClose: () => void }) {
   return (
     <Modal
@@ -170,7 +252,8 @@ export function AboutDialog({ version, onClose }: { version: string | null; onCl
       <p>
         <b>PSBees</b> — редактор разводки печатных плат для Linux и Windows в духе Sprint-Layout.
         Данные хранятся локально. Оформление — фирменный «пчелиный» стиль: две темы,
-        тёмная (по умолчанию) и светлая, переключаются кнопкой в шапке.
+        тёмная (по умолчанию) и светлая, переключаются кнопкой в шапке, а цвета
+        интерфейса (акцент, фон, панели, текст) настраиваются кнопкой палитры рядом.
       </p>
       <p style={{ fontSize: 12, opacity: 0.85 }}>
         {version
