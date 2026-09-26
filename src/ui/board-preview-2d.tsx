@@ -1,8 +1,7 @@
-// 2D предпросмотр платы в разных цветах — реалистичные темы маски, медь, шелкография.
-import { useEffect, useRef, useState, useMemo } from 'react';
-import type { Doc, LayerId } from '../pcb/model';
-import { zOrdered } from '../pcb/render';
-import { expandDoc } from '../pcb/expand';
+// Предпросмотр без изменения геометрии документа.
+import { useCallback, useEffect, useRef, useState, useMemo } from 'react';
+import { entBBox, type Doc, type Entity, type LayerId } from '../pcb/model';
+import { drawEnt, zOrdered } from '../pcb/render';
 
 export type Board2DThemeId = 'green' | 'blue' | 'red' | 'black' | 'white' | 'purple' | 'yellow' | 'classic-dark' | 'classic-light' | 'mono';
 
@@ -138,19 +137,19 @@ export const BOARD_2D_THEMES: Board2DTheme[] = [
   },
   {
     id: 'classic-dark',
-    name: 'Классика редактора (тёмная)',
-    board: '#0f1115',
-    boardEdge: '#232830',
-    copperTop: '#2f80ed',
-    copperBottom: '#35c46a',
-    copperBoth: '#f0a63c',
+    name: 'Sprint Layout — классический',
+    board: '#000000',
+    boardEdge: '#667078',
+    copperTop: '#4088ff',
+    copperBottom: '#00cf64',
+    copperBoth: '#f4ce46',
     maskTop: 'rgba(15, 17, 21, 0.0)',
     maskBottom: 'rgba(15, 17, 21, 0.0)',
     silkTop: '#e5484d',
     silkBottom: '#e8c93e',
     outline: '#e9ecf1',
-    hole: '#0f1115',
-    bg: '#0f1115',
+    hole: '#000000',
+    bg: '#000000',
   },
   {
     id: 'classic-light',
@@ -186,376 +185,257 @@ export const BOARD_2D_THEMES: Board2DTheme[] = [
   },
 ];
 
-function drawBoard2D(
-  ctx: CanvasRenderingContext2D,
-  doc: Doc,
-  theme: Board2DTheme,
-  opts: {
-    showTop: boolean;
-    showBottom: boolean;
-    showSilk: boolean;
-    showOutline: boolean;
-    showHoles: boolean;
-    showMask: boolean;
-    side: 'top' | 'bottom' | 'both';
-    scale: number;
-    offsetX: number;
-    offsetY: number;
-  }
-) {
-  const { showTop, showBottom, showSilk, showOutline, showHoles, showMask, side, scale, offsetX, offsetY } = opts;
-  const flat = zOrdered(doc);
-  // Transform helpers
-  const sx = (x: number) => offsetX + x * scale;
-  const sy = (y: number) => offsetY + (doc.h - y) * scale; // Y up
-
-  // Clear bg
-  ctx.fillStyle = theme.bg;
-  ctx.fillRect(0, 0, ctx.canvas.width, ctx.canvas.height);
-
-  // Board substrate
-  ctx.fillStyle = theme.board;
-  ctx.strokeStyle = theme.boardEdge;
-  ctx.lineWidth = 1.5;
-  ctx.beginPath();
-  ctx.rect(sx(0), sy(doc.h), doc.w * scale, doc.h * scale);
-  ctx.fill();
-  ctx.stroke();
-
-  // Helper to draw entity with theme colors
-  const drawEntThemed = (e: any) => {
-    const kind = e.kind;
-    const layer = e.layer as LayerId | undefined;
-
-    // Determine visibility and color
-    let color: string | null = null;
-    let isTop = false, isBottom = false, isSilk = false, isOutline = false, isHole = false;
-
-    if (kind === 'pad' || kind === 'via') {
-      isTop = isBottom = true;
-      if (side === 'top' && !showTop && !showBottom) return;
-      if (side === 'bottom' && !showBottom && !showTop) return;
-      // Both layers pads visible in both views
-      color = theme.copperBoth;
-    } else if (kind === 'hole') {
-      isHole = true;
-      if (!showHoles) return;
-      color = theme.hole;
-    } else if (layer) {
-      if (layer === 'k1') { isTop = true; if (!showTop) return; color = theme.copperTop; }
-      else if (layer === 'k2') { isBottom = true; if (!showBottom) return; color = theme.copperBottom; }
-      else if (layer === 's1') { isSilk = true; if (!showSilk) return; color = theme.silkTop; }
-      else if (layer === 's2') { isSilk = true; if (!showSilk) return; color = theme.silkBottom; }
-      else if (layer === 'outline') { isOutline = true; if (!showOutline) return; color = theme.outline; }
-    } else {
-      return;
-    }
-
-    // Side filtering
-    if (side === 'top' && isBottom && !isTop && kind !== 'pad' && kind !== 'via' && kind !== 'hole') {
-      // In top view, bottom copper is not visible (unless both)
-      if (layer === 'k2' || layer === 's2') return;
-    }
-    if (side === 'bottom' && isTop && !isBottom && kind !== 'pad' && kind !== 'via' && kind !== 'hole') {
-      if (layer === 'k1' || layer === 's1') return;
-    }
-
-    if (!color) return;
-
-    ctx.save();
-    ctx.fillStyle = color;
-    ctx.strokeStyle = color;
-    // Draw based on kind
-    switch (kind) {
-      case 'pad': {
-        const x = sx(e.x), y = sy(e.y), r = (e.size / 2) * scale;
-        ctx.beginPath();
-        if (e.shape === 'square') ctx.rect(x - r, y - r, r * 2, r * 2);
-        else if (e.shape === 'oct') {
-          for (let i = 0; i < 8; i++) {
-            const a = (i / 8) * Math.PI * 2 + Math.PI / 8;
-            const px = x + r * Math.cos(a), py = y + r * Math.sin(a);
-            if (i === 0) ctx.moveTo(px, py); else ctx.lineTo(px, py);
-          }
-          ctx.closePath();
-        } else ctx.arc(x, y, r, 0, Math.PI * 2);
-        ctx.fill();
-        if (e.drill > 0 && showHoles) {
-          ctx.fillStyle = theme.hole;
-          ctx.beginPath();
-          ctx.arc(x, y, Math.max((e.drill / 2) * scale, 1.5), 0, Math.PI * 2);
-          ctx.fill();
-        }
-        break;
-      }
-      case 'via': {
-        const x = sx(e.x), y = sy(e.y);
-        ctx.beginPath();
-        ctx.arc(x, y, (e.size / 2) * scale, 0, Math.PI * 2);
-        ctx.fill();
-        if (showHoles) {
-          ctx.fillStyle = theme.hole;
-          ctx.beginPath();
-          ctx.arc(x, y, Math.max((e.drill / 2) * scale, 1), 0, Math.PI * 2);
-          ctx.fill();
-        }
-        break;
-      }
-      case 'smd': {
-        const rot = ((Math.round(e.rot) % 180) + 180) % 180;
-        const w = (rot === 0 ? e.w : e.h) * scale;
-        const h = (rot === 0 ? e.h : e.w) * scale;
-        ctx.fillRect(sx(e.x) - w / 2, sy(e.y) - h / 2, w, h);
-        break;
-      }
-      case 'track': {
-        if (e.pts.length < 2) break;
-        ctx.lineWidth = Math.max(e.w * scale, 1);
-        ctx.lineCap = 'round';
-        ctx.lineJoin = 'round';
-        ctx.beginPath();
-        ctx.moveTo(sx(e.pts[0].x), sy(e.pts[0].y));
-        for (let i = 1; i < e.pts.length; i++) ctx.lineTo(sx(e.pts[i].x), sy(e.pts[i].y));
-        ctx.stroke();
-        break;
-      }
-      case 'line': {
-        ctx.lineWidth = Math.max(e.w * scale, 0.8);
-        ctx.lineCap = 'round';
-        ctx.beginPath();
-        ctx.moveTo(sx(e.x1), sy(e.y1));
-        ctx.lineTo(sx(e.x2), sy(e.y2));
-        ctx.stroke();
-        break;
-      }
-      case 'circle': {
-        ctx.lineWidth = Math.max(e.w * scale, 0.8);
-        ctx.beginPath();
-        ctx.arc(sx(e.x), sy(e.y), e.r * scale, 0, Math.PI * 2);
-        ctx.stroke();
-        break;
-      }
-      case 'rect': {
-        const x1 = sx(e.x), y1 = sy(e.y + e.h);
-        const wpx = e.w * scale, hpx = e.h * scale;
-        if (e.filled) ctx.fillRect(x1, y1, wpx, hpx);
-        else {
-          ctx.lineWidth = Math.max(e.th * scale, 0.8);
-          ctx.strokeRect(x1, y1, wpx, hpx);
-        }
-        break;
-      }
-      case 'poly': {
-        if (e.pts.length < 3) break;
-        ctx.beginPath();
-        ctx.moveTo(sx(e.pts[0].x), sy(e.pts[0].y));
-        for (let i = 1; i < e.pts.length; i++) ctx.lineTo(sx(e.pts[i].x), sy(e.pts[i].y));
-        ctx.closePath();
-        ctx.fill();
-        break;
-      }
-      case 'text': {
-        if (!e.text) break;
-        ctx.save();
-        ctx.translate(sx(e.x), sy(e.y));
-        ctx.rotate((-e.rot * Math.PI) / 180);
-        if (e.mirror) ctx.scale(-1, 1);
-        const px = e.size * scale;
-        ctx.font = `${px}px sans-serif`;
-        ctx.textBaseline = 'middle';
-        ctx.fillText(e.text, 0, 0);
-        ctx.restore();
-        break;
-      }
-      case 'hole': {
-        const x = sx(e.x), y = sy(e.y), r = (e.d / 2) * scale;
-        ctx.beginPath();
-        ctx.arc(x, y, Math.max(r, 1.5), 0, Math.PI * 2);
-        ctx.fill();
-        break;
-      }
-    }
-    ctx.restore();
-  };
-
-  // Draw order: bottom copper, top copper, silk, outline, holes on top
-  // For realistic, we draw copper first, then mask overlay, then silk
-  const copperEnts = flat.filter(e => e.kind === 'pad' || e.kind === 'via' || e.kind === 'smd' || e.kind === 'track' || (e as any).layer === 'k1' || (e as any).layer === 'k2');
-  const silkEnts = flat.filter(e => (e as any).layer === 's1' || (e as any).layer === 's2' || e.kind === 'text' || e.kind === 'line' || e.kind === 'circle' || e.kind === 'rect' || e.kind === 'poly');
-  const outlineEnts = flat.filter(e => (e as any).layer === 'outline');
-  const holeEnts = flat.filter(e => e.kind === 'hole');
-
-  // Copper
-  for (const e of copperEnts) drawEntThemed(e);
-
-  // Solder mask overlay (semi-transparent) for realistic themes
-  if (showMask && (theme.maskTop !== 'rgba(255,255,255,0)' || theme.maskBottom !== 'rgba(255,255,255,0)')) {
-    ctx.save();
-    ctx.fillStyle = side === 'bottom' ? theme.maskBottom : side === 'top' ? theme.maskTop : theme.maskTop;
-    if (side === 'both') {
-      // For both view, show mask as slight overlay
-      ctx.globalAlpha = 0.5;
-    }
-    ctx.fillRect(sx(0), sy(doc.h), doc.w * scale, doc.h * scale);
-    // Cut out copper areas (so copper shines through mask openings)
-    // For simplicity, we don't cut - we already drew copper, mask is transparent so copper shows
-    ctx.restore();
-  }
-
-  // Silk
-  if (showSilk) {
-    for (const e of silkEnts) {
-      const l = (e as any).layer;
-      if (l && l !== 's1' && l !== 's2' && l !== 'outline' && e.kind !== 'text' && e.kind !== 'line' && e.kind !== 'circle' && e.kind !== 'rect' && e.kind !== 'poly') continue;
-      // Only silk layers
-      if (e.kind === 'pad' || e.kind === 'via' || e.kind === 'smd' || e.kind === 'track' || e.kind === 'hole') continue;
-      if (l === 'k1' || l === 'k2') continue; // already drawn as copper
-      drawEntThemed(e);
-    }
-  }
-
-  // Outline
-  if (showOutline) {
-    for (const e of outlineEnts) drawEntThemed(e);
-  }
-
-  // Holes (drill) on top
-  if (showHoles) {
-    for (const e of holeEnts) drawEntThemed(e);
-    // Also drill holes from pads/vias already drawn, but ensure hole color visible
-  }
+export type PreviewSide = 'top' | 'bottom' | 'both';
+export interface BoardPreviewOptions {
+  side: PreviewSide;
+  hidden: Set<LayerId>;
+  showHoles: boolean;
+  showMask: boolean;
+  showGrid: boolean;
+  scale: number;
+  offsetX: number;
+  offsetY: number;
+  width: number;
+  height: number;
 }
 
-export function BoardPreview2D({
-  doc,
-  width = 800,
-  height = 600,
-}: {
-  doc: Doc;
-  width?: number;
-  height?: number;
-}) {
+/** Общая фильтрация для всех примитивов, включая развёрнутые компоненты. */
+export function previewVisible(e: Entity, side: PreviewSide, hidden: Set<LayerId>): boolean {
+  if (e.kind === 'pad' || e.kind === 'via') {
+    return (side !== 'bottom' && !hidden.has('k1')) || (side !== 'top' && !hidden.has('k2'));
+  }
+  if ('layer' in e) {
+    if (hidden.has(e.layer)) return false;
+    if (side === 'top' && (e.layer === 'k2' || e.layer === 's2')) return false;
+    if (side === 'bottom' && (e.layer === 'k1' || e.layer === 's1')) return false;
+  }
+  return true;
+}
+
+export function drawBoard2D(ctx: CanvasRenderingContext2D, doc: Doc, flat: Entity[], theme: Board2DTheme, opts: BoardPreviewOptions) {
+  const { scale: s, offsetX: x, offsetY: y, width, height, side, hidden } = opts;
+  const bw = doc.w * s, bh = doc.h * s;
+  ctx.save();
+  ctx.textAlign = 'left';
+  ctx.fillStyle = theme.bg;
+  ctx.fillRect(0, 0, width, height);
+  ctx.fillStyle = theme.board;
+  ctx.fillRect(x, y, bw, bh);
+
+  ctx.save();
+  // Зеркалим весь рисунок, а не только координаты центров площадок.
+  if (side === 'bottom') { ctx.translate(2 * x + bw, 0); ctx.scale(-1, 1); }
+  if (opts.showGrid) {
+    let step = 1;
+    while (step * s < 12) step *= 5;
+    const x0 = Math.max(0, Math.ceil((side === 'bottom' ? x + bw - width : -x) / s / step));
+    const x1 = Math.min(Math.floor(doc.w / step), Math.ceil((side === 'bottom' ? x + bw : width - x) / s / step));
+    const y0 = Math.max(0, Math.ceil((y + bh - height) / s / step));
+    const y1 = Math.min(Math.floor(doc.h / step), Math.ceil((y + bh) / s / step));
+    ctx.fillStyle = theme.id === 'classic-dark' ? '#41484f' : theme.boardEdge;
+    for (let ix = x0; ix <= x1; ix++) for (let iy = y0; iy <= y1; iy++) {
+      ctx.fillRect(x + ix * step * s, y + bh - iy * step * s, 1, 1);
+    }
+  }
+  const visible = flat.filter(e => previewVisible(e, side, hidden));
+  const view = { s, ox: x, oy: y + bh, mir: false };
+  const colors = { k1: theme.copperTop, k2: theme.copperBottom, s1: theme.silkTop, s2: theme.silkBottom, outline: theme.outline };
+  const draw = (e: Entity) => drawEnt(ctx, view, e, {
+    tint: 'layer' in e ? colors[e.layer] : theme.copperBoth, omitDrills: true,
+  });
+  // Порядок слоёв не зависит от порядка создания объектов в документе.
+  for (const layer of ['k2', 'k1'] as const) {
+    const copper = visible.filter(e => 'layer' in e && e.layer === layer && e.kind !== 'smd');
+    for (const e of copper.filter(e => e.kind === 'poly' || (e.kind === 'rect' && e.filled))) draw(e);
+    for (const e of copper.filter(e => e.kind !== 'poly' && !(e.kind === 'rect' && e.filled))) draw(e);
+  }
+  // Маска закрывает проводники, но не контактные площадки и сверловку.
+  if (opts.showMask && !theme.id.startsWith('classic') && theme.id !== 'mono') {
+    ctx.fillStyle = side === 'bottom' ? theme.maskBottom : theme.maskTop;
+    ctx.fillRect(x, y, bw, bh);
+  }
+  for (const e of visible) if (e.kind === 'pad' || e.kind === 'via' || e.kind === 'smd') draw(e);
+  for (const layer of ['s2', 's1', 'outline'] as const) {
+    for (const e of visible) if ('layer' in e && e.layer === layer) draw(e);
+  }
+  // Последний проход: дорожки и шелкография никогда не перекрывают отверстия.
+  if (opts.showHoles) {
+    ctx.fillStyle = theme.hole;
+    for (const e of flat) {
+      const d = e.kind === 'hole' ? e.d : e.kind === 'pad' || e.kind === 'via' ? e.drill : 0;
+      if (d > 0 && 'x' in e && 'y' in e) {
+        ctx.beginPath();
+        ctx.arc(x + e.x * s, y + bh - e.y * s, d * s / 2, 0, Math.PI * 2);
+        ctx.fill();
+      }
+    }
+  }
+  ctx.restore();
+  if (!hidden.has('outline')) {
+    ctx.strokeStyle = theme.boardEdge;
+    ctx.lineWidth = 1;
+    ctx.strokeRect(x, y, bw, bh);
+  }
+  // Размеры остаются читаемыми при просмотре снизу.
+  ctx.fillStyle = theme.id === 'mono' || theme.id === 'classic-light' || theme.id === 'white' || theme.id === 'yellow' ? '#53606d' : '#9aa7b4';
+  ctx.font = '11px system-ui, sans-serif';
+  ctx.textAlign = 'center';
+  if (y + bh + 22 < height) ctx.fillText(`${doc.w} мм`, x + bw / 2, y + bh + 22);
+  if (x > 28) {
+    ctx.save();
+    ctx.translate(x - 18, y + bh / 2);
+    ctx.rotate(-Math.PI / 2);
+    ctx.fillText(`${doc.h} мм`, 0, 0);
+    ctx.restore();
+  }
+  ctx.restore();
+}
+
+/** Include imported objects outside the nominal board without changing the document. */
+export function previewBounds(doc: Doc, flat: Entity[]): [number, number, number, number] {
+  const bounds: [number, number, number, number] = [0, 0, doc.w, doc.h];
+  for (const e of flat) {
+    const b = entBBox(e);
+    bounds[0] = Math.min(bounds[0], b[0]); bounds[1] = Math.min(bounds[1], b[1]);
+    bounds[2] = Math.max(bounds[2], b[2]); bounds[3] = Math.max(bounds[3], b[3]);
+  }
+  return bounds;
+}
+
+export function BoardPreview2D({ doc, width = 960, height = 520 }: { doc: Doc; width?: number; height?: number }) {
   const canvasRef = useRef<HTMLCanvasElement>(null);
-  const [themeId, setThemeId] = useState<Board2DThemeId>('green');
-  const [side, setSide] = useState<'top' | 'bottom' | 'both'>('top');
-  const [showTop, setShowTop] = useState(true);
-  const [showBottom, setShowBottom] = useState(true);
-  const [showSilk, setShowSilk] = useState(true);
-  const [showOutline, setShowOutline] = useState(true);
+  const wrapRef = useRef<HTMLDivElement>(null);
+  const [size, setSize] = useState({ width, height });
+  const [themeId, setThemeId] = useState<Board2DThemeId>('classic-dark');
+  const [side, setSide] = useState<PreviewSide>('both');
+  const [hidden, setHidden] = useState<Set<LayerId>>(new Set());
   const [showHoles, setShowHoles] = useState(true);
   const [showMask, setShowMask] = useState(true);
-  const [scale, setScale] = useState(8);
-  const [offset, setOffset] = useState({ x: 20, y: 20 });
-  const isDragging = useRef(false);
-  const lastPos = useRef({ x: 0, y: 0 });
-
-  const theme = useMemo(() => BOARD_2D_THEMES.find(t => t.id === themeId) || BOARD_2D_THEMES[0], [themeId]);
-
-  const fit = () => {
-    const pad = 20;
-    const s = Math.min((width - pad * 2) / doc.w, (height - pad * 2) / doc.h);
-    setScale(Math.max(1, s));
-    setOffset({ x: (width - doc.w * s) / 2, y: (height - doc.h * s) / 2 });
-  };
-
-  useEffect(() => { fit(); }, [doc.w, doc.h, width, height]);
-
+  const [showGrid, setShowGrid] = useState(true);
+  const [view, setView] = useState({ scale: 8, x: 40, y: 40 });
+  const [dragging, setDragging] = useState(false);
+  const drag = useRef<{ x: number; y: number; id: number } | null>(null);
+  const flat = useMemo(() => zOrdered(doc), [doc]);
+  const theme = BOARD_2D_THEMES.find(t => t.id === themeId)!;
+  const bounds = useMemo(() => previewBounds(doc, flat), [doc, flat]);
+  const [x1, y1, x2, y2] = bounds;
+  const outside = x1 < -0.5 || y1 < -0.5 || x2 > doc.w + 0.5 || y2 > doc.h + 0.5;
+  const fitScale = Math.max(0.001, Math.min((size.width - 80) / Math.max(x2 - x1, 0.1), (size.height - 80) / Math.max(y2 - y1, 0.1)));
+  const fit = useCallback(() => {
+    const cx = (x1 + x2) / 2, cy = (y1 + y2) / 2;
+    setView({ scale: fitScale, x: size.width / 2 - (side === 'bottom' ? doc.w - cx : cx) * fitScale, y: size.height / 2 - (doc.h - cy) * fitScale });
+  }, [fitScale, size, doc.w, doc.h, side, x1, x2, y1, y2]);
+  useEffect(() => {
+    const wrap = wrapRef.current;
+    if (!wrap) return;
+    const observer = new ResizeObserver(() => setSize({ width: wrap.clientWidth, height: wrap.clientHeight }));
+    observer.observe(wrap);
+    return () => observer.disconnect();
+  }, []);
+  useEffect(() => { fit(); }, [fit]);
   useEffect(() => {
     const cv = canvasRef.current;
     if (!cv) return;
     const dpr = window.devicePixelRatio || 1;
-    cv.width = width * dpr;
-    cv.height = height * dpr;
-    cv.style.width = width + 'px';
-    cv.style.height = height + 'px';
+    cv.width = Math.round(size.width * dpr);
+    cv.height = Math.round(size.height * dpr);
     const ctx = cv.getContext('2d');
     if (!ctx) return;
     ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
-    drawBoard2D(ctx, doc, theme, {
-      showTop,
-      showBottom,
-      showSilk,
-      showOutline,
-      showHoles,
-      showMask,
-      side,
-      scale,
-      offsetX: offset.x,
-      offsetY: offset.y,
+    drawBoard2D(ctx, doc, flat, theme, { side, hidden, showHoles, showMask, showGrid, scale: view.scale, offsetX: view.x, offsetY: view.y, ...size });
+  }, [doc, flat, theme, side, hidden, showHoles, showMask, showGrid, view, size]);
+
+  const zoom = useCallback((factor: number, mx = size.width / 2, my = size.height / 2) => {
+    setView(v => {
+      const scale = Math.max(fitScale / 4, Math.min(Math.max(200, fitScale * 16), v.scale * factor));
+      return { scale, x: mx - (mx - v.x) * scale / v.scale, y: my - (my - v.y) * scale / v.scale };
     });
-  }, [doc, theme, showTop, showBottom, showSilk, showOutline, showHoles, showMask, side, scale, offset, width, height]);
-
-  const onWheel = (e: React.WheelEvent) => {
-    e.preventDefault();
-    const factor = e.deltaY < 0 ? 1.2 : 1 / 1.2;
-    const rect = canvasRef.current!.getBoundingClientRect();
-    const mx = e.clientX - rect.left;
-    const my = e.clientY - rect.top;
-    const wx = (mx - offset.x) / scale;
-    const wy = (my - offset.y) / scale;
-    const ns = Math.max(0.5, Math.min(100, scale * factor));
-    setScale(ns);
-    setOffset({ x: mx - wx * ns, y: my - wy * ns });
-  };
-
-  const onMouseDown = (e: React.MouseEvent) => {
-    isDragging.current = true;
-    lastPos.current = { x: e.clientX, y: e.clientY };
-  };
-  const onMouseMove = (e: React.MouseEvent) => {
-    if (!isDragging.current) return;
-    const dx = e.clientX - lastPos.current.x;
-    const dy = e.clientY - lastPos.current.y;
-    lastPos.current = { x: e.clientX, y: e.clientY };
-    setOffset(o => ({ x: o.x + dx, y: o.y + dy }));
-  };
-  const onMouseUp = () => { isDragging.current = false; };
-
-  return (
-    <div className="board-preview-2d">
-      <div className="bp2d-toolbar">
-        <div className="bp2d-row">
-          <label>Тема:
-            <select value={themeId} onChange={e => setThemeId(e.target.value as Board2DThemeId)}>
-              {BOARD_2D_THEMES.map(t => <option key={t.id} value={t.id}>{t.name}</option>)}
-            </select>
-          </label>
-          <label>Вид:
-            <select value={side} onChange={e => setSide(e.target.value as any)}>
-              <option value="top">Верх K1</option>
-              <option value="bottom">Низ K2</option>
-              <option value="both">Обе стороны</option>
-            </select>
-          </label>
-          <button className="btn" onClick={fit}>Вписать</button>
-          <span className="bp2d-zoom">Масштаб: {Math.round(scale * 10)}%</span>
+  }, [size, fitScale]);
+  useEffect(() => {
+    const cv = canvasRef.current;
+    if (!cv) return;
+    const wheel = (e: WheelEvent) => {
+      e.preventDefault();
+      const r = cv.getBoundingClientRect();
+      zoom(e.deltaY < 0 ? 1.15 : 1 / 1.15, e.clientX - r.left, e.clientY - r.top);
+    };
+    cv.addEventListener('wheel', wheel, { passive: false });
+    return () => cv.removeEventListener('wheel', wheel);
+  }, [zoom]);
+  const toggleLayer = (layer: LayerId) => setHidden(old => {
+    const next = new Set(old);
+    if (next.has(layer)) next.delete(layer); else next.add(layer);
+    return next;
+  });
+  const layers: [LayerId, string, string][] = [
+    ['k1', 'K1 · Медь сверху', theme.copperTop], ['k2', 'K2 · Медь снизу', theme.copperBottom],
+    ['s1', 'Ш1 · Шелк сверху', theme.silkTop], ['s2', 'Ш2 · Шелк снизу', theme.silkBottom],
+    ['outline', 'Контур', theme.outline],
+  ];
+  return <div className="board-preview-2d">
+    <div className="bp2d-toolbar">
+      <div className="bp2d-row">
+        <div className="bp2d-segments" role="group" aria-label="Сторона платы">
+          {([['both', 'Все слои'], ['top', 'Верх · K1'], ['bottom', 'Низ · K2 ↔']] as const).map(([value, label]) =>
+            <button key={value} className={'btn' + (side === value ? ' primary' : '')} aria-pressed={side === value} onClick={() => setSide(value)}>{label}</button>)}
         </div>
-        <div className="bp2d-row">
-          <label className="chk"><input type="checkbox" checked={showTop} onChange={e => setShowTop(e.target.checked)} />K1 верх</label>
-          <label className="chk"><input type="checkbox" checked={showBottom} onChange={e => setShowBottom(e.target.checked)} />K2 низ</label>
-          <label className="chk"><input type="checkbox" checked={showSilk} onChange={e => setShowSilk(e.target.checked)} />Шелкография</label>
-          <label className="chk"><input type="checkbox" checked={showOutline} onChange={e => setShowOutline(e.target.checked)} />Контур</label>
-          <label className="chk"><input type="checkbox" checked={showHoles} onChange={e => setShowHoles(e.target.checked)} />Отверстия</label>
-          <label className="chk"><input type="checkbox" checked={showMask} onChange={e => setShowMask(e.target.checked)} />Маска</label>
-        </div>
+        <label className="bp2d-theme">Оформление
+          <select aria-label="Оформление платы" value={themeId} onChange={e => setThemeId(e.target.value as Board2DThemeId)}>
+            {[...BOARD_2D_THEMES].sort((a, b) => Number(b.id === 'classic-dark') - Number(a.id === 'classic-dark')).map(t => <option key={t.id} value={t.id}>{t.name}</option>)}
+          </select>
+        </label>
       </div>
-      <div className="bp2d-canvas-wrap" style={{ width, height }}>
-        <canvas
-          ref={canvasRef}
-          onWheel={onWheel}
-          onMouseDown={onMouseDown}
-          onMouseMove={onMouseMove}
-          onMouseUp={onMouseUp}
-          onMouseLeave={onMouseUp}
-          style={{ cursor: isDragging.current ? 'grabbing' : 'grab', borderRadius: 8, border: '1px solid var(--line)' }}
-        />
-      </div>
-      <div className="bp2d-legend">
-        <span style={{ background: theme.copperTop }} className="bp2d-swatch" /> K1 медь
-        <span style={{ background: theme.copperBottom }} className="bp2d-swatch" /> K2 медь
-        <span style={{ background: theme.silkTop }} className="bp2d-swatch" /> Шелк
-        <span style={{ background: theme.board }} className="bp2d-swatch" /> Плата
+      <div className="bp2d-row bp2d-layers">
+        {layers.map(([layer, label, color]) => {
+          const disabled = (side === 'top' && (layer === 'k2' || layer === 's2')) || (side === 'bottom' && (layer === 'k1' || layer === 's1'));
+          return <label key={layer} className={'chk' + (disabled ? ' is-disabled' : '')}>
+            <input type="checkbox" checked={!hidden.has(layer)} disabled={disabled} onChange={() => toggleLayer(layer)} />
+            <i className="bp2d-swatch" style={{ background: color }} />{label}
+          </label>;
+        })}
       </div>
     </div>
-  );
+    <div className="bp2d-canvas-wrap" ref={wrapRef} style={{ height: `min(${height}px, 50vh)` }}>
+      <canvas ref={canvasRef} aria-label={`Предпросмотр платы ${doc.name}. ${side === 'bottom' ? 'Нижняя сторона, зеркально' : side === 'top' ? 'Верхняя сторона' : 'Все слои'}`} tabIndex={0}
+        style={{ cursor: dragging ? 'grabbing' : 'grab' }}
+        onDoubleClick={fit}
+        onKeyDown={e => {
+          if (e.key === '+' || e.key === '=') { e.preventDefault(); zoom(1.2); }
+          if (e.key === '-') { e.preventDefault(); zoom(1 / 1.2); }
+          if (e.key === '0' || e.key === 'Home') { e.preventDefault(); fit(); }
+        }}
+        onPointerDown={e => {
+          if (e.button !== 0 && e.button !== 1) return;
+          e.preventDefault();
+          e.currentTarget.focus();
+          e.currentTarget.setPointerCapture(e.pointerId);
+          drag.current = { x: e.clientX, y: e.clientY, id: e.pointerId }; setDragging(true);
+        }}
+        onPointerMove={e => {
+          const last = drag.current;
+          if (!last || last.id !== e.pointerId) return;
+          const dx = e.clientX - last.x, dy = e.clientY - last.y;
+          drag.current = { x: e.clientX, y: e.clientY, id: e.pointerId };
+          setView(v => ({ ...v, x: v.x + dx, y: v.y + dy }));
+        }}
+        onPointerUp={e => { e.currentTarget.releasePointerCapture(e.pointerId); drag.current = null; setDragging(false); }}
+        onPointerCancel={() => { drag.current = null; setDragging(false); }}
+        onLostPointerCapture={() => { drag.current = null; setDragging(false); }}
+      />
+      <span className="bp2d-view-label">{side === 'bottom' ? 'K2 / ВИД СНИЗУ · ЗЕРКАЛЬНО' : side === 'top' ? 'K1 / ВИД СВЕРХУ' : '2D / ВСЕ СЛОИ'}</span>
+      <div className="bp2d-navigation">
+        <button className="btn" aria-label="Уменьшить" onClick={() => zoom(1 / 1.2)}>−</button>
+        <span title="Масштаб относительно вписанной платы">{Math.round(view.scale / fitScale * 100)}%</span>
+        <button className="btn" aria-label="Увеличить" onClick={() => zoom(1.2)}>+</button>
+        <button className="btn" onClick={fit} title="Вписать плату (Home или двойной щелчок)">Вписать</button>
+      </div>
+    </div>
+    {outside && <div className="bp2d-warning" role="status">Есть элементы за границами платы {doc.w} × {doc.h} мм. Показан весь чертёж; размеры платы не изменены.</div>}
+    <div className="bp2d-status">
+      <label className="chk"><input type="checkbox" checked={showGrid} onChange={e => setShowGrid(e.target.checked)} />Сетка</label>
+      <label className="chk"><input type="checkbox" checked={showHoles} onChange={e => setShowHoles(e.target.checked)} />Сверловка</label>
+      {!themeId.startsWith('classic') && themeId !== 'mono' && <label className="chk"><input type="checkbox" checked={showMask} onChange={e => setShowMask(e.target.checked)} />Маска</label>}
+      <span className="bp2d-help">Колесо — масштаб · Перетаскивание — панорама</span>
+    </div>
+  </div>;
 }

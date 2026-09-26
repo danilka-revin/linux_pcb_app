@@ -83,6 +83,7 @@ export interface DrawOpts {
   tint?: string;          // перекрасить всё в один цвет (выделение, печать)
   alpha?: number;
   passes?: Set<string>;   // ограничение "проходов" для печати
+  omitDrills?: boolean;   // предпросмотр рисует отверстия отдельным последним проходом
   drillMarks?: boolean;   // для печати: белые точки в центрах отверстий
 }
 
@@ -151,7 +152,7 @@ export function drawEnt(
       } else ctx.arc(px, py, r, 0, Math.PI * 2);
       ctx.fill();
       // отверстие
-      if (e.drill > 0) {
+      if (e.drill > 0 && !o.omitDrills) {
         ctx.beginPath();
         ctx.fillStyle = o.drillMarks && o.tint ? '#ffffff' : COLORS.holeFill;
         ctx.arc(px, py, Math.max((e.drill / 2) * s, o.tint ? (0.4 * s) : 0.8), 0, Math.PI * 2);
@@ -165,10 +166,12 @@ export function drawEnt(
       ctx.beginPath();
       ctx.arc(px, py, (e.size / 2) * s, 0, Math.PI * 2);
       ctx.fill();
-      ctx.beginPath();
-      ctx.fillStyle = o.drillMarks && o.tint ? '#ffffff' : COLORS.holeFill;
-      ctx.arc(px, py, Math.max((e.drill / 2) * s, 0.7), 0, Math.PI * 2);
-      ctx.fill();
+      if (!o.omitDrills) {
+        ctx.beginPath();
+        ctx.fillStyle = o.drillMarks && o.tint ? '#ffffff' : COLORS.holeFill;
+        ctx.arc(px, py, Math.max((e.drill / 2) * s, 0.7), 0, Math.PI * 2);
+        ctx.fill();
+      }
       break;
     }
     case 'smd': {
