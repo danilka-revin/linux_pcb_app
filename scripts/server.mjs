@@ -893,6 +893,11 @@ export async function startServer(opts = {}) {
         return json(res, 404, { ok: false, error: 'Облачный режим не включён на этом сервере.' });
       }
 
+      if (url.pathname.startsWith('/api/modules/')) {
+        const { handleModules } = await import('./modules-api.mjs');
+        return await handleModules(req, res, url);
+      }
+
       if (url.pathname.startsWith('/api/footprints/')) {
         if (req.method !== 'GET') return json(res, 405, { ok: false, error: 'Каталог поддерживает только GET.' });
         const cacheHeaders = {

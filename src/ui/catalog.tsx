@@ -18,6 +18,8 @@ export interface PartReelPart {
 }
 
 export interface CatalogSelection {
+  source?: string;
+  raw?: string;
   part: PartReelPart;
   detail: Record<string, unknown>;
   footprint: ParsedKicadFootprint;
@@ -144,11 +146,14 @@ const categories: { id: 'all' | 'smd' | 'modules'; label: string }[] = [
 ];
 
 export function FootprintCatalog({
-  onPlace, onSave,
+  onPlace, onSave, onExport,
 }: {
   onPlace: (selection: CatalogSelection) => void;
   onSave: (selection: CatalogSelection) => void;
+  onExport?: (selection: CatalogSelection) => void;
 }) {
+  const [provider, setProvider] = useState<'footprints' | 'modules'>('footprints');
+  const sourceName = provider === 'modules' ? 'KiCad' : 'PartReel';
   const [query, setQuery] = useState('');
   const [submittedQuery, setSubmittedQuery] = useState('');
   const [searchRevision, setSearchRevision] = useState(0);
@@ -156,7 +161,6 @@ export function FootprintCatalog({
   const [onlyVerified, setOnlyVerified] = useState(false);
   const [results, setResults] = useState<PartReelPart[]>([]);
   const [matchCount, setMatchCount] = useState(0);
-  const [catalogTotal, setCatalogTotal] = useState(21668);
   const [loadingSearch, setLoadingSearch] = useState(false);
   const [searchError, setSearchError] = useState('');
   const [selected, setSelected] = useState<PartReelPart | null>(null);
@@ -180,7 +184,7 @@ export function FootprintCatalog({
             category,
             verified: String(onlyVerified),
           });
-          const response = await fetch(`/api/footprints/search?${params}`, {
+          const response = await fetch(`/api/${provider}/search?${params}`, {
             headers: { accept: 'application/json' },
             signal: controller.signal,
           });
@@ -193,7 +197,6 @@ export function FootprintCatalog({
           if (seq !== searchRequest.current) return;
           setResults(found);
           setMatchCount(Number(data.count) || 0);
-          setCatalogTotal(Number(data.total) || 21668);
         } catch (error) {
           if (seq === searchRequest.current && !controller.signal.aborted) {
             setSearchError(error instanceof Error ? error.message : 'Каталог PartReel недоступен.');
@@ -206,7 +209,7 @@ export function FootprintCatalog({
       })();
     }, 140);
     return () => { window.clearTimeout(timer); controller.abort(); };
-  }, [submittedQuery, category, onlyVerified, searchRevision]);
+  }, [submittedQuery, category, onlyVerified, searchRevision, provider]);
 
   const search = (event?: FormEvent): void => {
     event?.preventDefault();
@@ -224,25 +227,27 @@ export function FootprintCatalog({
     setPartError('');
     setLoadingPart(true);
     try {
-      const detailResponse = await fetch(`/api/footprints/detail/${encodeURIComponent(part.id)}`, { signal: AbortSignal.timeout(30_000) });
+      const detailResponse = await fetch(`/api/${provider}/detail/${encodeURIComponent(part.id)}`, { signal: AbortSignal.timeout(30_000) });
       if (!detailResponse.ok) {
         let reason = `HTTP ${detailResponse.status}`;
         try { reason = textValue((await detailResponse.json()).error) || reason; } catch { /* upstream error page */ }
         throw new Error(reason);
       }
       const detail = detailObject(await detailResponse.json());
-      const path = footprintPath(detail);
+      const path = provider === 'modules' ? `/api/modules/raw/${encodeURIComponent(part.id)}` : footprintPath(detail);
       if (!path) throw new Error('Для этой записи PartReel не опубликован файл .kicad_mod.');
-      const modResponse = await fetch(`/api/footprints/raw?path=${encodeURIComponent(path)}`, { signal: AbortSignal.timeout(30_000) });
+      const modResponse = await fetch(provider === 'modules' ? path : `/api/footprints/raw?path=${encodeURIComponent(path)}`, { signal: AbortSignal.timeout(30_000) });
       if (!modResponse.ok) {
         let reason = `HTTP ${modResponse.status}`;
         try { reason = textValue((await modResponse.json()).error) || reason; } catch { /* upstream text response */ }
         throw new Error(reason);
       }
-      const footprint = parseKicadFootprint(await modResponse.text());
+      const raw = await modResponse.text();
+      const footprint = parseKicadFootprint(raw);
       if (seq !== partRequest.current) return;
       setSelection({
-        part, detail, footprint, pageUrl: pageFor(part, detail),
+        part, detail, footprint, raw, source: sourceName,
+        pageUrl: provider === 'modules' ? String(detail.page) : pageFor(part, detail),
         license: displayLicense(detail),
         verified: isVerified(detail.verified ?? part.verified),
         provenance: displayProvenance(detail),
@@ -268,8 +273,16 @@ export function FootprintCatalog({
   return (
     <div className="catalog">
       <div className="catalog-intro">
-        <strong>PartReel · {catalogTotal.toLocaleString('ru-RU')} записей</strong>
+        <strong>{sourceName} · каталог компонентов</strong>
         <span>Публичный индекс, без ключа API. Поиск и кэш — на сервере; в браузер передаются только совпадения.</span>
+      </div>
+      <div className="catalog-filter" role="group" aria-label="Источник каталога">
+        {(['footprints', 'modules'] as const).map(value => <button key={value} type="button" className={provider === value ? 'on' : ''} onClick={() => {
+          ++partRequest.current; ++searchRequest.current;
+          setProvider(value); setSelected(null); setSelection(null); setResults([]); setPartError(''); setSearchError(''); setLoadingPart(false); setLoadingSearch(false);
+          setOnlyVerified(false);
+          if (value === 'modules' && !submittedQuery) { setQuery('Arduino'); setSubmittedQuery('Arduino'); }
+        }}>{value === 'modules' ? 'Arduino / KiCad' : 'PartReel'}</button>)}
       </div>
       <form className="catalog-search" onSubmit={search}>
         <input
@@ -308,7 +321,7 @@ export function FootprintCatalog({
           </div>
         </div>
       )}
-      {loadingSearch && <div className="catalog-state">Ищу в каталоге PartReel…</div>}
+      {loadingSearch && <div className="catalog-state">Ищу в каталоге {sourceName}…</div>}
       {!!submittedQuery && !loadingSearch && !searchError && (
         <>
           <div className="catalog-result-count">{matchCount.toLocaleString('ru-RU')} совпадений · показаны первые {results.length}</div>
@@ -335,7 +348,7 @@ export function FootprintCatalog({
           <h4>{selected.name}</h4>
           <div className="catalog-card-meta">{[selected.manufacturer, selected.family, selected.category, textValue(selected.mpn_pattern ?? selected.mpn), selected.pins ? `${selected.pins} контактов` : ''].filter(Boolean).join(' · ')}</div>
           {loadingPart && <div className="catalog-state">Загружаю карточку и .kicad_mod…</div>}
-          {partError && <div className="catalog-error">{partError}</div>}
+          {partError && <div className="catalog-error">{partError}<button type="button" className="btn" onClick={() => void selectPart(selected)}>Повторить</button></div>}
           {selection && (
             <>
               <LibPreview els={selection.footprint.els} bl={selection.footprint.bbox} height={142} />
@@ -347,9 +360,9 @@ export function FootprintCatalog({
               </div>
               <div className="catalog-attribution">
                 <span className={`catalog-badge${selection.verified ? ' verified' : ''}`}>
-                  {selection.verified ? 'Проверено PartReel' : 'Нет отметки verified'}
+                  {selection.verified ? `Проверено ${sourceName}` : 'Нет отметки verified'}
                 </span>
-                <span>Лицензия: {selection.license}. Атрибуция: PartReel.</span>
+                <span>Лицензия: {selection.license}. Атрибуция: {sourceName}.</span>
                 {selection.provenance && <span>Источник: {selection.provenance}</span>}
                 <span>Перенос в PSBees упрощает геометрию; сверьте размеры с даташитом перед изготовлением.</span>
                 {!!selection.footprint.warnings.length && <span>Ограничения конвертации: {selection.footprint.warnings.join(' ')}</span>}
@@ -358,15 +371,25 @@ export function FootprintCatalog({
                 <button type="button" className="btn primary" onClick={() => onPlace(selection)}>Поставить на плату</button>
                 <button type="button" className="btn" onClick={() => onSave(selection)}>В личную библиотеку</button>
               </div>
+              <div className="catalog-actions">
+                {onExport && <button type="button" className="btn" onClick={() => onExport(selection)}>Экспорт JSON PSBees</button>}
+                <button type="button" className="btn" onClick={() => {
+                  const url = URL.createObjectURL(new Blob([selection.raw ?? ''], { type: 'text/plain' }));
+                  const link = document.createElement('a'); link.href = url;
+                  link.download = `${selection.part.name.replace(/[^a-zA-Z0-9а-яА-Я._-]/g, '_')}.kicad_mod`;
+                  document.body.appendChild(link); link.click(); link.remove();
+                  window.setTimeout(() => URL.revokeObjectURL(url), 1000);
+                }}>Скачать .kicad_mod</button>
+              </div>
               <div className="catalog-links">
-                <a href={selection.pageUrl} target="_blank" rel="noreferrer">PartReel · карточка компонента</a>
+                <a href={selection.pageUrl} target="_blank" rel="noreferrer">{sourceName} · карточка компонента</a>
                 {/^https:\/\//i.test(datasheet) && <a href={datasheet} target="_blank" rel="noreferrer">Даташит</a>}
               </div>
             </>
           )}
         </section>
       )}
-      <div className="catalog-footnote">Статус verified и provenance показываются как в источнике; они не заменяют проверку даташита. Каталог и компоненты предоставляются сторонним проектом PartReel.</div>
+      <div className="catalog-footnote">Статус verified и provenance показываются как в источнике; они не заменяют проверку даташита. Источники: PartReel и KiCad Module.pretty. Совместимость модулей и размеры сверяйте с документацией; варианты клонов могут отличаться.</div>
     </div>
   );
 }
