@@ -114,7 +114,10 @@ try {
   assert.equal((await fetch(base + '/update/run', { method: 'POST' })).status, 403);
   assert.equal((await fetch(base + '/api/cloud/no-such-api')).headers.get('content-type').includes('json'), true);
   assert.equal((await fetch(base + '/')).status, 200);
-  assert.equal((await fetch(base + '/psbees.sqlite')).headers.get('content-type').includes('text/html'), true);
+  // файл базы не отдаётся: путь с расширением не подменяется index.html (см. test/server.mjs)
+  const dbRequest = await fetch(base + '/psbees.sqlite');
+  assert.equal(dbRequest.status, 404);
+  assert.ok(!(await dbRequest.text()).includes('SQLite format'));
   assert.ok(!readFileSync(join(data, 'psbees.sqlite')).includes(Buffer.from('alice-long-password')));
   const cli = await openCloudStore(data); // администратор ОС восстанавливает обычного пользователя
   await cli.resetUserPassword('bob@work.test', 'bobs-brand-new-password');
