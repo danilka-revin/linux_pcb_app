@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 // Окно PSBees на Windows (Electron): поднимает тот же локальный сервер,
 // что и Linux-версия, и открывает интерфейс в собственном окне.
-import { app, BrowserWindow, Menu, dialog, shell } from 'electron';
+import { app, BrowserWindow, Menu, dialog, ipcMain, shell } from 'electron';
 import { existsSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -14,6 +14,18 @@ function distRoot() {
 }
 
 let mainWindow = null;
+let localServer = null;
+
+ipcMain.on('psbees:close-app', (event) => {
+  const senderWindow = BrowserWindow.fromWebContents(event.sender);
+  if (senderWindow && senderWindow === mainWindow) senderWindow.close();
+});
+
+app.on('before-quit', () => {
+  localServer?.close();
+  localServer?.closeAllConnections?.();
+  localServer = null;
+});
 
 function createWindow(url) {
   const icon = join(here, '..', 'build', 'icon.png');
@@ -28,12 +40,14 @@ function createWindow(url) {
     title: 'PSBees — редактор печатных плат',
     icon: existsSync(icon) ? icon : undefined,
     webPreferences: {
+      preload: join(here, 'preload.cjs'),
       sandbox: true,
       contextIsolation: true,
       nodeIntegration: false,
       spellcheck: false,
     },
   });
+  mainWindow.on('closed', () => { mainWindow = null; });
   Menu.setApplicationMenu(null);
   mainWindow.once('ready-to-show', () => mainWindow.show());
   mainWindow.webContents.setWindowOpenHandler(({ url: u }) => {
@@ -72,13 +86,14 @@ if (!gotLock) {
       return;
     }
     try {
-      const { url } = await startServer({
+      const server = await startServer({
         port: Number(process.env.PCB_APP_PORT || 8484),
         host: '127.0.0.1',
         root,
         fallbackPorts: 30,
       });
-      await createWindow(url);
+      localServer = server.server;
+      await createWindow(server.url);
     } catch (e) {
       dialog.showErrorBox('PSBees', 'Не удалось запустить локальный сервер:\n' + (e?.message || e));
       app.quit();

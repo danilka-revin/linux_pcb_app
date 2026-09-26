@@ -402,6 +402,11 @@ const MODULE_NAMES: Record<string, ModulePreset> = {
     left: ['GND', 'GPIO2', 'RX0', 'EN'],
     right: ['RST', 'GPIO0', 'TX0', 'VCC'],
   },
+  bluepill: {
+    title: 'STM32F103C8T6 Blue Pill', rowW: 15.24, bodyW: 22.86, bodyH: 53.34, holes: 0,
+    left: ['VBAT', 'PC13', 'PC14', 'PC15', 'PA0', 'PA1', 'PA2', 'PA3', 'PA4', 'PA5', 'PA6', 'PA7', 'PB0', 'PB1', 'PB10', 'PB11', 'NRST', '3V3', 'GND', 'GND'],
+    right: ['3V3', 'GND', '5V', 'PB9', 'PB8', 'PB7', 'PB6', 'PB5', 'PB4', 'PB3', 'PA15', 'PA12', 'PA11', 'PA10', 'PA9', 'PA8', 'PB15', 'PB14', 'PB13', 'PB12'],
+  },
   hat40: {
     title: 'Raspberry Pi GPIO 40 (HAT)', rowW: 2.54, bodyW: 5.8, bodyH: 53.34, holes: 0,
     left: ['3V3', 'IO2', 'IO3', 'IO4', 'GND', 'IO17', 'IO27', 'IO22', '3V3', 'MOSI', 'MISO', 'SCLK', 'GND', 'ID_SD', 'IO5', 'IO6', 'IO13', 'IO19', 'IO26', 'GND'],
@@ -411,6 +416,7 @@ const MODULE_NAMES: Record<string, ModulePreset> = {
 
 const detectModule = (s: string): string | null => {
   if (/pro\s*mini|про\s*мини/.test(s)) return 'pro_mini';
+  if (/blue\s*-?\s*pill|stm32f103c8t6/.test(s)) return 'bluepill';
   if (/nano/.test(s)) return 'nano';
   if (/pico|пико/.test(s)) return 'pico';
   if (/esp\s*-?\s*01\b|esp01/.test(s)) return 'esp01';

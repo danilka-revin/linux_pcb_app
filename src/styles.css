@@ -90,8 +90,8 @@ button { font: inherit; color: inherit; background: none; border: none; }
 /*
  * Одна строка, и ничего не теряется: если мест в окне меньше, чем нужно групп,
  * сначала сжимается декоративный бренд (см. .brand), а когда и этого мало —
- * строка листается по горизонтали. «overflow: hidden» раньше обрезал хвост
- * (тема, «Обновить», меню «Интерфейс и справка») — кнопки выглядели удалёнными.
+ * строка листается по горизонтали. Кнопка закрытия при этом остаётся закреплена
+ * у правого края, а быстрые настройки стоят после undo/redo.
  */
 .toolbar {
   display: flex; align-items: center; gap: 2px;
@@ -120,11 +120,10 @@ button { font: inherit; color: inherit; background: none; border: none; }
 
 .tb-group { display: flex; align-items: center; gap: 2px; padding: 0 6px; border-right: 1px solid var(--line); flex: none; }
 .tb-group:last-child { border-right: none; }
-/*
- * Хвост шапки (тема, «Обновить», «⋯ Интерфейс и справка») прилипает к правому
- * краю: если группа всё же не влезает в окно, она остаётся на виду, а не
- * уезжает за край. В широком окне правило ничего не меняет.
- */
+/* Кнопка закрытия остаётся у правого края даже при прокрутке узкой панели. */
+.toolbar-exit { border-left: 1px solid var(--line); }
+.tb-btn.close-app { color: var(--danger-ink); }
+.tb-btn.close-app:hover { background: var(--danger-bg); color: var(--danger-ink); }
 .toolbar > .tb-group:last-child {
   position: sticky; right: 0; z-index: 2;
   padding-left: 10px; background: var(--surface);
@@ -311,7 +310,7 @@ button { font: inherit; color: inherit; background: none; border: none; }
 .uib-name { flex: 1; font-size: 12.5px; color: var(--text); }
 .uib-item .btn.tiny { flex: none; }
 .uib-hide-on { border-color: transparent !important; color: var(--muted) !important; }
-/* «Всегда показана»: не кнопка, а метка — в этой группе меню с настройками */
+/* «Всегда показана»: не кнопка, а метка — закреплённая группа undo/redo */
 .uib-item button.uib-pinned {
   opacity: .8 !important; cursor: default;
   border-color: transparent !important; color: var(--muted) !important;
@@ -358,6 +357,7 @@ button { font: inherit; color: inherit; background: none; border: none; }
 .tabs button { flex: 1; padding: 9px 0; background: none; cursor: pointer; color: var(--muted); border-bottom: 2px solid transparent; font-size: 12px; }
 .tabs button:hover { color: var(--text); }
 .tabs button.on { color: var(--text); border-bottom-color: var(--accent); }
+.lib-tabs button { padding: 8px 1px; font-size: 10.5px; white-space: nowrap; }
 
 .layer { display: flex; align-items: center; gap: 9px; padding: 7px 12px; cursor: pointer; border-radius: 0; }
 .layer:hover { background: var(--surface-2); }
@@ -691,3 +691,61 @@ canvas { display: block; }
 }
 .mv:hover { color: var(--text); border-color: var(--accent); }
 .nm-edit { flex: 1; height: 20px; font-size: 11.5px; padding: 1px 6px; }
+
+/* ---------------- онлайн-каталог PartReel / KiCad ---------------- */
+.catalog { padding: 9px 10px 14px; font-size: 11.5px; }
+.catalog-intro { display: flex; flex-direction: column; gap: 3px; color: var(--muted); line-height: 1.45; }
+.catalog-intro strong { color: var(--text); font-size: 12px; }
+.catalog-search { display: flex; gap: 5px; margin-top: 9px; }
+.catalog-search input {
+  flex: 1; min-width: 0; height: 30px; padding: 0 8px;
+  color: var(--text); background: var(--surface-2); border: 1px solid var(--line); border-radius: 7px;
+}
+.catalog-search input:focus { outline: none; border-color: var(--accent); }
+.catalog-search .btn { flex: none; padding: 4px 8px; font-size: 11px; }
+.catalog-filter { display: flex; gap: 3px; margin-top: 7px; }
+.catalog-filter button {
+  flex: 1; min-width: 0; padding: 4px 2px; border: 1px solid var(--line); border-radius: 6px;
+  color: var(--muted); font-size: 10px; cursor: pointer; white-space: nowrap;
+}
+.catalog-filter button:hover, .catalog-filter button.on { color: var(--text); border-color: var(--accent-line); background: var(--accent-soft); }
+.catalog-verified { display: flex; align-items: center; gap: 6px; margin: 7px 1px; color: var(--muted); font-size: 10.5px; cursor: pointer; }
+.catalog-verified input { width: 13px; height: 13px; accent-color: var(--accent); }
+.catalog-hint, .catalog-state, .catalog-result-count, .catalog-footnote {
+  color: var(--muted); font-size: 10.5px; line-height: 1.5;
+}
+.catalog-hint { margin-top: 8px; padding: 8px; border: 1px solid var(--line); border-radius: 7px; background: var(--surface-2); }
+.catalog-examples { display: flex; gap: 4px; flex-wrap: wrap; align-items: center; margin-top: 7px; }
+.catalog-examples .chip { padding: 2px 6px; font-size: 9.5px; }
+.catalog-examples .btn { margin-left: auto; }
+.catalog-state { padding: 8px 3px; }
+.catalog-error { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; padding: 7px; margin: 7px 0; color: var(--warn); background: var(--accent-soft); border: 1px solid var(--accent-line); border-radius: 7px; line-height: 1.4; overflow-wrap: anywhere; }
+.catalog-error .btn { margin-left: auto; flex: none; }
+.catalog-result-count { margin: 7px 1px 4px; }
+.catalog-results { display: flex; flex-direction: column; gap: 3px; }
+.catalog-item {
+  width: 100%; min-width: 0; padding: 6px 7px; border: 1px solid var(--line-soft); border-radius: 7px;
+  background: var(--surface); color: var(--text-2); text-align: left; cursor: pointer;
+}
+.catalog-item:hover, .catalog-item.selected { border-color: var(--accent-line); background: var(--hover); color: var(--text); }
+.catalog-item-title { display: flex; align-items: baseline; gap: 5px; min-width: 0; font-size: 11px; font-weight: 600; line-height: 1.35; }
+.catalog-item-title:first-child { overflow-wrap: anywhere; }
+.catalog-badge {
+  display: inline-block; flex: none; padding: 1px 4px; border-radius: 4px; border: 1px solid var(--line);
+  color: var(--muted); font-size: 8px; font-weight: 500; line-height: 1.3; white-space: nowrap;
+}
+.catalog-badge.verified { color: var(--ok-ink); border-color: color-mix(in srgb, var(--ok) 35%, var(--line)); background: var(--ok-bg); }
+.catalog-item-meta { display: block; margin-top: 3px; color: var(--muted); font-size: 9.5px; line-height: 1.35; overflow-wrap: anywhere; }
+.catalog-card { margin-top: 9px; padding: 8px; border: 1px solid var(--line); border-radius: 8px; background: var(--surface-2); }
+.catalog-card h4 { margin: 0; color: var(--text); font-size: 12px; line-height: 1.35; overflow-wrap: anywhere; }
+.catalog-card-meta { margin-top: 4px; color: var(--muted); font-size: 10px; line-height: 1.4; }
+.catalog-card .lib-preview { margin: 6px 0 0; border: 1px solid var(--line-soft); border-radius: 5px; }
+.catalog-spec { padding-top: 5px; color: var(--text-2); font-size: 10px; line-height: 1.45; }
+.catalog-attribution { display: flex; flex-direction: column; align-items: flex-start; gap: 4px; margin-top: 7px; color: var(--muted); font-size: 9.5px; line-height: 1.45; overflow-wrap: anywhere; }
+.catalog-attribution .catalog-badge { font-size: 9px; }
+.catalog-actions { display: flex; flex-wrap: wrap; gap: 5px; margin-top: 9px; }
+.catalog-actions .btn { flex: 1; min-width: 90px; padding: 5px 6px; font-size: 10.5px; }
+.catalog-links { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 8px; font-size: 10px; }
+.catalog-links a { color: var(--accent-text); text-decoration: none; }
+.catalog-links a:hover { text-decoration: underline; }
+.catalog-footnote { margin-top: 10px; padding-top: 7px; border-top: 1px solid var(--line-soft); font-size: 9px; }

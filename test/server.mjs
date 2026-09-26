@@ -22,6 +22,14 @@ if (ver.short !== 'deadbee') throw new Error('version: ' + JSON.stringify(ver));
 const page = await (await fetch(url + '/')).text();
 if (!page.includes('<title>ok</title>')) throw new Error('index не отдался');
 
+// Каталог: поиск валидирует запрос до загрузки сети, а raw endpoint не становится SSRF-прокси.
+const emptyCatalogSearch = await fetch(url + '/api/footprints/search');
+if (emptyCatalogSearch.status !== 400) throw new Error('empty catalog search should be rejected locally');
+const badPartPath = await fetch(url + '/api/footprints/raw?path=' + encodeURIComponent('https://example.com/secret.kicad_mod'));
+if (badPartPath.status !== 400) throw new Error('raw endpoint должен отклонять внешние URL');
+const badPartDetail = await fetch(url + '/api/footprints/detail/bad.part');
+if (badPartDetail.status !== 404) throw new Error('detail endpoint должен отклонять некорректный id');
+
 // обновление: статус (с номером ревизии для long-poll), отмена без запущенного обновления
 const us = await (await fetch(url + '/update/status')).json();
 if (us.status !== 'idle' || typeof us.rev !== 'number' || !Array.isArray(us.stages)) throw new Error('update/status: ' + JSON.stringify(us));

@@ -66,6 +66,7 @@ export const ICONS: Record<string, ReactNode> = {
   angle90: <>{P('M5 19h14M5 19V7')}</>,
   anglefree: <>{P('M5 19h14M5 19L15 12')}</>,
   update: <>{P('M21 12a9 9 0 11-2.64-6.36')}{P('M21 3v6h-6')}</>,
+  close: <>{P('M6 6l12 12')}{P('M18 6L6 18')}</>,
   uib: <>{R(3, 4, 7, 7)}{R(14, 4, 7, 7)}{R(3, 15, 7, 5)}{R(14, 15, 7, 5)}</>,
   about: <>{C(12, 12, 9)}{P('M12 11v5.5')}<circle cx="12" cy="7.8" r="1.1" fill="currentColor" stroke="none" /></>,
   sun: (
