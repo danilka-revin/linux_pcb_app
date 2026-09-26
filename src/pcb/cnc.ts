@@ -7,9 +7,9 @@ import type { Doc, Entity, Pt } from './model';
 import { expandDoc } from './expand';
 import { textPolylines } from './strokefont';
 import type { ZipFile } from './zip';
-import { cncRange, validateCncSettings, type CncSettings, type CncSide } from './cnc-settings';
+import { cncRange, validateCncSettings, type CncBoardAnalysis, type CncSettings, type CncSide } from './cnc-settings';
 import { cncSchemesSvg } from './cnc-schemes';
-export { DEFAULT_CNC_SETTINGS, validateCncSettings, type CncSettings } from './cnc-settings';
+export { DEFAULT_CNC_SETTINGS, validateCncSettings, type CncBoardAnalysis, type CncSettings } from './cnc-settings';
 
 const SCALE = 10000;
 const ARC_TOLERANCE = 0.005 * SCALE;
@@ -153,24 +153,95 @@ function unionCopper(entities: Entity[], layer: 'k1' | 'k2'): Clipper.Paths {
   return result;
 }
 
-function isolationPaths(copper: Clipper.Paths, s: CncSettings, side: CncSide): Clipper.Paths {
-  if (!copper.length) return [];
+function topology(paths: Clipper.Paths): [number, number] {
+  let outer = 0, holes = 0;
+  for (const p of paths) {
+    const a = Clipper.Clipper.Area(p);
+    if (a > 0) outer++;
+    else if (a < 0) holes++;
+  }
+  return [outer, holes];
+}
+
+function offsetCopper(copper: Clipper.Paths, deltaMm: number): Clipper.Paths {
   const offset = new Clipper.ClipperOffset(2, ARC_TOLERANCE);
   offset.AddPaths(copper, Clipper.JoinType.jtRound, Clipper.EndType.etClosedPolygon);
   const result: Clipper.Paths = [];
-  offset.Execute(result, mm(s.toolDiameter / 2 + s.clearance));
+  offset.Execute(result, mm(deltaMm));
+  return result;
+}
+
+function isolationPaths(copper: Clipper.Paths, s: CncSettings, side: CncSide): Clipper.Paths {
+  if (!copper.length) return [];
+  const result = offsetCopper(copper, s.toolDiameter / 2 + s.clearance);
   countPoints(result);
   // Если два отдельных островка слились или закрылась внутренняя прорезь,
   // выбранной фрезой с заданным зазором нельзя отделить эту медь.
-  const topology = (paths: Clipper.Paths) => [
-    paths.filter((p) => Clipper.Clipper.Area(p) > 0).length,
-    paths.filter((p) => Clipper.Clipper.Area(p) < 0).length,
-  ];
   const [outer, holes] = topology(copper);
   const [newOuter, newHoles] = topology(result);
   if (newOuter < outer || newHoles < holes)
     throw new Error(`${side === 'top' ? 'Верхняя' : 'Нижняя'} медь: фреза с зазором не проходит между элементами или во внутреннее окно. Уменьшите диаметр фрезы/зазор либо измените разводку.`);
   return result;
+}
+
+function maxOffsetFor(copper: Clipper.Paths): number {
+  if (!copper.length) return Infinity;
+  const [outer, holes] = topology(copper);
+  if (outer <= 1 && holes === 0) return Infinity;
+  const fits = (off: number) => {
+    const [o, h] = topology(offsetCopper(copper, off));
+    return o >= outer && h >= holes;
+  };
+  // 5 мм с запасом покрывает любую бытовую фрезу изоляции.
+  if (fits(5)) return Infinity;
+  let lo = 0, hi = 5;
+  for (let i = 0; i < 18; i++) {
+    const mid = (lo + hi) / 2;
+    if (fits(mid)) lo = mid;
+    else hi = mid;
+  }
+  return Math.round(lo * 1000) / 1000;
+}
+
+function copperBounds(paths: Clipper.Paths): CncBoardAnalysis['copper'] {
+  let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
+  for (const path of paths) for (const p of path) {
+    const v = model(p);
+    if (v.x < minX) minX = v.x;
+    if (v.y < minY) minY = v.y;
+    if (v.x > maxX) maxX = v.x;
+    if (v.y > maxY) maxY = v.y;
+  }
+  if (!Number.isFinite(minX)) return null;
+  return { minX, minY, maxX, maxY };
+}
+
+function mergeBounds(a: CncBoardAnalysis['copper'], b: CncBoardAnalysis['copper']): CncBoardAnalysis['copper'] {
+  if (!a) return b;
+  if (!b) return a;
+  return {
+    minX: Math.min(a.minX, b.minX), minY: Math.min(a.minY, b.minY),
+    maxX: Math.max(a.maxX, b.maxX), maxY: Math.max(a.maxY, b.maxY),
+  };
+}
+
+/** Щели и габарит меди — чтобы подобрать фрезу/запас под эту плату, ещё до G-code. */
+export function analyzeCncBoard(doc: Doc): CncBoardAnalysis {
+  cncRange('Ширина платы', doc.w, 1, 1000);
+  cncRange('Высота платы', doc.h, 1, 1000);
+  if (!Array.isArray(doc.entities)) throw new Error('Не найдены объекты платы.');
+  const entities = expandDoc(doc.entities);
+  const topCopper = unionCopper(entities, 'k1');
+  const bottomCopper = unionCopper(entities, 'k2');
+  const [topIslands, topHoles] = topology(topCopper);
+  const [bottomIslands, bottomHoles] = topology(bottomCopper);
+  const maxOffset = Math.min(maxOffsetFor(topCopper), maxOffsetFor(bottomCopper));
+  return {
+    maxOffset,
+    minGap: Number.isFinite(maxOffset) ? Math.round(2 * maxOffset * 1000) / 1000 : Infinity,
+    topIslands, bottomIslands, topHoles, bottomHoles,
+    copper: mergeBounds(copperBounds(topCopper), copperBounds(bottomCopper)),
+  };
 }
 
 /** XY рабочего нуля: модель X для верха, (ширина - X) для перевёрнутого низа. */
@@ -301,7 +372,7 @@ function setupText(doc: Doc, s: CncSettings, job: CncJob): string {
     ...(job.outlinePasses ? [`  99_kontur_poslednim.nc — ПОСЛЕДНИМ, ${job.outlinePasses} проходов, БЕЗ ПЕРЕМЫЧЕК: закрепите плату!`] : []),
     '',
     'Перед КАЖДЫМ файлом вручную установите нужный инструмент (M6/T-команд нет), проверьте диаметр и выставьте Z0.',
-    `Изоляция: Ø${N(s.toolDiameter)} мм + зазор ${N(s.clearance)} мм; Z-${N(s.isolationDepth)}, F${N(s.isolationFeed)}, врезание F${N(s.isolationPlunge)}, S${N(s.isolationRpm)}.`,
+    `Изоляция: Ø${N(s.toolDiameter)} мм + запас ${N(s.clearance)} мм, разделение меди ${N(s.toolDiameter + 2 * s.clearance)} мм; Z-${N(s.isolationDepth)}, F${N(s.isolationFeed)}, врезание F${N(s.isolationPlunge)}, S${N(s.isolationRpm)}.`,
     `Сверловка (${s.drillSide === 'top' ? 'сверху' : 'снизу, координаты зеркальны'}): Z-${N(s.drillDepth)}, шаг ${N(s.drillStep)}, F${N(s.drillFeed)}, S${N(s.drillRpm)}.`,
     ...(s.cutOutline ? [`Контур: Ø${N(s.outlineDiameter)} мм; Z-${N(s.outlineDepth)}, шаг ${N(s.outlineStep)}, F${N(s.outlineFeed)}, врезание F${N(s.isolationPlunge)}, S${N(s.outlineRpm)}.`] : []),
     '',
