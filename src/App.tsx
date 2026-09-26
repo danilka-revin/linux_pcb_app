@@ -28,6 +28,8 @@ import { download, makeZip } from './pcb/zip';
 
 // ЧПУ открывают редко; CAM и его интерфейс загружаются по запросу, не при старте редактора.
 const CncDialog = lazy(() => import('./ui/cnc').then((m) => ({ default: m.CncDialog })));
+// Предпросмотр 2D/3D — тяжёлый (Three.js), грузим лениво.
+const BoardPreviewDialog = lazy(() => import('./ui/board-preview').then((m) => ({ default: m.BoardPreviewDialog })));
 import { Ic } from './ui/icons';
 import {
   LayersPanel, PropsPanel, TOOLS,
@@ -161,6 +163,7 @@ const GROUP_DEFS: { id: string; label: string }[] = [
   { id: 'grid', label: 'Сетка и углы' },
   { id: 'layer', label: 'Слой K1 / K2' },
   { id: 'view', label: 'Вид' },
+  { id: 'preview', label: 'Предпросмотр 2D/3D' },
   { id: 'about', label: 'Тема и справка' },
 ];
 const GROUP_ORDER: string[] = GROUP_DEFS.map((g) => g.id);
@@ -436,7 +439,8 @@ export default function App({ cloudUser, onLogout }: { cloudUser?: CloudUser; on
   }, [doc, tool, routeMode]);
   const [routeA, setRouteA] = useState<RouteEnd | null>(null);
   const [routeMsg, setRouteMsg] = useState<{ msg: string; ok: boolean | null }>({ msg: '', ok: null });
-  const [dialog, setDialog] = useState<'new' | 'export' | 'cnc' | 'panelize' | 'about' | 'inventory' | 'uib' | 'colors' | 'grid' | 'close' | 'cloud' | 'account' | null>(null);
+  const [dialog, setDialog] = useState<'new' | 'export' | 'cnc' | 'panelize' | 'about' | 'inventory' | 'uib' | 'colors' | 'grid' | 'close' | 'cloud' | 'account' | 'board-preview' | null>(null);
+  const [boardPreviewTab, setBoardPreviewTab] = useState<'2d' | '3d'>('2d');
   const [uiConf, setUiConf] = useState<UiState>(loadUi);
   // сохраняем конфигурацию интерфейса сразу (не autosave через таймаут)
   const persistUi = useCallback((c: UiState) => {
@@ -2171,6 +2175,21 @@ export default function App({ cloudUser, onLogout }: { cloudUser?: CloudUser; on
             () => setView((v) => ({ ...v, mir: !v.mir })), { active: view.mir })}
         </div>
       ),
+      preview: (
+        <div className="tb-group" key="preview">
+          {tb('preview2d', '2D предпросмотр — разные цвета платы', () => { setBoardPreviewTab('2d'); setDialog('board-preview'); })}
+          {tb('preview3d', '3D предпросмотр — объёмная плата', () => { setBoardPreviewTab('3d'); setDialog('board-preview'); })}
+          <MenuBtn
+            title="Предпросмотр платы"
+            items={[
+              { icon: 'preview2d', label: '2D предпросмотр — цвета и слои', onClick: () => { setBoardPreviewTab('2d'); setDialog('board-preview'); } },
+              { icon: 'preview3d', label: '3D предпросмотр — объёмная плата', onClick: () => { setBoardPreviewTab('3d'); setDialog('board-preview'); } },
+              { sep: true },
+              { icon: 'eye', label: 'Открыть оба (2D + 3D)', onClick: () => { setBoardPreviewTab('2d'); setDialog('board-preview'); } },
+            ]}
+          />
+        </div>
+      ),
       about: (
         <div className="tb-group" key="about">
           {tb(theme === 'dark' ? 'sun' : 'moon',
@@ -2524,6 +2543,12 @@ export default function App({ cloudUser, onLogout }: { cloudUser?: CloudUser; on
         <ProgressBar label="Загружаем настройки ЧПУ…" indeterminate live meta="модуль фрезеровки и сверловки подгружается по запросу" />
       </div></div>}>
         <CncDialog doc={doc} onClose={() => setDialog(null)} />
+      </Suspense>}
+      {dialog === 'board-preview' && <Suspense fallback={<div className="modal-bg" role="status"><div className="modal modal-loading">
+        <h2>Предпросмотр платы</h2>
+        <ProgressBar label="Загружаем 3D предпросмотр…" indeterminate live meta="Three.js и текстуры платы подгружаются по запросу" />
+      </div></div>}>
+        <BoardPreviewDialog doc={doc} initialTab={boardPreviewTab} onClose={() => setDialog(null)} />
       </Suspense>}
       {dialog === 'panelize' && (
         <PanelizeDialog defX={doc.w + 2} defY={doc.h + 2} onOk={(c, r, gx, gy) => { panelize(c, r, gx, gy); setDialog(null); }} onClose={() => setDialog(null)} />

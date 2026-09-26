@@ -23,6 +23,13 @@
 <td align="center"><img src="assets/screenshots/cnc-preview.png" width="400" alt="ЧПУ предпросмотр"/><br/><sub>ЧПУ: предпросмотр в отдельном окне (необязательный)</sub></td>
 <td align="center"><img src="assets/screenshots/autoroute-nets.png" width="400" alt="Автотрассировка"/><br/><sub>Автотрассировка и группы соединений</sub></td>
 </tr>
+<tr>
+<td align="center"><img src="assets/screenshots/2d-preview-colors.png" width="400" alt="2D предпросмотр цвета"/><br/><sub>2D предпросмотр — разные цвета маски (зелёная, синяя, красная, чёрная, белая)</sub></td>
+<td align="center"><img src="assets/screenshots/3d-preview.png" width="400" alt="3D предпросмотр"/><br/><sub>3D предпросмотр — объёмная плата прямо на сайте (Three.js)</sub></td>
+</tr>
+<tr>
+<td align="center" colspan="2"><img src="assets/screenshots/board-preview-both.png" width="800" alt="2D+3D предпросмотр"/><br/><sub>Объединённый предпросмотр — вкладки 2D (цвета и слои) и 3D (объём) прямо на сайте</sub></td>
+</tr>
 </table>
 
 Веб-приложение для черчения (разводки) печатных плат в духе **Sprint-Layout**.
