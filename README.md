@@ -3,6 +3,28 @@
 </p>
 <h1 align="center">PSBees — редактор печатных плат для Linux и Windows</h1>
 
+<p align="center">
+  <img src="assets/screenshots/main-editor-dark.png" width="800" alt="Главный редактор" /><br/>
+  <em>Тёмная тема — основной интерфейс с платой, слоями и свойствами</em>
+</p>
+
+## Скриншоты
+
+<table>
+<tr>
+<td align="center"><img src="assets/screenshots/main-editor-dark.png" width="400" alt="Главный редактор"/><br/><sub>Главный редактор (тёмная тема)</sub></td>
+<td align="center"><img src="assets/screenshots/light-theme.png" width="400" alt="Светлая тема"/><br/><sub>Светлая тема</sub></td>
+</tr>
+<tr>
+<td align="center"><img src="assets/screenshots/generator-details.png" width="400" alt="Генератор деталей"/><br/><sub>Генератор деталей — строка → footprint</sub></td>
+<td align="center"><img src="assets/screenshots/catalog-partreel.png" width="400" alt="Каталог PartReel"/><br/><sub>Онлайн-каталог PartReel</sub></td>
+</tr>
+<tr>
+<td align="center"><img src="assets/screenshots/cnc-preview.png" width="400" alt="ЧПУ предпросмотр"/><br/><sub>ЧПУ: предпросмотр в отдельном окне (необязательный)</sub></td>
+<td align="center"><img src="assets/screenshots/autoroute-nets.png" width="400" alt="Автотрассировка"/><br/><sub>Автотрассировка и группы соединений</sub></td>
+</tr>
+</table>
+
 Веб-приложение для черчения (разводки) печатных плат в духе **Sprint-Layout**.
 На Linux работает в браузере; на Windows — как обычная программа **`PSBees.exe`**
 с установщиком **`PSBees-Setup.exe`**. Есть **общий сервер для нескольких компьютеров**
