@@ -1,10 +1,14 @@
 import assert from 'node:assert/strict';
 import { createElement } from 'react';
 import { renderToString } from 'react-dom/server.browser';
-import { buildCncJob, DEFAULT_CNC_SETTINGS, type CncSettings } from '../src/pcb/cnc';
+import { analyzeCncBoard, buildCncJob, DEFAULT_CNC_SETTINGS, type CncSettings } from '../src/pcb/cnc';
+import {
+  autoFitGaps, isolationFits, isolationNeed, isolationOffset, pickForBoard, suggestIsolation,
+} from '../src/pcb/cnc-settings';
 import type { Doc, Pt } from '../src/pcb/model';
 import { newBoard } from '../src/pcb/model';
 import { CncDialog } from '../src/ui/cnc';
+import { CncPreview } from '../src/ui/cnc-preview';
 import { ExportDialog } from '../src/ui/dialogs';
 import { makeZip, unzip } from '../src/pcb/zip';
 
@@ -47,6 +51,9 @@ assert(schemes.includes('01_verh_k1.nc') && schemes.includes('00b_SHEMY_PARAMETR
   'схема файлов перечисляет реальные программы архива');
 assert(schemes.includes('Ø 0.4') && schemes.includes('Z-0.12') && schemes.includes('a = 5 мм'),
   'на схемах подставлены значения именно этой платы');
+assert(schemes.includes('разделение') && schemes.includes('0.7'),
+  'схема изоляции показывает зазор разделения меди');
+assert(text(job.files[5]).includes('разделение меди 0.7'), 'инструкция содержит зазор разделения');
 assert(schemes.includes('лево/право') && schemes.includes('вокруг оси Y') && schemes.includes('БЕЗ удерживающих перемычек'),
   'схемы объясняют переворот и вырез без перемычек');
 
@@ -114,6 +121,34 @@ dense.entities.push(
 );
 assert.throws(() => buildCncJob(dense, settings({ toolDiameter: .6, clearance: .1 })), /не проходит между элементами/);
 assert.equal(buildCncJob(dense, settings({ toolDiameter: .2, clearance: .05 })).topLoops, 2);
+
+assert.equal(isolationNeed(settings()), .7);
+assert.equal(isolationOffset(settings()), .35);
+const roomy = analyzeCncBoard(doc);
+assert(roomy.topIslands >= 1 && roomy.bottomIslands >= 1);
+assert(!Number.isFinite(roomy.minGap) || roomy.minGap > 1, 'на тестовой плате щели шире 1 мм');
+assert(isolationFits(settings(), roomy));
+assert.equal(autoFitGaps(settings(), roomy, doc), null, 'дефолты уже проходят по просторной плате');
+
+const denseFit = analyzeCncBoard(dense);
+close(denseFit.minGap, .5, .08);
+assert(!isolationFits(settings({ toolDiameter: .6, clearance: .1 }), denseFit));
+const picked = pickForBoard(settings({ toolDiameter: .6, clearance: .1 }), denseFit, dense);
+assert(isolationFits(picked, denseFit), 'подбор под плату даёт проходящую фрезу');
+assert.equal(buildCncJob(dense, picked).topLoops, 2);
+const shrunk = autoFitGaps(settings({ toolDiameter: .2, clearance: .4 }), denseFit, dense);
+assert(shrunk && shrunk.settings.clearance < .4 && isolationFits(shrunk.settings, denseFit),
+  'запас сам уменьшается, если текущая фреза ещё проходит');
+const lonely = newBoard(30, 30);
+lonely.entities.push({ kind: 'pad', id: 'p', x: 12, y: 12, size: 2, shape: 'round', drill: 0 });
+assert.equal(analyzeCncBoard(lonely).minGap, Infinity);
+assert.deepEqual(suggestIsolation(Infinity), { toolDiameter: .4, clearance: .15 });
+const edge = newBoard(20, 20);
+edge.entities.push({ kind: 'pad', id: 'edge', x: 1, y: 1, size: 2, shape: 'round', drill: 0 });
+const edgeA = analyzeCncBoard(edge);
+const edgeFit = autoFitGaps(settings({ originX: 0, originY: 0 }), edgeA, edge);
+assert(edgeFit && edgeFit.settings.originX > 0 && edgeFit.settings.originY > 0,
+  'отступы стола поднимаются, если медь у края');
 
 // Окно внутри медной окружности даёт второй замкнутый проход с внутренней стороны.
 const ring = newBoard(30, 30);
@@ -190,6 +225,12 @@ assert(ui.includes('Сверлить сверху') && ui.includes('контур
 assert(ui.includes('что за что отвечает') && ui.includes('00b_SHEMY_PARAMETROV.svg'), 'схемы объявлены в диалоге');
 assert(ui.includes('scheme-chip') && ui.includes('data-part="clearance"'), 'схемы интерактивные: чипы и узлы чертежа');
 assert(ui.includes('Готовность к экспорту') && ui.includes('role="progressbar"'), 'полоса прогресса проверки в диалоге');
+assert(ui.includes('data-part="gap"') && ui.includes('Разделение меди'), 'зазор разделения меди виден в диалоге');
+assert(ui.includes('Подобрать под эту плату') && ui.includes('подстраиваются под щели'), 'подбор зазоров под плату');
+const preview = renderToString(createElement(CncPreview, { doc, settings: settings(), job, side: 'top' }));
+assert(preview.includes('cnc-walk') && preview.includes('Старт — ход станка'), 'предпросмотр хода станка');
+assert(preview.includes('cnc-preview-kerf') && preview.includes('cnc-walk-tool'), 'канавка реза и фреза на превью');
+assert(preview.includes('Разделение меди') && preview.includes('0.7'), 'на превью указан зазор разделения');
 const exportUi = renderToString(createElement(ExportDialog, {
   onGerber: () => {}, onPng: () => {}, onLay6: () => {}, onCnc: () => {}, onClose: () => {},
 }));

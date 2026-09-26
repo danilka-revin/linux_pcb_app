@@ -119,13 +119,18 @@ export function isolationScheme(s: CncSettings): BuiltScheme {
   const o = 7 + s.toolDiameter * 4 + s.clearance * 8;
   const cutR = Math.max(3.5, s.toolDiameter * 5);
   const depthPx = Math.max(6, s.isolationDepth * 28);
-  const svg = `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 320 200" class="scheme-svg-root" role="img" aria-label="Схема изоляционной фрезеровки">${arrDefs(arr)}
+  const need = s.toolDiameter + 2 * s.clearance;
+  const gapW = 118;
+  const kW = Math.max(10, need > 0 ? (s.toolDiameter / need) * gapW : gapW);
+  const cW = Math.max(0, (gapW - kW) / 2);
+  const yG = 206, hG = 16, xC1 = 28, wC = 58, xGap = xC1 + wC, xC2 = xGap + gapW;
+  const svg = `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 320 248" class="scheme-svg-root" role="img" aria-label="Схема изоляционной фрезеровки">${arrDefs(arr)}
     ${T(86, 12, 'Сверху: обход меди')}
-    ${G('copper', R(42, 62, 88, 26, 'sch-copper', 13) + T(86, 79, 'медь K1/K2', 'sch-copper-text'))}
-    ${G('path', R(42 - o, 62 - o, 88 + o * 2, 26 + o * 2, 'sch-path', 13 + o))}
-    ${G('toold', C(86, 62 - o, cutR, 'sch-tool') + dimH(86 - cutR, 86 + cutR, 62 - o - cutR - 8, `Ø ${num(s.toolDiameter)}`, arr, undefined, -6))}
-    ${G('clearance', arrLine(60, 62, 60, 62 - o, arr) + T(55, 62 - o / 2 + 3, `зазор ${num(s.clearance)}`, 'sch-text', 'end'))}
-    ${G('path', T(86, 112, 'контуры фрезы: медь', 'sch-path-text') + T(86, 124, '+ радиус + зазор', 'sch-path-text'))}
+    ${G('copper', R(42, 54, 88, 26, 'sch-copper', 13) + T(86, 71, 'медь K1/K2', 'sch-copper-text'))}
+    ${G('path', R(42 - o, 54 - o, 88 + o * 2, 26 + o * 2, 'sch-path', 13 + o))}
+    ${G('toold', C(86, 54 - o, cutR, 'sch-tool') + dimH(86 - cutR, 86 + cutR, 54 - o - cutR - 8, `Ø ${num(s.toolDiameter)}`, arr, undefined, -6))}
+    ${G('clearance', arrLine(60, 54, 60, 54 - o, arr) + T(55, 54 - o / 2 + 3, `запас ${num(s.clearance)}`, 'sch-text', 'end'))}
+    ${G('path', T(86, 104, 'центр фрезы: медь', 'sch-path-text') + T(86, 116, '+ радиус + запас', 'sch-path-text'))}
     ${T(216, 12, 'Сбоку: глубина и подача')}
     ${R(180, 66, 118, 26, 'sch-board')}
     ${G('copper', R(180, 60, 118, 6, 'sch-copper'))}
@@ -134,25 +139,33 @@ export function isolationScheme(s: CncSettings): BuiltScheme {
     ${G('feed', dimH(250, 302, 34, `F${num(s.isolationFeed)}`, arr, undefined, 12))}
     ${G('plunge', arrLine(312, 26, 312, 62, arr) + T(308, 22, `врез F${num(s.isolationPlunge)}`, 'sch-text', 'end'))}
     ${G('rpm', T(186, 108, `шпиндель S${num(s.isolationRpm)} об/мин`, 'sch-text', 'start'))}
-    ${T(160, 148, 'V-фреза: ширина реза — это ширина НА глубине Z,', 'sch-warn-text')}
-    ${T(160, 161, 'а не диаметр хвостовика.', 'sch-warn-text')}
-    ${T(160, 178, 'Это одна изоляционная дорожка, а не полная зачистка меди.', 'sch-warn-text')}
-    ${T(160, 191, 'Остатки фольги зачищаются отдельно.', 'sch-warn-text')}
+    ${T(160, 136, 'V-фреза: ширина реза — это ширина НА глубине Z, не хвостовик.', 'sch-warn-text')}
+    ${T(160, 149, 'Одна канавка вокруг меди, не полная зачистка фольги.', 'sch-warn-text')}
+    ${T(160, 168, 'Между двумя дорожками: запас + рез + запас')}
+    ${G('copper', R(xC1, yG, wC, hG, 'sch-copper', 3) + T(xC1 + wC / 2, yG + 12, 'медь', 'sch-copper-text') +
+      R(xC2, yG, wC, hG, 'sch-copper', 3) + T(xC2 + wC / 2, yG + 12, 'медь', 'sch-copper-text'))}
+    ${G('clearance', R(xGap, yG, cW, hG, 'sch-keep') + R(xGap + cW + kW, yG, Math.max(0, gapW - cW - kW), hG, 'sch-keep'))}
+    ${G('toold', R(xGap + cW, yG, kW, hG, 'sch-kerf') + C(xGap + cW + kW / 2, yG + hG / 2, Math.min(7, kW / 2), 'sch-tool'))}
+    ${G('gap', dimH(xGap, xC2, yG - 10, `разделение ${num(need)} мм`, arr, undefined, -6) +
+      T(xGap + cW / 2, yG + 28, s.clearance ? `запас ${num(s.clearance)}` : '', 'sch-text') +
+      T(xGap + cW + kW / 2, yG + 28, `рез Ø${num(s.toolDiameter)}`, 'sch-cut-text') +
+      T(xGap + cW + kW + Math.max(0, gapW - cW - kW) / 2, yG + 28, s.clearance ? `запас ${num(s.clearance)}` : '', 'sch-text'))}
   </svg>`;
   return {
     id: 'iso',
     title: '2. Изоляция: что за что отвечает',
     svg,
-    caption: 'Диаметр + зазор определяют, где пройдёт фреза; глубина и подача — как она режет.',
+    caption: `Разделение меди ${num(need)} мм = рез Ø${num(s.toolDiameter)} + запас ${num(s.clearance)} мм с двух сторон.`,
     parts: [
-      { id: 'toold', label: 'диаметр фрезы', hint: `Эффективный диаметр реза ${num(s.toolDiameter)} мм: половина уходит на компенсацию контура. Меньше диаметр — тоньше щели между дорожками, но медленнее.` },
-      { id: 'clearance', label: 'зазор до меди', hint: `Воздух ${num(s.clearance)} мм между краем меди и фрезой. Меньше зазор — ближе к меди, но легче задеть площадку.` },
+      { id: 'toold', label: 'ширина реза', hint: `Фреза снимает полосу ${num(s.toolDiameter)} мм. Для V-фрезы это ширина НА глубине реза, не диаметр хвостовика.` },
+      { id: 'clearance', label: 'запас до меди', hint: `Воздух ${num(s.clearance)} мм между краем проектной меди и фрезой, чтобы не задеть дорожку.` },
+      { id: 'gap', label: 'разделение меди', hint: `Между двумя дорожками нужно минимум ${num(need)} мм свободного места: запас ${num(s.clearance)} + рез ${num(s.toolDiameter)} + запас ${num(s.clearance)}. Это и есть зазор разделения меди.` },
       { id: 'depth', label: 'глубина реза', hint: `Фреза опускается на Z-${num(s.isolationDepth)} от поверхности — снимает фольгу (обычно 0,05…0,2 мм).` },
       { id: 'feed', label: 'подача XY', hint: `Скорость движения фрезы в плоскости — ${num(s.isolationFeed)} мм/мин. Больше — быстрее, но сильнее нагрузка.` },
       { id: 'plunge', label: 'врезание Z', hint: `Скорость погружения в материал — ${num(s.isolationPlunge)} мм/мин. Держите меньше подачи XY.` },
       { id: 'rpm', label: 'обороты S', hint: `Шпиндель ${num(s.isolationRpm)} об/мин. Универсального значения нет — сверяйтесь со своим станком и фрезой.` },
       { id: 'copper', label: 'медь', hint: 'Дорожки и площадки сначала объединяются, чтобы фреза не разрезала их электрическое соединение.' },
-      { id: 'path', label: 'контур фрезы', hint: 'Траектория центра фрезы: снаружи объединённой меди на радиус инструмента + указанный зазор.' },
+      { id: 'path', label: 'ход фрезы', hint: 'Траектория центра фрезы: снаружи объединённой меди на радиус инструмента + указанный запас.' },
     ],
   };
 }
@@ -370,6 +383,8 @@ const STANDALONE_STYLE = `
   .sch-safe { stroke: #2e9e4f; stroke-width: 1.4; stroke-dasharray: 6 3; }
   .sch-cut { stroke: #d84a3c; stroke-width: 1.3; fill: none; }
   .sch-cut-text { fill: #d84a3c; font-size: 8.5px; }
+  .sch-kerf { fill: #3d2418; stroke: #d84a3c; stroke-width: 0.8; }
+  .sch-keep { fill: #f7edd4; stroke: none; }
   .sch-cut-dash { stroke: #d84a3c; stroke-width: 1; stroke-dasharray: 4 3; }
   .sch-clamp { fill: #9aa7b4; stroke: #6b7885; stroke-width: 1; }
   .sch-sel { fill: #d9edf7; stroke: #0f9db8; stroke-width: 1.6; }
