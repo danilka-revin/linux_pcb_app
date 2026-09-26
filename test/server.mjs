@@ -21,6 +21,12 @@ if (ver.short !== 'deadbee') throw new Error('version: ' + JSON.stringify(ver));
 
 const page = await (await fetch(url + '/')).text();
 if (!page.includes('<title>ok</title>')) throw new Error('index не отдался');
+const spa = await fetch(url + '/projects/123');
+if (spa.status !== 200 || !(await spa.text()).includes('<title>ok</title>')) throw new Error('SPA-навигация должна возвращать index.html');
+const missingAsset = await fetch(url + '/assets/missing.js');
+if (missingAsset.status !== 404 || (await missingAsset.text()).includes('<title>ok</title>')) throw new Error('отсутствующий скрипт не должен маскироваться index.html');
+const malformedPath = await fetch(url + '/%E0%A4');
+if (malformedPath.status !== 400) throw new Error('некорректная URL-кодировка должна возвращать 400');
 const config = await (await fetch(url + '/api/cloud/config')).json();
 if (config.enabled !== false) throw new Error('обычный сервер не должен требовать учётные записи');
 const noCloud = await fetch(url + '/api/cloud/projects');
