@@ -1233,9 +1233,9 @@ export default function App({ cloudUser, onLogout }: { cloudUser?: CloudUser; on
       sizeText,
     ].filter(Boolean).join(' · ');
     const note = [
-      `Источник: PartReel (${selection.pageUrl}).`,
-      `Лицензия: ${selection.license}; атрибуция: PartReel.`,
-      selection.verified ? 'PartReel помечает запись как verified.' : 'Запись не отмечена PartReel как verified.',
+      `Источник: ${selection.source || 'PartReel'} (${selection.pageUrl}).`,
+      `Лицензия: ${selection.license}; атрибуция: ${selection.source || 'PartReel'}.`,
+      selection.verified ? 'Источник помечает запись как verified.' : 'Запись не отмечена как verified.',
       selection.provenance ? `Происхождение: ${selection.provenance}.` : '',
       ...fp.warnings,
       'Проверьте размеры по даташиту перед изготовлением.',
@@ -1246,7 +1246,7 @@ export default function App({ cloudUser, onLogout }: { cloudUser?: CloudUser; on
       bl: libBBox(fp.els),
       spec,
       note,
-      query: `PartReel:${selection.part.id}`,
+      query: `${selection.source || 'PartReel'}:${selection.part.id}`,
     };
   }, []);
 
@@ -2360,7 +2360,11 @@ export default function App({ cloudUser, onLogout }: { cloudUser?: CloudUser; on
             />
             </>
           ) : (
-            <FootprintCatalog onPlace={placeFromCatalog} onSave={saveCatalogToLibrary} />
+            <FootprintCatalog onPlace={placeFromCatalog} onSave={saveCatalogToLibrary} onExport={(selection) => {
+              const detail = detailFromCatalog(selection);
+              const macro = makeMacro(detail.name, detail.ents, { note: detail.note });
+              download(`${selection.part.id}.json`, new Blob([exportJSON({ v: 2, folders: [], macros: [macro] })], { type: 'application/json' }));
+            }} />
           )}
         </div>
       </>

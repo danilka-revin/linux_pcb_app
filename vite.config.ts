@@ -1,3 +1,4 @@
+import { handleModules } from './scripts/modules-api.mjs';
 import { defineConfig, type Plugin, type PreviewServer, type ProxyOptions, type ViteDevServer } from 'vite';
 import react from '@vitejs/plugin-react';
 import { parsePartReelIndex, searchPartReel } from './scripts/partreel-search.mjs';
@@ -14,6 +15,11 @@ async function fetchDevIndex() {
 }
 
 function installPartReelSearch(server: ViteDevServer | PreviewServer): void {
+  server.middlewares.use((req, res, next) => {
+    const url = new URL(req.url ?? '/', 'http://vite.local');
+    if (!url.pathname.startsWith('/api/modules/')) return next();
+    void handleModules(req, res, url).catch(next);
+  });
   server.middlewares.use('/api/footprints/search', (req, res) => {
     const request = req as unknown as { method?: string; url?: string };
     if (request.method !== 'GET') {
@@ -110,7 +116,7 @@ export default defineConfig({
     port: 5173,
     allowedHosts: true,
     proxy: {
-      '^/api/footprints/': footprintProxy,
+      '^/api/footprints/(detail/|raw)': footprintProxy,
       ...(cloudBackend ? { '^/api/cloud': { target: cloudBackend, changeOrigin: false } } : {}),
     },
   },
@@ -119,7 +125,7 @@ export default defineConfig({
     port: 4173,
     allowedHosts: true,
     proxy: {
-      '^/api/footprints/': footprintProxy,
+      '^/api/footprints/(detail/|raw)': footprintProxy,
       ...(cloudBackend ? { '^/api/cloud': { target: cloudBackend, changeOrigin: false } } : {}),
     },
   },
