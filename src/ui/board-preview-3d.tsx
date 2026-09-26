@@ -7,6 +7,7 @@ import { createComponentModel } from './component-model-3d';
 import { compTF } from '../pcb/expand';
 import { zOrdered } from '../pcb/render';
 import { BOARD_2D_THEMES, drawBoard2D, type Board2DThemeId } from './board-preview-2d';
+import { collectBoardHoles, createBoardGeometry } from './board-geometry-3d';
 
 /** Без полей и растяжения: вся текстура соответствует поверхности платы. */
 export function createBoardTexture(doc: Doc, themeId: Board2DThemeId, side: 'top' | 'bottom'): THREE.CanvasTexture {
@@ -173,8 +174,13 @@ export function BoardPreview3D({ doc, height = 520 }: { doc: Doc; width?: number
         const edgeMat = new THREE.MeshStandardMaterial({ color: theme.boardEdge, roughness: 0.8 });
         const topMat = new THREE.MeshStandardMaterial({ roughness: 0.65, metalness: 0.1 });
         const bottomMat = new THREE.MeshStandardMaterial({ roughness: 0.65, metalness: 0.1 });
-        const board = new THREE.Mesh(new THREE.BoxGeometry(doc.w, doc.h, thickness), [edgeMat, edgeMat, edgeMat, edgeMat, topMat, bottomMat]);
-        board.position.set(doc.w / 2, doc.h / 2, 0);
+        // Металлизация стенок отверстий: лужёная медь, видна насквозь.
+        const platedMat = new THREE.MeshStandardMaterial({ color: '#c9a35a', metalness: 0.8, roughness: 0.35 });
+        // Порядок материалов совпадает с BOARD_GROUP: верх, низ, торец/голые стенки, металлизация.
+        const { geometry: boardGeometry, holes } = createBoardGeometry(doc.w, doc.h, thickness, collectBoardHoles(doc));
+        const board = new THREE.Mesh(boardGeometry, [topMat, bottomMat, edgeMat, platedMat]);
+        board.name = 'board';
+        board.userData.holes = holes.length;
         // Присоединяем ресурсы до генерации текстур, чтобы catch их освободил.
         scene.add(board);
         topMat.map = createBoardTexture(doc, themeId, 'top');
@@ -275,7 +281,7 @@ export function BoardPreview3D({ doc, height = 520 }: { doc: Doc; width?: number
       <span className="bp3d-swatch" style={{ background: theme.copperTop }} /> Медь K1
       <span className="bp3d-swatch" style={{ background: theme.copperBottom }} /> K2
       <span className="bp3d-swatch" style={{ background: theme.board }} /> Подложка
-      <span>Корпуса с текстурами — приближённые, по типу и посадочному месту; не модели производителя. Сверловка показана на поверхности.</span>
+      <span>Корпуса с текстурами — приближённые, по типу и посадочному месту; не модели производителя. Отверстия сверловки — сквозные, металлизированные показаны медью.</span>
     </div>
   </div>;
 }
