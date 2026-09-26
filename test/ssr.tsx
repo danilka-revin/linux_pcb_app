@@ -104,6 +104,26 @@ if (html.includes('gen-fail')) throw new Error('SSR: панель деталей
   delete (globalThis as any).localStorage;
 }
 
+// предпросмотр платы — одна кнопка в шапке, а не три: режимы 2D и 3D
+// выбираются переключателем (правая узкая часть), окно общее
+{
+  const count = (needle: string) => html.split(needle).length - 1;
+  if (count('tb-split') !== 1) throw new Error('в шапке должна быть одна кнопка-переключатель предпросмотра');
+  for (const m of ['split-main', 'split-caret', 'Выбрать режим предпросмотра: 2D или 3D']) {
+    if (!html.includes(m)) throw new Error(`кнопка предпросмотра: не найдено «${m}»`);
+  }
+  // режимы живут в меню переключателя — отдельных кнопок 2D/3D в шапке нет
+  for (const m of ['title="2D предпросмотр — Sprint Layout"', 'title="3D предпросмотр — объёмная плата"']) {
+    if (html.includes(m)) throw new Error(`в шапке осталась отдельная кнопка: ${m}`);
+  }
+  // подсказка основной части показывает режим, который откроется
+  if (!html.includes('title="Предпросмотр платы: 2D — Sprint Layout"')) {
+    throw new Error('кнопка предпросмотра не подсказывает текущий режим');
+  }
+  const css = readFileSync('src/styles.css', 'utf8');
+  if (!/\.tb-split\s*\{[^}]*display:\s*flex/.test(css)) throw new Error('нет стилей кнопки-переключателя');
+}
+
 // быстрые кнопки — отдельные действия, а не пункты скрытого меню
 {
   const app = readFileSync('src/App.tsx', 'utf8');

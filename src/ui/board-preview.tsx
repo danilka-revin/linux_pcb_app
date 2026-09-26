@@ -7,16 +7,18 @@ import { BoardPreview3D } from './board-preview-3d';
 
 export type PreviewTab = '2d' | '3d';
 
-export function BoardPreviewDialog({ doc, initialTab = '2d', onClose }: {
-  doc: Doc; initialTab?: PreviewTab; onClose: () => void;
+export function BoardPreviewDialog({ doc, initialTab = '2d', onTab, onClose }: {
+  doc: Doc; initialTab?: PreviewTab; onTab?: (tab: PreviewTab) => void; onClose: () => void;
 }) {
   const [tab, setTab] = useState<PreviewTab>(initialTab);
+  // запоминаем выбранный режим: кнопка тулбара откроет окно сразу в нём
+  const pick = (t: PreviewTab) => { setTab(t); onTab?.(t); };
   return <Modal title="Предпросмотр платы" className="board-preview-modal" onClose={onClose}
     foot={<><span className="muted">Только просмотр · Исходная плата не изменяется</span><button className="btn" onClick={onClose}>Закрыть</button></>}>
     <div className="preview-tabs">
       <div className="bp2d-segments" role="group" aria-label="Режим предпросмотра">
-        <button className={'btn' + (tab === '2d' ? ' primary' : '')} aria-pressed={tab === '2d'} onClick={() => setTab('2d')}>2D · Sprint Layout</button>
-        <button className={'btn' + (tab === '3d' ? ' primary' : '')} aria-pressed={tab === '3d'} onClick={() => setTab('3d')}>3D · Объёмный вид</button>
+        <button className={'btn' + (tab === '2d' ? ' primary' : '')} aria-pressed={tab === '2d'} onClick={() => pick('2d')}>2D · Sprint Layout</button>
+        <button className={'btn' + (tab === '3d' ? ' primary' : '')} aria-pressed={tab === '3d'} onClick={() => pick('3d')}>3D · Объёмный вид</button>
       </div>
       <span className="preview-document"><strong>{doc.name}</strong><span>{doc.w} × {doc.h} мм · {doc.entities.length} эл.</span></span>
     </div>

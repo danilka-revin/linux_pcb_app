@@ -17,10 +17,15 @@ const ready = async (page: Page) => {
   await expect(canvas(page)).toHaveCount(1);
   await expect(page.locator('.bp3d-message')).toHaveCount(0);
 };
+/** Единственная кнопка предпросмотра в шапке (правая узкая часть — выбор режима) */
+const previewToggle = (page: Page) => page.getByTitle('Выбрать режим предпросмотра: 2D или 3D', { exact: true });
+const previewMain = (page: Page) => page.locator('.toolbar .tb-split .tb-btn.split-main');
+const previewItem = (page: Page, name: string) => page.getByRole('menuitem', { name, exact: true });
 async function open3D(page: Page) {
   await page.addInitScript(d => localStorage.setItem('lauaut.autosave', JSON.stringify(d)), doc);
   await page.goto('/');
-  await page.getByTitle('3D предпросмотр — объёмная плата', { exact: true }).click();
+  await previewToggle(page).click();
+  await previewItem(page, '3D предпросмотр — объёмная плата').click();
 }
 
 // Inspect the actual WebGL framebuffer immediately after drawing. A blank canvas
@@ -122,5 +127,38 @@ test('unavailable WebGL shows an actionable error, retry works and 2D stays avai
   await ready(page);
   await page.getByRole('button', { name: '2D · Sprint Layout', exact: true }).click();
   await expect(page.locator('.bp2d-canvas-wrap canvas')).toBeVisible();
+  expect(errors).toEqual([]);
+});
+
+// Три кнопки шапки (2D, 3D и меню) сведены в одну: у неё две зоны — открыть
+// предпросмотр и выбрать режим.
+test('toolbar keeps one preview button for 2D and 3D', async ({ page }) => {
+  const errors: string[] = [];
+  page.on('pageerror', e => errors.push(e.message));
+  await page.addInitScript(d => localStorage.setItem('lauaut.autosave', JSON.stringify(d)), doc);
+  await page.goto('/');
+  const toolbar = page.locator('.toolbar');
+  await expect(toolbar.locator('.tb-split')).toHaveCount(1);
+  // отдельных кнопок 2D и 3D в шапке больше нет — режимы переехали в меню
+  await expect(toolbar.locator('.tb-btn[title^="2D предпросмотр"]')).toHaveCount(0);
+  await expect(toolbar.locator('.tb-btn[title^="3D предпросмотр"]')).toHaveCount(0);
+  await expect(previewMain(page)).toHaveAttribute('title', 'Предпросмотр платы: 2D — Sprint Layout');
+  // выбор 3D в переключателе открывает окно сразу в объёмном режиме
+  await previewToggle(page).click();
+  await previewItem(page, '3D предпросмотр — объёмная плата').click();
+  await expect(page.getByRole('button', { name: '3D · Объёмный вид', exact: true })).toHaveAttribute('aria-pressed', 'true');
+  await page.getByRole('button', { name: 'Закрыть', exact: true }).click();
+  await expect(page.locator('.board-preview-modal')).toHaveCount(0);
+  // кнопка помнит режим: основная часть открывает последний выбранный
+  await expect(previewMain(page)).toHaveAttribute('title', 'Предпросмотр платы: 3D — объёмная плата');
+  await previewMain(page).click();
+  await expect(page.getByRole('button', { name: '3D · Объёмный вид', exact: true })).toHaveAttribute('aria-pressed', 'true');
+  // переключение внутри окна тоже запоминается
+  await page.getByRole('button', { name: '2D · Sprint Layout', exact: true }).click();
+  await expect(page.locator('.bp2d-canvas-wrap canvas')).toBeVisible();
+  await page.getByRole('button', { name: 'Закрыть', exact: true }).click();
+  await expect(previewMain(page)).toHaveAttribute('title', 'Предпросмотр платы: 2D — Sprint Layout');
+  await previewMain(page).click();
+  await expect(page.getByRole('button', { name: '2D · Sprint Layout', exact: true })).toHaveAttribute('aria-pressed', 'true');
   expect(errors).toEqual([]);
 });

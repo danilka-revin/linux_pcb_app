@@ -30,7 +30,7 @@ import { download, makeZip } from './pcb/zip';
 
 // ЧПУ открывают редко; CAM и его интерфейс загружаются по запросу, не при старте редактора.
 const CncDialog = lazy(() => import('./ui/cnc').then((m) => ({ default: m.CncDialog })));
-// Предпросмотр 2D/3D — тяжёлый (Three.js), грузим лениво.
+// Предпросмотр платы (2D и 3D) — тяжёлый (Three.js), грузим лениво.
 const BoardPreviewDialog = lazy(() => import('./ui/board-preview').then((m) => ({ default: m.BoardPreviewDialog })));
 import { Ic } from './ui/icons';
 import {
@@ -46,7 +46,7 @@ import { GridDialog, GridQuickPanel, GridToolbar, gridOf } from './ui/grid';
 import { LibPreviewDialog } from './ui/libpreview';
 import { applyCustomColors, loadCustomColors, saveCustomColors, type CustomColors } from './ui/palette';
 import { UiBuilderDialog, useUpdater } from './ui/updater';
-import { MenuBtn, Modal } from './ui/widgets';
+import { MenuBtn, Modal, SplitBtn } from './ui/widgets';
 import { ProgressBar } from './ui/progress';
 import { cloudApi, cloudError, CloudError, type CloudProject, type CloudProjectDetail, type CloudUser } from './cloud/api';
 import { CloudAccountDialog, CloudProjectsDialog, cloudSaveLabel, type CloudSaveState } from './cloud/projects';
@@ -2233,16 +2233,19 @@ export default function App({ cloudUser, onLogout }: { cloudUser?: CloudUser; on
         </div>
       ),
       preview: (
+        // одна кнопка вместо трёх: клик открывает окно предпросмотра в том
+        // режиме, который смотрели последним, стрелка выбирает 2D или 3D
         <div className="tb-group" key="preview">
-          {tb('preview2d', '2D предпросмотр — Sprint Layout', () => { setBoardPreviewTab('2d'); setDialog('board-preview'); })}
-          {tb('preview3d', '3D предпросмотр — объёмная плата', () => { setBoardPreviewTab('3d'); setDialog('board-preview'); })}
-          <MenuBtn
-            title="Предпросмотр платы"
+          <SplitBtn
+            icon="preview"
+            title={boardPreviewTab === '3d'
+              ? 'Предпросмотр платы: 3D — объёмная плата'
+              : 'Предпросмотр платы: 2D — Sprint Layout'}
+            menuTitle="Выбрать режим предпросмотра: 2D или 3D"
+            onClick={() => setDialog('board-preview')}
             items={[
               { icon: 'preview2d', label: '2D предпросмотр — Sprint Layout', onClick: () => { setBoardPreviewTab('2d'); setDialog('board-preview'); } },
               { icon: 'preview3d', label: '3D предпросмотр — объёмная плата', onClick: () => { setBoardPreviewTab('3d'); setDialog('board-preview'); } },
-              { sep: true },
-              { icon: 'eye', label: 'Предпросмотр платы (2D / 3D)', onClick: () => { setBoardPreviewTab('2d'); setDialog('board-preview'); } },
             ]}
           />
         </div>
@@ -2300,7 +2303,9 @@ export default function App({ cloudUser, onLogout }: { cloudUser?: CloudUser; on
       </div>
     );
   }, [uiConf, uiOrder, defs, view.s, view.mir, activeCu, size, theme, updButton, saveFile, savePrimary,
-    cloudUser, activeCloud, cloudStatus, cloudMessage, undo, redo, fit, zoomAt, setDefs, closeApplication]);
+    cloudUser, activeCloud, cloudStatus, cloudMessage, undo, redo, fit, zoomAt, setDefs, closeApplication,
+    // подсказка единой кнопки предпросмотра показывает последний режим
+    boardPreviewTab]);
 
   // ---------------- док инструментов у холста ----------------
   // Группа «Инструменты» конструктора интерфейса управляет видимостью дока.
@@ -2620,7 +2625,8 @@ export default function App({ cloudUser, onLogout }: { cloudUser?: CloudUser; on
         <h2>Предпросмотр платы</h2>
         <ProgressBar label="Загружаем 3D предпросмотр…" indeterminate live meta="Three.js и текстуры платы подгружаются по запросу" />
       </div></div>}>
-        <BoardPreviewDialog doc={doc} initialTab={boardPreviewTab} onClose={() => setDialog(null)} />
+        <BoardPreviewDialog doc={doc} initialTab={boardPreviewTab}
+          onTab={setBoardPreviewTab} onClose={() => setDialog(null)} />
       </Suspense>}
       {dialog === 'panelize' && (
         <PanelizeDialog defX={doc.w + 2} defY={doc.h + 2} onOk={(c, r, gx, gy) => { panelize(c, r, gx, gy); setDialog(null); }} onClose={() => setDialog(null)} />
