@@ -1001,6 +1001,10 @@ canvas { display: block; }
   font: 11.5px/1.7 ui-monospace, 'Cascadia Code', Consolas, monospace; color: var(--text-2); }
 .cnc-file-list li { break-inside: avoid; overflow-wrap: anywhere; }
 @media (max-width: 680px) { .cnc-file-list { columns: 1; } }
+.cnc-preview-actions { margin: 14px 0 10px; padding: 12px; background: var(--surface-2); border: 1px solid var(--line); border-radius: 10px; }
+.cnc-preview-actions h4 { margin: 0 0 4px; font-size: 13px; }
+.cnc-preview-actions .muted { color: var(--muted); font-size: 12px; margin: 0 0 8px; }
+.cnc-preview-actions .radio-row { margin: 8px 0 0; }
 
 /* ---------- интерактивные схемы «что за что отвечает» (диалог ЧПУ) ---------- */
 .scheme { margin: 10px 0 4px; padding: 10px 12px 8px; background: var(--surface-2);

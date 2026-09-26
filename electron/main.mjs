@@ -50,11 +50,23 @@ function createWindow(url) {
   mainWindow.on('closed', () => { mainWindow = null; });
   Menu.setApplicationMenu(null);
   mainWindow.once('ready-to-show', () => mainWindow.show());
+  const origin = new URL(url).origin;
   mainWindow.webContents.setWindowOpenHandler(({ url: u }) => {
+    try {
+      const parsed = new URL(u);
+      // Разрешаем предпросмотр ЧПУ в отдельном окне: about:blank и same-origin попапы.
+      if (parsed.protocol === 'about:' || parsed.protocol === 'blob:' || parsed.origin === origin) {
+        return { action: 'allow' };
+      }
+    } catch {
+      // about:blank может не парситься как URL — разрешаем.
+      if (u === 'about:blank' || u.startsWith('about:blank') || u.startsWith('blob:')) {
+        return { action: 'allow' };
+      }
+    }
     shell.openExternal(u);
     return { action: 'deny' };
   });
-  const origin = new URL(url).origin;
   mainWindow.webContents.on('will-navigate', (e, u) => {
     if (!u.startsWith(origin)) {
       e.preventDefault();
