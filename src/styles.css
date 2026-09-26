@@ -343,12 +343,18 @@ button { font: inherit; color: inherit; background: none; border: none; }
 .pane-full { display: flex; flex-direction: column; min-height: 0; overflow: hidden; }
 
 /* ---------- основная раскладка ---------- */
-.main { flex: 1; display: flex; min-height: 0; }
+.main { flex: 1; display: flex; min-height: 0; overflow: hidden; }
 .side {
   width: 250px; background: var(--surface); border-right: 1px solid var(--line);
-  display: flex; flex-direction: column; overflow: hidden; flex: none;
+  display: flex; flex-direction: column; min-height: 0; overflow: hidden; flex: none;
 }
-.side.right { width: 274px; border-right: none; border-left: 1px solid var(--line); overflow-y: auto; }
+/* Прокручивается именно содержимое правой панели. Так настройки трассировки
+   остаются доступны при невысоком окне, а холст и строка состояния не едут. */
+.side.right { width: 274px; border-right: none; border-left: 1px solid var(--line); }
+.side.right > .pane-full {
+  flex: 1 1 auto; min-height: 0; overflow-x: hidden; overflow-y: auto;
+  overscroll-behavior: contain; scrollbar-gutter: stable;
+}
 .side h3 {
   margin: 0; padding: 10px 12px 5px; font-size: 10px; text-transform: uppercase;
   letter-spacing: 1.1px; color: var(--muted); font-weight: 600;
@@ -1195,7 +1201,13 @@ canvas { display: block; }
 .route-variant dl > div { display: flex; justify-content: space-between; gap: 8px; margin: 6px 0; }
 .route-variant dd { margin: 0; font-weight: 600; }
 .route-variant .route-msg { margin: 0; }
-.route-choice-modal .layout-preview { max-height: 24vh; }
+/* Не один общий снимок, а свой холст в каждой карточке: стратегии можно
+   сравнивать рядом, не переключая радиокнопки. */
+.route-variant .layout-preview {
+  width: 100%; max-height: none; aspect-ratio: 5 / 2; margin: 2px 0 0;
+  border: 1px solid var(--line); border-radius: 6px;
+}
+.route-preview-note { margin-bottom: 0; }
 .auto-layout-modal .foot { flex-wrap: wrap; position: sticky; bottom: -20px; background: var(--surface); padding: 12px 0 4px; }
 @media (max-width: 720px) {
   .route-variants { grid-template-columns: 1fr; }

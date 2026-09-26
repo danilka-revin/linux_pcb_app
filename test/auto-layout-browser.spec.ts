@@ -53,6 +53,20 @@ test('placement: preview is non-destructive, cancel, parameter invalidation, app
   expect(errors).toEqual([]);
 });
 
+test('right settings pane scrolls to all routing options', async ({ page }) => {
+  await open(page);
+  await page.getByRole('toolbar', { name: 'Инструменты' }).getByRole('button', { name: /^Автотрассировка/ }).click();
+
+  const pane = page.locator('.side.right > .pane-full');
+  await expect(pane).toHaveCSS('overflow-y', 'auto');
+  const before = await pane.evaluate((el) => ({ top: el.scrollTop, height: el.scrollHeight, client: el.clientHeight }));
+  expect(before.height).toBeGreaterThan(before.client);
+
+  await pane.evaluate((el) => { el.scrollTop = el.scrollHeight; });
+  await expect.poll(() => pane.evaluate((el) => el.scrollTop)).toBeGreaterThan(0);
+  await expect(page.getByRole('button', { name: 'Настроить…', exact: true })).toBeInViewport();
+});
+
 test('group routing: three summaries, selection preview, cancel, apply chosen result, undo/redo', async ({ page }) => {
   const errors: string[] = [];
   page.on('pageerror', e => errors.push(e.message));
@@ -65,8 +79,9 @@ test('group routing: three summaries, selection preview, cancel, apply chosen re
   // Editor hotkeys must not mutate the board underneath the choice dialog.
   await page.keyboard.press('Control+a');
   await page.keyboard.press('Delete');
+  await expect(dialog.getByRole('img', { name: /^Предпросмотр варианта/ })).toHaveCount(3);
   await dialog.getByRole('radio').nth(2).check();
-  await expect(dialog.getByRole('img')).toHaveAttribute('aria-label', 'Предпросмотр варианта 3');
+  await expect(dialog.getByRole('img', { name: 'Предпросмотр варианта 3' })).toBeVisible();
   expect(await saved(page)).toEqual(doc);
   await dialog.getByRole('button', { name: 'Отмена — оставить плату' }).click();
   await expect(dialog).toHaveCount(0);

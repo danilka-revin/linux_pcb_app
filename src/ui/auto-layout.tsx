@@ -95,7 +95,6 @@ export function RouteVariantsDialog({ doc, variants, onApply, onClose }: {
 }) {
   const [chosen, setChosen] = useState(0);
   const r = variants[chosen];
-  const preview = useMemo(() => ({ ...doc, entities: [...doc.entities, ...r.ents] }), [doc, r]);
   const totalGroups = doc.nets?.length ?? 0;
   return <Modal title="Выберите вариант трассировки групп" className="auto-layout-modal route-choice-modal" onClose={onClose} foot={<>
     <button className="btn" onClick={onClose}>Отмена — оставить плату</button>
@@ -106,6 +105,10 @@ export function RouteVariantsDialog({ doc, variants, onApply, onClose }: {
       {variants.map((v, i) => <label key={v.strategy} className={'route-variant' + (i === chosen ? ' selected' : '')}>
         <strong><input type="radio" name="route-variant" checked={i === chosen} onChange={() => setChosen(i)} /> {i + 1}. {v.title}</strong>
         <span className="hint">{v.description}</span>
+        <LayoutPreview
+          doc={{ ...doc, entities: [...doc.entities, ...v.ents] }}
+          label={`Предпросмотр варианта ${i + 1}`}
+        />
         <dl>
           <div><dt>Групп соединено</dt><dd>{totalGroups - v.unresolved.length} / {totalGroups}</dd></div>
           <div><dt>Осталось связей</dt><dd>{v.missing}</dd></div>
@@ -116,8 +119,7 @@ export function RouteVariantsDialog({ doc, variants, onApply, onClose }: {
         <small className="variant-note">{v.sameAs !== undefined ? `Геометрия совпала с вариантом ${v.sameAs + 1}.` : 'Отдельный результат стратегии.'}</small>
       </label>)}
     </div>
-    <LayoutPreview doc={preview} label={`Предпросмотр варианта ${chosen + 1}`} />
-    <p className="hint">Вид сверху · K1 и K2 показаны цветами слоёв. Ширина, зазоры и запрет верхнего слоя соблюдаются во всех стратегиях. Минимум длины или переходов не гарантируется.</p>
+    <p className="hint route-preview-note">В каждом варианте выше показан отдельный вид сверху: K1 и K2 — цветами слоёв. Ширина, зазоры и запрет верхнего слоя соблюдаются во всех стратегиях. Минимум длины или переходов не гарантируется.</p>
     {r.unresolved.length > 0 && <p role="status">Не разведены: {r.unresolved.map((n) => `«${n.name}» — ${n.missing}`).join('; ')}. Можно применить частичный результат, затем изменить параметры и продолжить.</p>}
     {!r.ents.length && <p role="status">{r.missing ? 'Новых путей не найдено. Измените параметры трассировки или размещение.' : 'Ничего добавлять не нужно: группы уже соединены.'}</p>}
   </Modal>;
