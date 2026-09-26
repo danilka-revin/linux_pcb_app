@@ -24,6 +24,17 @@ async function openRouting(page: Page) {
   await expect(page.getByRole('dialog', { name: 'Выберите вариант трассировки групп' })).toBeVisible();
 }
 
+test('right settings panel scrolls through long tool settings', async ({ page }) => {
+  await open(page);
+  const tools = page.getByRole('toolbar', { name: 'Инструменты' });
+  await tools.getByRole('button', { name: /^Автотрассировка/ }).click();
+
+  const panel = page.locator('.side.right > .pane-full');
+  await expect.poll(() => panel.evaluate(el => el.scrollHeight - el.clientHeight)).toBeGreaterThan(0);
+  await panel.evaluate(el => { el.scrollTop = el.scrollHeight; });
+  await expect.poll(() => panel.evaluate(el => el.scrollTop)).toBeGreaterThan(0);
+});
+
 test('placement: preview is non-destructive, cancel, parameter invalidation, apply and single undo', async ({ page }) => {
   const errors: string[] = [];
   page.on('pageerror', e => errors.push(e.message));

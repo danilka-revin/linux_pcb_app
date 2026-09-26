@@ -2188,7 +2188,15 @@ export default function App({ cloudUser, onLogout }: { cloudUser?: CloudUser; on
           >
             <Ic n="gen" />
           </button>
-          {tb('panel', 'Автокомпоновка компонентов', () => setDialog('autoplace'))}
+          <button
+            type="button"
+            className="tb-btn wide"
+            title="Автокомпоновка компонентов"
+            aria-label="Автокомпоновка компонентов"
+            onClick={() => setDialog('autoplace')}
+          >
+            <Ic n="panel" /><span>Компоновка</span>
+          </button>
         </div>
       ),
       undo: (

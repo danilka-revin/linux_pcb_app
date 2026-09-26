@@ -348,7 +348,11 @@ button { font: inherit; color: inherit; background: none; border: none; }
   width: 250px; background: var(--surface); border-right: 1px solid var(--line);
   display: flex; flex-direction: column; overflow: hidden; flex: none;
 }
-.side.right { width: 274px; border-right: none; border-left: 1px solid var(--line); overflow-y: auto; }
+.side.right { width: 274px; border-right: none; border-left: 1px solid var(--line); overflow: hidden; }
+/* Панель свойств длиннее доступной высоты (например, настройки автотрассировки).
+   Скролл должен быть у внутренней колонки, а не у внешнего flex-контейнера:
+   иначе .pane-full обрезает содержимое и колесо не прокручивает настройки. */
+.side.right > .pane-full { flex: 1; overflow-x: hidden; overflow-y: auto; }
 .side h3 {
   margin: 0; padding: 10px 12px 5px; font-size: 10px; text-transform: uppercase;
   letter-spacing: 1.1px; color: var(--muted); font-weight: 600;
