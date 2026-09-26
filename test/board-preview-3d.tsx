@@ -6,6 +6,7 @@ import { componentPackage, createComponentModel } from '../src/ui/component-mode
 import { EXAMPLES, FAMILY_HELP, generate } from '../src/pcb/gen';
 import { compTF, libElsToEnts } from '../src/pcb/expand';
 import type { Comp, Doc } from '../src/pcb/model';
+import { BOARD_GROUP, collectBoardHoles, createBoardGeometry, holeSegments } from '../src/ui/board-geometry-3d';
 import { BoardPreview3D, componentBody, createBoardTexture, disposePreviewScene } from '../src/ui/board-preview-3d';
 
 const comp: Comp = { id: 'comp', kind: 'comp', lib: '', name: 'U1', x: 10, y: 20, rot: 90, side: 'top', bl: [0, 0, 4, 6], ents: [
@@ -101,6 +102,79 @@ assert.equal(scene.children.length, 0);
 disposePreviewScene(scene);
 assert.deepEqual(counts, { geometry: 1, material: 1, texture: 1 });
 
+// Real through-holes: watertight mesh, no cap over drill, outward/inward normals, fast on big boards.
+function checkBoard(w: number, h: number, t: number, holes: ReturnType<typeof collectBoardHoles>, label: string) {
+  const started = performance.now();
+  const { geometry, holes: cut } = createBoardGeometry(w, h, t, holes);
+  const elapsed = performance.now() - started;
+  const pos = geometry.getAttribute('position'), nrm = geometry.getAttribute('normal');
+  const index = geometry.getIndex()!;
+  const key = (i: number) => `${pos.getX(i).toFixed(4)},${pos.getY(i).toFixed(4)},${pos.getZ(i).toFixed(4)}`;
+  const edges = new Map<string, number>();
+  const a = new THREE.Vector3(), b = new THREE.Vector3(), c = new THREE.Vector3(), n = new THREE.Vector3();
+  let topArea = 0;
+  const groupOf = (i: number) => geometry.groups.find(g => i >= g.start && i < g.start + g.count)!.materialIndex;
+  for (let i = 0; i < index.count; i += 3) {
+    const [i0, i1, i2] = [index.getX(i), index.getX(i + 1), index.getX(i + 2)];
+    a.fromBufferAttribute(pos, i0); b.fromBufferAttribute(pos, i1); c.fromBufferAttribute(pos, i2);
+    const face = new THREE.Vector3().subVectors(b, a).cross(new THREE.Vector3().subVectors(c, a));
+    if (face.lengthSq() < 1e-18) continue;
+    n.fromBufferAttribute(nrm, i0);
+    assert(face.dot(n) > 0, `${label}: winding matches normal`);
+    if (groupOf(i) === BOARD_GROUP.top) {
+      topArea += face.length() / 2;
+      assert(Math.abs(a.z - t / 2) < 1e-6 && n.z === 1, `${label}: top cap is flat`);
+    }
+    for (const [p, q] of [[i0, i1], [i1, i2], [i2, i0]]) {
+      const [kp, kq] = [key(p), key(q)];
+      const e = kp < kq ? `${kp}|${kq}` : `${kq}|${kp}`;
+      edges.set(e, (edges.get(e) || 0) + 1);
+    }
+  }
+  for (const [e, count] of edges) assert.equal(count, 2, `${label}: open or T-junction edge ${e}`);
+  const holeArea = cut.reduce((s, hole) => { const k = holeSegments(hole.r); const R = hole.r / Math.cos(Math.PI / k); return s + k * R * R * Math.sin(2 * Math.PI / k) / 2; }, 0);
+  assert(Math.abs(topArea - (w * h - holeArea)) < 1e-3 * w * h / 1000 + 1e-6, `${label}: top area ${topArea} excludes drills`);
+  geometry.dispose();
+  return { cut, elapsed };
+}
+{
+  const drilled: Doc = { name: 'holes', w: 30, h: 30, entities: [
+    { id: 'p', kind: 'pad', x: 10, y: 10, size: 2, drill: 1, shape: 'round' },
+    { id: 'v', kind: 'via', x: 10, y: 10, size: 0.8, drill: 0.4 },               // concentric with the pad
+    { id: 'n', kind: 'pad', x: 20, y: 10, size: 2, drill: 0.8, shape: 'square', noPlate: true },
+    { id: 'm', kind: 'hole', x: 5, y: 5, d: 3 },
+    { id: 'edge', kind: 'hole', x: 0.5, y: 10, d: 3 },                           // crosses board edge
+    { id: 'smd', kind: 'smd', x: 15, y: 15, w: 1, h: 1, rot: 0, layer: 'k1' },
+    comp,
+  ] };
+  const holes = collectBoardHoles(drilled);
+  assert.equal(holes.length, 4, 'pad, unplated pad, mounting hole and component pad; duplicate/edge skipped');
+  assert.deepEqual(holes.find(h => h.x === 10 && h.y === 10), { x: 10, y: 10, r: 0.5, plated: true });
+  assert.equal(holes.find(h => h.x === 20)!.plated, false, 'noPlate pad has bare wall');
+  assert.equal(holes.find(h => h.x === 5)!.plated, false, 'mounting hole has bare wall');
+  assert(holes.some(h => Math.abs(h.x - 7) < 1e-9 && Math.abs(h.y - 22) < 1e-9 && h.r === 0.3), 'component pad drilled at world position');
+  const { cut } = checkBoard(drilled.w, drilled.h, 1.6, holes, 'basic');
+  assert.equal(cut.length, 4);
+  const { geometry } = createBoardGeometry(30, 30, 1.6, holes);
+  assert.deepEqual(geometry.groups.map(g => g.materialIndex), [0, 1, 2, 3]);
+  assert(geometry.groups[BOARD_GROUP.plated].count > 0, 'plated walls exist');
+  geometry.computeBoundingBox();
+  assert(geometry.boundingBox!.min.distanceTo(new THREE.Vector3(0, 0, -0.8)) < 1e-6, 'board corner at origin');
+  assert(geometry.boundingBox!.max.distanceTo(new THREE.Vector3(30, 30, 0.8)) < 1e-6, 'board size and thickness');
+  geometry.dispose();
+  checkBoard(10, 10, 1, [], 'no holes');
+  // 60×60 DIP-like grid (3600 holes): must use the partition, not one quadratic earcut.
+  const grid: Doc = { name: 'grid', w: 160, h: 160, entities: [] };
+  for (let i = 0; i < 60; i++) for (let j = 0; j < 60; j++) grid.entities.push({ id: `g${i}_${j}`, kind: 'pad', x: 5 + i * 2.54, y: 5 + j * 2.54, size: 1.6, drill: 0.8, shape: 'round' });
+  const big = checkBoard(160, 160, 1.6, collectBoardHoles(grid), 'grid');
+  assert.equal(big.cut.length, 3600);
+  assert(big.elapsed < 3000, `grid triangulation took ${big.elapsed.toFixed(0)} ms`);
+  // Staggered holes whose projections overlap on both axes still triangulate.
+  const stagger: Doc = { name: 'stagger', w: 40, h: 40, entities: [] };
+  for (let i = 0; i < 400; i++) stagger.entities.push({ id: `s${i}`, kind: 'hole', x: 2 + (i % 20) * 1.8 + (Math.floor(i / 20) % 2) * 0.9, y: 2 + Math.floor(i / 20) * 1.8, d: 1.2 });
+  checkBoard(40, 40, 1.6, collectBoardHoles(stagger), 'stagger');
+}
+
 const html = renderToString(createElement(BoardPreview3D, { doc }));
 for (const text of ['Загрузка 3D-платы', 'aria-busy="true"', 'Вписать 3D', 'Каркас']) assert(html.includes(text));
-console.log('3D PREVIEW OK: texture aspect, transformed components, drill marks, backside, disposal, SSR, all generated package models and textures');
+console.log('3D PREVIEW OK: texture aspect, transformed components, drill marks, real through-holes, backside, disposal, SSR, all generated package models and textures');

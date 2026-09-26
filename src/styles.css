@@ -1177,3 +1177,6 @@ canvas { display: block; }
 .bp3d-message p { max-width: 540px; overflow-wrap: anywhere; }
 .bp3d-row select { max-width: 100%; }
 @media (max-width: 650px) { .bp3d-row label { max-width: 100%; flex-wrap: wrap; } }
+.bp3d-export-label { font-size: 12px; color: var(--muted, inherit); }
+.bp3d-export-note { font-size: 11px; opacity: .7; }
+.bp3d-export-error { font-size: 12px; color: #e5484d; }

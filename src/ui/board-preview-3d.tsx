@@ -7,6 +7,9 @@ import { createComponentModel } from './component-model-3d';
 import { compTF } from '../pcb/expand';
 import { zOrdered } from '../pcb/render';
 import { BOARD_2D_THEMES, drawBoard2D, type Board2DThemeId } from './board-preview-2d';
+import { collectBoardHoles, createBoardGeometry } from './board-geometry-3d';
+import { buildExportRoot, exportBaseName, exportGLB, exportOBJZip, type Model3DFormat } from './board-export-3d';
+import { download } from '../pcb/zip';
 
 /** Без полей и растяжения: вся текстура соответствует поверхности платы. */
 export function createBoardTexture(doc: Doc, themeId: Board2DThemeId, side: 'top' | 'bottom'): THREE.CanvasTexture {
@@ -71,6 +74,8 @@ export function BoardPreview3D({ doc, height = 520 }: { doc: Doc; width?: number
   const [ready, setReady] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [attempt, setAttempt] = useState(0);
+  const [exporting, setExporting] = useState<Model3DFormat | null>(null);
+  const [exportError, setExportError] = useState<string | null>(null);
   const options = useRef({ showComponents, autoRotate, wireframe });
   options.current = { showComponents, autoRotate, wireframe };
   const theme = BOARD_2D_THEMES.find(t => t.id === themeId)!;
@@ -170,11 +175,17 @@ export function BoardPreview3D({ doc, height = 520 }: { doc: Doc; width?: number
         fill.position.set(-extent, extent, -extent * 2);
         scene.add(fill);
 
-        const edgeMat = new THREE.MeshStandardMaterial({ color: theme.boardEdge, roughness: 0.8 });
-        const topMat = new THREE.MeshStandardMaterial({ roughness: 0.65, metalness: 0.1 });
-        const bottomMat = new THREE.MeshStandardMaterial({ roughness: 0.65, metalness: 0.1 });
-        const board = new THREE.Mesh(new THREE.BoxGeometry(doc.w, doc.h, thickness), [edgeMat, edgeMat, edgeMat, edgeMat, topMat, bottomMat]);
-        board.position.set(doc.w / 2, doc.h / 2, 0);
+        // Имена материалов попадают в экспорт GLB/OBJ.
+        const edgeMat = new THREE.MeshStandardMaterial({ name: 'pcb_edge', color: theme.boardEdge, roughness: 0.8 });
+        const topMat = new THREE.MeshStandardMaterial({ name: 'pcb_top', roughness: 0.65, metalness: 0.1 });
+        const bottomMat = new THREE.MeshStandardMaterial({ name: 'pcb_bottom', roughness: 0.65, metalness: 0.1 });
+        // Металлизация стенок отверстий: лужёная медь, видна насквозь.
+        const platedMat = new THREE.MeshStandardMaterial({ name: 'pcb_plating', color: '#c9a35a', metalness: 0.8, roughness: 0.35 });
+        // Порядок материалов совпадает с BOARD_GROUP: верх, низ, торец/голые стенки, металлизация.
+        const { geometry: boardGeometry, holes } = createBoardGeometry(doc.w, doc.h, thickness, collectBoardHoles(doc));
+        const board = new THREE.Mesh(boardGeometry, [topMat, bottomMat, edgeMat, platedMat]);
+        board.name = 'board';
+        board.userData.holes = holes.length;
         // Присоединяем ресурсы до генерации текстур, чтобы catch их освободил.
         scene.add(board);
         topMat.map = createBoardTexture(doc, themeId, 'top');
@@ -244,6 +255,24 @@ export function BoardPreview3D({ doc, height = 520 }: { doc: Doc; width?: number
     });
   }, [autoRotate, showComponents, wireframe]);
 
+  // Экспорт того, что на экране: плата, текстуры и (если включены) детали.
+  const exportModel = async (format: Model3DFormat) => {
+    const board = sceneRef.current?.getObjectByName('board');
+    if (!board || exporting) return;
+    setExporting(format);
+    setExportError(null);
+    try {
+      const base = exportBaseName(doc.name);
+      const root = buildExportRoot(doc, board, componentsRef.current, format === 'glb' ? 0.001 : 1);
+      if (format === 'glb') download(`${base}_3d.glb`, await exportGLB(root));
+      else download(`${base}_3d_obj.zip`, await exportOBJZip(root, base));
+    } catch (cause) {
+      setExportError(cause instanceof Error ? cause.message : 'Не удалось экспортировать 3D-модель.');
+    } finally {
+      setExporting(null);
+    }
+  };
+
   return <div className="board-preview-3d">
     <div className="bp3d-toolbar">
       <div className="bp3d-row">
@@ -262,6 +291,19 @@ export function BoardPreview3D({ doc, height = 520 }: { doc: Doc; width?: number
         <label className="chk"><input type="checkbox" checked={wireframe} onChange={e => setWireframe(e.target.checked)} />Каркас</label>
         <button className="btn" disabled={!ready} onClick={() => resetRef.current?.()}>Вписать 3D</button>
       </div>
+      <div className="bp3d-row">
+        <span className="bp3d-export-label">Экспорт модели с текстурами:</span>
+        <button className="btn" disabled={!ready || !!exporting} onClick={() => void exportModel('glb')}
+          title="glTF 2.0 одним файлом: Blender, Windows 3D Viewer, онлайн-просмотрщики. Единицы — метры, ось Y вверх.">
+          {exporting === 'glb' ? 'Экспорт…' : 'GLB (glTF)'}
+        </button>
+        <button className="btn" disabled={!ready || !!exporting} onClick={() => void exportModel('obj')}
+          title="ZIP: .obj + .mtl + текстуры PNG. Единицы — миллиметры, ось Y вверх.">
+          {exporting === 'obj' ? 'Экспорт…' : 'OBJ + MTL (zip)'}
+        </button>
+        <span className="bp3d-export-note">{showComponents ? 'Плата и детали' : 'Только плата (детали скрыты)'}</span>
+        {exportError && <span className="bp3d-export-error" role="alert">{exportError}</span>}
+      </div>
       <div className="bp3d-hints">ЛКМ — вращение, ПКМ — панорама, колесо — масштаб. Плата {doc.w} × {doc.h} мм.</div>
     </div>
     <div className="bp3d-viewport" style={{ height: `min(${height}px, 50vh)` }}>
@@ -275,7 +317,7 @@ export function BoardPreview3D({ doc, height = 520 }: { doc: Doc; width?: number
       <span className="bp3d-swatch" style={{ background: theme.copperTop }} /> Медь K1
       <span className="bp3d-swatch" style={{ background: theme.copperBottom }} /> K2
       <span className="bp3d-swatch" style={{ background: theme.board }} /> Подложка
-      <span>Корпуса с текстурами — приближённые, по типу и посадочному месту; не модели производителя. Сверловка показана на поверхности.</span>
+      <span>Корпуса с текстурами — приближённые, по типу и посадочному месту; не модели производителя. Отверстия сверловки — сквозные, металлизированные показаны медью.</span>
     </div>
   </div>;
 }
