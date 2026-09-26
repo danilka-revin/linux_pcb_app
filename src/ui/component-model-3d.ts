@@ -95,10 +95,10 @@ export function createComponentModel(e: Comp, thickness: number): THREE.Group {
   else if (circle && ['led', 'electrolytic', 'capacitor', 'inductor'].includes(kind)) { cx = circle.x; cy = circle.y; w = h = circle.r * 2; }
   else if (pins.length > 3 && kind === 'ic') { w *= .7; h *= .85; }
   w = Math.max(.4, w); h = Math.max(.4, h);
-  const metal = new THREE.MeshStandardMaterial({ color: '#bac2cb', metalness: .75, roughness: .27 });
-  const gold = new THREE.MeshStandardMaterial({ color: '#d6ad51', metalness: .7, roughness: .3 });
-  const dark = new THREE.MeshStandardMaterial({ color: '#20232a', roughness: .8 });
-  const body = new THREE.MeshStandardMaterial({ roughness: .65 });
+  const metal = new THREE.MeshStandardMaterial({ name: 'metal', color: '#bac2cb', metalness: .75, roughness: .27 });
+  const gold = new THREE.MeshStandardMaterial({ name: 'gold', color: '#d6ad51', metalness: .7, roughness: .3 });
+  const dark = new THREE.MeshStandardMaterial({ name: 'plastic_dark', color: '#20232a', roughness: .8 });
+  const body = new THREE.MeshStandardMaterial({ name: `body_${kind}`, roughness: .65 });
   // Создаём текстуру только после присоединения материала к геометрии ниже.
   const mesh = (geometry: THREE.BufferGeometry, material: THREE.Material, x: number, y: number, z: number) => {
     const object = new THREE.Mesh(geometry, material); object.position.set(x, y, z); group.add(object); return object;
@@ -161,7 +161,7 @@ export function createComponentModel(e: Comp, thickness: number): THREE.Group {
     box(w * .3, h * .18, 1.5, metal, cx, cy + h * .32, 1.8);
   } else if (kind === 'inductor') {
     box(w, h, height, body);
-    const copper = new THREE.MeshStandardMaterial({ color: '#b77535', metalness: .65, roughness: .3 });
+    const copper = new THREE.MeshStandardMaterial({ name: 'copper_wire', color: '#b77535', metalness: .65, roughness: .3 });
     mesh(new THREE.TorusGeometry(Math.min(w, h) * .3, Math.min(w, h) * .13, 12, 32), copper, cx, cy, height + .15);
   } else if (kind === 'transistor' && !smd) {
     box(w, Math.max(1.3, h * .55), Math.max(4, w * .8), body);
