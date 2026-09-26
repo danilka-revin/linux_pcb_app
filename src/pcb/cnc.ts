@@ -8,6 +8,7 @@ import { expandDoc } from './expand';
 import { textPolylines } from './strokefont';
 import type { ZipFile } from './zip';
 import { cncRange, validateCncSettings, type CncSettings, type CncSide } from './cnc-settings';
+import { cncSchemesSvg } from './cnc-schemes';
 export { DEFAULT_CNC_SETTINGS, validateCncSettings, type CncSettings } from './cnc-settings';
 
 const SCALE = 10000;
@@ -28,6 +29,10 @@ export interface CncJob {
   drills: { diameter: number; count: number; filename: string }[];
   outlinePasses: number;
 }
+
+/** Этапы расчёта — для полосы прогресса в диалоге. */
+export type CncStage = 'copper-top' | 'copper-bottom' | 'isolation' | 'drills' | 'gcode' | 'docs';
+export type CncProgressFn = (stage: CncStage, frac: number) => void;
 
 function checkPoint(p: Pt, id: string): void {
   if (!Number.isFinite(p.x) || !Number.isFinite(p.y) || Math.abs(p.x) > 2000 || Math.abs(p.y) > 2000)
@@ -287,6 +292,8 @@ function setupText(doc: Doc, s: CncSettings, job: CncJob): string {
     `Z безопасности: +${N(s.safeZ)} мм; режущие глубины отрицательные. Убедитесь, что подъём выше зажимов.`,
     '',
     'Файлы и порядок (НЕ запускайте весь ZIP как одну программу):',
+    '  00_PROCHTITE_PERED_ZAPUSKOM.txt — этот файл: нули, инструменты, порядок и предупреждения.',
+    '  00b_SHEMY_PARAMETROV.svg — схемы «что за что отвечает»: ноль, изоляция, сверловка, переворот, контур, файлы.',
     ...(job.drills.length && s.drillSide === 'top' ? job.drills.map((d) => `  ${d.filename} — сверло Ø${N(d.diameter)} мм, ${d.count} отв.`) : []),
     ...(job.topLoops ? [`  01_verh_k1.nc — изоляция верхней меди, ${job.topLoops} замкнутых контуров.`] : []),
     ...(job.bottomLoops ? [`  02_niz_k2_zerkalo_x.nc — ПОСЛЕ ПЕРЕВОРОТА, изоляция нижней меди, ${job.bottomLoops} контуров.`] : []),
@@ -308,23 +315,25 @@ function setupText(doc: Doc, s: CncSettings, job: CncJob): string {
   ].join('\n');
 }
 
-/** Не изменяет документ. В архиве только программы с реальными операциями и инструкция. */
-export function buildCncJob(doc: Doc, s: CncSettings): CncJob {
+/** Не изменяет документ. В архиве только программы с реальными операциями, инструкция и схемы. */
+export function buildCncJob(doc: Doc, s: CncSettings, onProgress: CncProgressFn = () => {}): CncJob {
   validateCncSettings(s);
   cncRange('Ширина платы', doc.w, 1, 1000);
   cncRange('Высота платы', doc.h, 1, 1000);
   if (!Array.isArray(doc.entities)) throw new Error('Не найдены объекты платы.');
   const entities = expandDoc(doc.entities);
+  onProgress('copper-top', 0);
   const topCopper = unionCopper(entities, 'k1');
+  onProgress('copper-top', 1);
+  onProgress('copper-bottom', 0);
   const bottomCopper = unionCopper(entities, 'k2');
+  onProgress('copper-bottom', 1);
+  onProgress('isolation', 0);
   const top = isolationPaths(topCopper, s, 'top');
+  onProgress('isolation', 0.5);
   const bottom = isolationPaths(bottomCopper, s, 'bottom');
-  const files: ZipFile[] = [];
-  if (top.length) files.push({ name: '01_verh_k1.nc', data: millLoops(transformed(top, 'top', doc, s),
-    s.isolationDepth, s.isolationFeed, s.isolationPlunge, s.isolationRpm, s.safeZ, 'TOP K1 ISOLATION') });
-  if (bottom.length) files.push({ name: '02_niz_k2_zerkalo_x.nc', data: millLoops(transformed(bottom, 'bottom', doc, s),
-    s.isolationDepth, s.isolationFeed, s.isolationPlunge, s.isolationRpm, s.safeZ, 'BOTTOM K2 MIRROR X ISOLATION') });
-
+  onProgress('isolation', 1);
+  onProgress('drills', 0);
   const found = holesOf(entities, doc);
   const groups = new Map<number, Pt[]>();
   for (const hole of found) {
@@ -332,11 +341,22 @@ export function buildCncJob(doc: Doc, s: CncSettings): CncJob {
     pts.push(hole.point);
     groups.set(hole.diameter, pts);
   }
+  onProgress('drills', 1);
+  onProgress('gcode', 0);
+  const planned = (top.length ? 1 : 0) + (bottom.length ? 1 : 0) + groups.size + (s.cutOutline ? 1 : 0);
+  const files: ZipFile[] = [];
+  const tickGcode = () => onProgress('gcode', planned ? files.length / planned : 1);
+  if (top.length) { files.push({ name: '01_verh_k1.nc', data: millLoops(transformed(top, 'top', doc, s),
+    s.isolationDepth, s.isolationFeed, s.isolationPlunge, s.isolationRpm, s.safeZ, 'TOP K1 ISOLATION') }); tickGcode(); }
+  if (bottom.length) { files.push({ name: '02_niz_k2_zerkalo_x.nc', data: millLoops(transformed(bottom, 'bottom', doc, s),
+    s.isolationDepth, s.isolationFeed, s.isolationPlunge, s.isolationRpm, s.safeZ, 'BOTTOM K2 MIRROR X ISOLATION') }); tickGcode(); }
+
   const drills: CncJob['drills'] = [];
   for (const [diameter, points] of [...groups].sort((a, b) => a[0] - b[0])) {
     const filename = `sverlo_${N(diameter).replace('.', 'p')}mm_${s.drillSide === 'bottom' ? 'niz_zerkalo_x' : 'verh'}.nc`;
     files.push({ name: filename, data: drillProgram(points, diameter, doc, s) });
     drills.push({ diameter, count: points.length, filename });
+    tickGcode();
   }
 
   let outlinePasses = 0;
@@ -344,6 +364,7 @@ export function buildCncJob(doc: Doc, s: CncSettings): CncJob {
     const outline = outlineProgram(doc, s);
     outlinePasses = outline.passes;
     files.push({ name: '99_kontur_poslednim.nc', data: outline.code });
+    tickGcode();
   }
   if (!files.length) throw new Error('На плате нет меди, отверстий и выбранного контура для экспорта ЧПУ.');
   const job: CncJob = {
@@ -354,6 +375,10 @@ export function buildCncJob(doc: Doc, s: CncSettings): CncJob {
       drills: found.map((h) => ({ x: s.drillSide === 'bottom' ? doc.w - h.point.x : h.point.x, y: h.point.y })),
     },
   };
+  onProgress('docs', 0);
+  // Схемы «что за что отвечает» — рядом с инструкцией, чтобы у станка не гадать.
+  files.push({ name: '00b_SHEMY_PARAMETROV.svg', data: cncSchemesSvg(doc, s, job) });
   files.push({ name: '00_PROCHTITE_PERED_ZAPUSKOM.txt', data: setupText(doc, s, job) });
+  onProgress('docs', 1);
   return job;
 }

@@ -4,7 +4,8 @@ import type { Doc } from './model';
 
 self.onmessage = (event: MessageEvent<{ doc: Doc; settings: CncSettings }>) => {
   try {
-    const job = buildCncJob(event.data.doc, event.data.settings);
+    const job = buildCncJob(event.data.doc, event.data.settings,
+      (stage, frac) => self.postMessage({ type: 'progress', stage, frac }));
     self.postMessage({ ok: true, job });
   } catch (e) {
     self.postMessage({ ok: false, error: e instanceof Error ? e.message : String(e) });

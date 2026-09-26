@@ -33,13 +33,22 @@ assert.equal(JSON.stringify(doc), before, 'CAM does not mutate the board');
 assert.deepEqual(job.drills.map(({ diameter, count }) => [diameter, count]), [[.8, 2], [1, 1]]);
 assert.equal(job.topLoops, 3, 'one continuous trace+pad, plus via and standalone square pad');
 assert.equal(job.bottomLoops, 4, 'SMD only on bottom, pads/via on both layers');
-assert.equal(job.files.length, 5, 'two sides + two distinct drills + instructions, no empty contour');
+assert.equal(job.files.length, 6, 'two sides + two distinct drills + schemes + instructions, no empty contour');
 assert.equal(job.outlinePasses, 0);
 assert.equal(job.files[0].name, '01_verh_k1.nc');
 assert.equal(job.files[1].name, '02_niz_k2_zerkalo_x.nc');
 assert.deepEqual(job.files.slice(2, 4).map((f) => f.name), ['sverlo_0p8mm_verh.nc', 'sverlo_1mm_verh.nc']);
-assert.equal(job.files[4].name, '00_PROCHTITE_PERED_ZAPUSKOM.txt');
-assert(text(job.files[4]).includes('X=5+50-x') && text(job.files[4]).includes('Z0 заново'));
+assert.equal(job.files[4].name, '00b_SHEMY_PARAMETROV.svg', 'схемы «что за что отвечает» в архиве');
+assert.equal(job.files[5].name, '00_PROCHTITE_PERED_ZAPUSKOM.txt');
+assert(text(job.files[5]).includes('X=5+50-x') && text(job.files[5]).includes('Z0 заново'));
+const schemes = text(job.files[4]);
+assert(schemes.startsWith('<svg') && schemes.includes('что за что отвечает'), 'svg со схемами пригоден для печати у станка');
+assert(schemes.includes('01_verh_k1.nc') && schemes.includes('00b_SHEMY_PARAMETROV.svg') && schemes.includes('sverlo_0p8mm_verh.nc'),
+  'схема файлов перечисляет реальные программы архива');
+assert(schemes.includes('Ø 0.4') && schemes.includes('Z-0.12') && schemes.includes('a = 5 мм'),
+  'на схемах подставлены значения именно этой платы');
+assert(schemes.includes('лево/право') && schemes.includes('вокруг оси Y') && schemes.includes('БЕЗ удерживающих перемычек'),
+  'схемы объясняют переворот и вырез без перемычек');
 
 // Объединённые площадка + дорожка имеют единственный внешний обход: фреза не
 // пройдёт через их стык. Изоляция компенсирует радиус инструмента и зазор.
@@ -178,6 +187,9 @@ assert.equal(new TextDecoder().decode(archive.get('sverlo_0p8mm_verh.nc')), dril
 const ui = renderToString(createElement(CncDialog, { doc, onClose: () => {} }));
 assert(ui.includes('отдельная программа для каждого сверла') && ui.includes('Построить и проверить'));
 assert(ui.includes('Сверлить сверху') && ui.includes('контур') && ui.includes('Скачать CNC ZIP'));
+assert(ui.includes('что за что отвечает') && ui.includes('00b_SHEMY_PARAMETROV.svg'), 'схемы объявлены в диалоге');
+assert(ui.includes('scheme-chip') && ui.includes('data-part="clearance"'), 'схемы интерактивные: чипы и узлы чертежа');
+assert(ui.includes('Готовность к экспорту') && ui.includes('role="progressbar"'), 'полоса прогресса проверки в диалоге');
 const exportUi = renderToString(createElement(ExportDialog, {
   onGerber: () => {}, onPng: () => {}, onLay6: () => {}, onCnc: () => {}, onClose: () => {},
 }));
