@@ -152,9 +152,25 @@ say "Копирование в $APP_DIR"
 mkdir -p "$APP_DIR" "$BIN_DIR" "$DESKTOP_DIR"
 rm -rf "$APP_DIR/dist" "$APP_DIR/dist.old"
 cp -r dist "$APP_DIR/dist"
-cp scripts/server.mjs "$APP_DIR/server.mjs"
-cp scripts/update.mjs "$APP_DIR/update.mjs"
-cp scripts/icon.svg "$APP_DIR/icon.svg"
+# Файлы программы (server.mjs и его модули) берём по списку из
+# scripts/runtime-files.mjs — он собран по графу импортов, поэтому новый модуль
+# (например partreel-search.mjs) не забудется и установка не упадёт при запуске
+# с ERR_MODULE_NOT_FOUND. Копируем во временную папку и проверяем раскладку до
+# того, как тронем рабочую установку.
+RUNTIME_TMP="$APP_DIR/.runtime.new"
+rm -rf "$RUNTIME_TMP"
+mkdir -p "$RUNTIME_TMP"
+while IFS= read -r REL; do
+  [ -n "$REL" ] || continue
+  cp "$SRC_DIR/$REL" "$RUNTIME_TMP/$(basename "$REL")"
+done < <(node scripts/runtime-files.mjs "$SRC_DIR")
+if ! node scripts/runtime-files.mjs --check "$RUNTIME_TMP"; then
+  rm -rf "$RUNTIME_TMP"
+  err "собранная программа неполная: не хватает файлов из scripts/ (см. сообщение выше).
+  Это ошибка сборки, а не ваша: напишите о ней в issue проекта."
+fi
+cp -f "$RUNTIME_TMP"/* "$APP_DIR/"
+rm -rf "$RUNTIME_TMP"
 # данные для автообновления при запуске: откуда качать и какая версия установлена
 REPO_URL=$(git -C "$SRC_DIR" remote get-url origin 2>/dev/null || true)
 [ -n "$REPO_URL" ] || REPO_URL="https://github.com/danilka-revin/linux_pcb_app.git"

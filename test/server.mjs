@@ -1,8 +1,14 @@
 // Проверка локального сервера: экспорт startServer, /healthz, /version, без автозапуска при import.
+// Плюс проверка установки: файлы программы, скопированные «плоско» (как в
+// ~/.local/share/psbees), должны запускаться — иначе забытый модуль (partreel-search.mjs)
+// снова превратится в ERR_MODULE_NOT_FOUND у пользователя.
 import { startServer } from '../scripts/server.mjs';
-import { mkdtempSync, writeFileSync, rmSync } from 'node:fs';
+import { runtimeFiles, missingRuntimeFiles } from '../scripts/runtime-files.mjs';
+import { mkdtempSync, writeFileSync, rmSync, copyFileSync, readFileSync } from 'node:fs';
+import { spawn } from 'node:child_process';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { basename, dirname, join } from 'node:path';
+import { fileURLToPath } from 'node:url';
 
 if (typeof startServer !== 'function') throw new Error('startServer не экспортирован');
 
@@ -50,6 +56,81 @@ const cr = await fetch(url + '/update/cancel', { method: 'POST' });
 if (cr.status !== 409) throw new Error('update/cancel без обновления должен вернуть 409, а вернул ' + cr.status);
 // хэшированные ассеты кэшируются навсегда, index.html — нет
 if ((await fetch(url + '/')).headers.get('cache-control') !== 'no-cache') throw new Error('index.html не должен кэшироваться');
+
+// --- установка: плоская раскладка файлов программы ---
+// Так программа лежит в ~/.local/share/psbees: server.mjs рядом со своими модулями.
+const root = join(dirname(fileURLToPath(import.meta.url)), '..');
+const appDir = mkdtempSync(join(tmpdir(), 'layaut-app-'));
+
+/** Запускает установленную копию сервера и ждёт адрес из её вывода. */
+async function startInstalled(dir) {
+  const child = spawn(process.execPath, [join(dir, 'server.mjs'), '--app-dir', dir, '0', dir], {
+    cwd: dir,
+    stdio: ['ignore', 'pipe', 'pipe'],
+  });
+  let out = '';
+  const childUrl = await new Promise((resolvePromise, reject) => {
+    const timer = setTimeout(() => reject(new Error('сервер установки не запустился: ' + out)), 20_000);
+    child.stdout.on('data', (chunk) => {
+      out += chunk;
+      const found = /(http:\/\/127\.0\.0\.1:\d+)/.exec(out);
+      if (found) {
+        clearTimeout(timer);
+        resolvePromise(found[1]);
+      }
+    });
+    child.on('exit', (code) => {
+      clearTimeout(timer);
+      reject(new Error('сервер установки завершился (код ' + code + '): ' + out));
+    });
+  });
+  return { child, url: childUrl };
+}
+
+try {
+  for (const rel of runtimeFiles(root)) copyFileSync(join(root, rel), join(appDir, basename(rel)));
+  const gaps = missingRuntimeFiles(appDir);
+  if (gaps.length) throw new Error('в установке не хватает модулей: ' + gaps.join(', '));
+
+  // установщики должны брать список файлов из манифеста, а не перечислять модули руками:
+  // ручной список уже один раз разошёлся с кодом (partreel-search.mjs)
+  for (const rel of ['install-ubuntu.sh', 'scripts/update.mjs']) {
+    if (!readFileSync(join(root, rel), 'utf8').includes('runtime-files.mjs')) {
+      throw new Error(rel + ' не использует манифест scripts/runtime-files.mjs');
+    }
+  }
+
+  const installed = await startInstalled(appDir);
+  try {
+    const health2 = await (await fetch(installed.url + '/healthz')).json();
+    if (health2.ok !== true) throw new Error('установка: /healthz — ' + JSON.stringify(health2));
+    const noQuery = await fetch(installed.url + '/api/footprints/search');
+    if (noQuery.status !== 400) throw new Error('установка: пустой запрос каталога должен отклоняться без модуля, код ' + noQuery.status);
+    // с запросом каталог доходит до загрузки индекса: без сети это ошибка PartReel,
+    // но не «модуль не установлен» — значит partreel-search.mjs действительно загрузился
+    const catalog = await fetch(installed.url + '/api/footprints/search?q=resistor');
+    const catalogBody = await catalog.text();
+    if (catalogBody.includes('не установлен')) throw new Error('установка: модуль каталога не скопирован — ' + catalogBody);
+  } finally {
+    installed.child.kill('SIGTERM');
+  }
+
+  // Неполная установка (старый установщик не скопировал partreel-search.mjs) не должна
+  // ронять сервер при запуске: каталог отвечает понятной ошибкой, программа работает.
+  rmSync(join(appDir, 'partreel-search.mjs'), { force: true });
+  if (!missingRuntimeFiles(appDir).includes('partreel-search.mjs')) throw new Error('проверка установки не заметила отсутствующий модуль');
+  const broken = await startInstalled(appDir);
+  try {
+    const health3 = await (await fetch(broken.url + '/healthz')).json();
+    if (health3.ok !== true) throw new Error('неполная установка не запустилась: ' + JSON.stringify(health3));
+    const catalog = await (await fetch(broken.url + '/api/footprints/search?q=resistor')).text();
+    if (!catalog.includes('не установлен')) throw new Error('неполная установка: ожидалась подсказка про модуль каталога, получено ' + catalog.slice(0, 160));
+  } finally {
+    broken.child.kill('SIGTERM');
+  }
+} finally {
+  rmSync(appDir, { recursive: true, force: true });
+}
 
 server.close();
 rmSync(dir, { recursive: true, force: true });

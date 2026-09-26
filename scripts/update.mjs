@@ -16,7 +16,11 @@
 //      кэша (.update-cache) мгновенно, иначе npm ci --prefer-offline;
 //   4. сборка — сразу vite build (без проверки типов tsc: она нужна только
 //      разработчику и занимает больше времени, чем сама сборка);
-//   5. новая сборка заменяет dist только целиком; старая остаётся в dist.old.
+//   5. файлы программы копируются по манифесту scripts/runtime-files.mjs (обход
+//      локальных импортов) — новый модуль не забудется — а если установка уже
+//      неполная (старый установщик не скопировал модуль), недостающее
+//      догружается из GitHub без пересборки;
+//   6. новая сборка заменяет dist только целиком; старая остаётся в dist.old.
 //
 // Коды выхода: 0 — ничего не менялось; 10 — обновлено (нужно перезапустить
 // сервер); 1 — ошибка (работаем на текущей версии); 2 — отменено пользователем.
@@ -26,7 +30,8 @@ import {
   createWriteStream, readdirSync, statSync,
 } from 'node:fs';
 import { createHash } from 'node:crypto';
-import { join, resolve } from 'node:path';
+import { basename, join, resolve } from 'node:path';
+import { pathToFileURL } from 'node:url';
 
 const DEFAULT_REPO = 'https://github.com/danilka-revin/linux_pcb_app.git';
 const IS_WIN = process.platform === 'win32';
@@ -67,6 +72,134 @@ const m = /github\.com[/:]([^/]+)\/([^/]+?)(?:\.git)?\/?$/i.exec(repoUrl);
 if (!m) fail('не удалось разобрать URL репозитория: ' + repoUrl);
 const [, owner, name] = m;
 const short = (s) => (s || '').slice(0, 7);
+
+// ---------- файлы программы в установке ----------
+// Установка плоская: server.mjs рядом со своими модулями. Список файлов берём из
+// манифеста нового исходника (scripts/runtime-files.mjs — обход локальных импортов),
+// а не из фиксированного перечня: иначе новый модуль (так было с partreel-search.mjs)
+// не копируется и программа падает при запуске с ERR_MODULE_NOT_FOUND.
+const FALLBACK_RUNTIME_FILES = [
+  'scripts/server.mjs',
+  'scripts/partreel-search.mjs',
+  'scripts/cloud.mjs',
+  'scripts/update.mjs',
+  'scripts/icon.svg',
+];
+
+/** Список файлов установки: манифест исходника, иначе запасной перечень. */
+async function runtimeFileList(srcRoot) {
+  try {
+    const mod = await import(pathToFileURL(join(srcRoot, 'scripts', 'runtime-files.mjs')).href);
+    const list = mod.runtimeFiles(srcRoot);
+    if (Array.isArray(list) && list.length) return list;
+  } catch { /* исходник без манифеста (старая версия) */ }
+  return FALLBACK_RUNTIME_FILES.filter((rel) => existsSync(join(srcRoot, rel)));
+}
+
+/** Код без комментариев — чтобы примеры импортов в комментариях не считались импортами. */
+function stripComments(code) {
+  const CODE = 0, LINE = 1, BLOCK = 2, STR = 3, TPL = 4;
+  let out = '';
+  let state = CODE;
+  for (let i = 0; i < code.length; i++) {
+    const c = code[i];
+    const next = code[i + 1];
+    if (state === CODE) {
+      if (c === '/' && next === '/') { state = LINE; i++; continue; }
+      if (c === '/' && next === '*') { state = BLOCK; i++; continue; }
+      if (c === "'" || c === '"') state = STR;
+      else if (c === '`') state = TPL;
+    } else if (state === LINE) {
+      if (c === '\n') { state = CODE; out += c; }
+      continue;
+    } else if (state === BLOCK) {
+      if (c === '*' && next === '/') { state = CODE; i++; } else if (c === '\n') out += c;
+      continue;
+    } else if (c === '\\') {
+      out += c + (next ?? '');
+      i++;
+      continue;
+    } else if ((state === STR && (c === "'" || c === '"')) || (state === TPL && c === '`')) {
+      state = CODE;
+    }
+    out += c;
+  }
+  return out;
+}
+
+/** Каких относительных импортов не хватает модулям в каталоге установки. */
+function missingInAppDir(dir) {
+  const SPECIFIER_RE = /\bfrom\s*['"](\.[^'"]+)['"]|\bimport\s*(?:\(\s*)?['"](\.[^'"]+)['"]/g;
+  const missing = new Set();
+  for (const name of readdirSync(dir)) {
+    if (!/\.m?js$/.test(name)) continue;
+    let code = '';
+    try { code = stripComments(readFileSync(join(dir, name), 'utf8')); } catch { continue; }
+    for (const m of code.matchAll(SPECIFIER_RE)) {
+      const spec = m[1] || m[2];
+      if (!existsSync(resolve(dir, spec))) missing.add(basename(spec));
+    }
+  }
+  return [...missing].sort();
+}
+
+/** Один файл исходников из GitHub: raw-канал, а если он недоступен — GitHub API. */
+async function fetchSourceFile(file, sha) {
+  // имена репозитория (owner, name) — из модульной области, не перекрывать их
+  const rawUrl = `https://raw.githubusercontent.com/${owner}/${name}/${sha}/scripts/${file}`;
+  const apiUrl = `https://api.github.com/repos/${owner}/${name}/contents/scripts/${file}?ref=${sha}`;
+  let lastErr;
+  for (const url of [rawUrl, apiUrl]) {
+    try {
+      const api = url === apiUrl;
+      const r = await fetch(url, {
+        signal: AbortSignal.timeout(20_000),
+        headers: api
+          ? { accept: 'application/vnd.github.raw', 'user-agent': 'psbees-updater' }
+          : { 'user-agent': 'psbees-updater' },
+      });
+      if (!r.ok) throw new Error('HTTP ' + r.status + ' (' + url + ')');
+      let text = await r.text();
+      if (text.trimStart().startsWith('{')) { // API вернул JSON вместо raw
+        const j = JSON.parse(text);
+        if (typeof j.content !== 'string') throw new Error('в ответе API нет содержимого файла');
+        text = Buffer.from(j.content, j.encoding === 'base64' ? 'base64' : 'utf8').toString('utf8');
+      }
+      if (!text.trim() || text.trimStart().startsWith('<')) throw new Error('в ответе не код модуля');
+      return text;
+    } catch (e) {
+      lastErr = e;
+    }
+  }
+  throw lastErr;
+}
+
+/**
+ * Починка неполной установки без пересборки: старые версии установщика копировали
+ * только сервер и обновлятор, и модуль, который сервер начал импортировать позже,
+ * в ~/.local/share/psbees не попадал. Догружаем недостающее прямо из GitHub.
+ */
+async function repairInstall() {
+  let missing;
+  try { missing = missingInAppDir(APP_DIR); } catch { return; }
+  if (!missing.length) return;
+  const sha = currentSha || latestSha;
+  log('в установке не хватает файлов: ' + missing.join(', ') + ' — догружаю из GitHub');
+  let fixed = 0;
+  for (const name of missing) {
+    try {
+      const text = await fetchSourceFile(name, sha);
+      const tmp = join(APP_DIR, name + '.tmp');
+      writeFileSync(tmp, text);
+      renameSync(tmp, join(APP_DIR, name));
+      fixed++;
+    } catch (e) {
+      log('не удалось догрузить ' + name + ': ' + (e?.message || e));
+    }
+  }
+  if (fixed === missing.length) log('файлы установки восстановлены: ' + missing.join(', '));
+  else log('восстановить всё не удалось — запустите установку заново: bash install-ubuntu.sh');
+}
 
 // ---------- кэш обновлений: node_modules, статистика времени, блокировка ----------
 const CACHE = join(APP_DIR, '.update-cache');
@@ -181,6 +314,7 @@ if (!latestSha) {
   }
   if (currentSha && currentSha === latestSha) {
     log('актуальная версия ' + short(currentSha) + ' — обновляться не нужно');
+    await repairInstall(); // версия та же, но файлы установки могли остаться неполными
     cleanup();
     process.exit(0);
   }
@@ -192,6 +326,7 @@ if (!latestSha) {
       const latDate = lat?.commit?.committer?.date || '';
       if (!cur || (curDate && latDate && curDate >= latDate)) {
         log('установленная версия не старше ' + branch + ' — обновляться не нужно');
+        await repairInstall(); // код свежий, но установка могла быть неполной
         cleanup();
         process.exit(0);
       }
@@ -465,20 +600,27 @@ try {
 
   // --- установка: новая сборка заменяет старую только целиком ---
   P({ stage: 'install', state: 'run', frac: 0.2, msg: 'Установка новой версии…' });
+  // Сначала готовим файлы программы в стороне и проверяем раскладку: если новая
+  // версия неполная, установку не начинаем — старая версия остаётся рабочей.
+  const staging = join(APP_DIR, '.install.tmp');
+  rmSync(staging, { recursive: true, force: true });
+  mkdirSync(staging, { recursive: true });
+  for (const rel of await runtimeFileList(src)) {
+    const from = join(src, rel);
+    if (existsSync(from)) cpSync(from, join(staging, basename(rel))); // раскладка установки плоская
+  }
+  const gaps = missingInAppDir(staging);
+  if (gaps.length) throw new Error('новая версия неполная, не хватает модулей: ' + gaps.join(', '));
+  // затем подменяем сборку
   const newDist = join(APP_DIR, 'dist.new');
   rmSync(newDist, { recursive: true, force: true });
   try { renameSync(join(src, 'dist'), newDist); } catch { cpSync(join(src, 'dist'), newDist, { recursive: true }); }
   rmSync(join(APP_DIR, 'dist.old'), { recursive: true, force: true });
   if (existsSync(join(APP_DIR, 'dist'))) renameSync(join(APP_DIR, 'dist'), join(APP_DIR, 'dist.old'));
   renameSync(newDist, join(APP_DIR, 'dist'));
-  for (const [from, to] of [
-    ['scripts/server.mjs', 'server.mjs'],
-    ['scripts/update.mjs', 'update.mjs'],
-    ['scripts/icon.svg', 'icon.svg'],
-  ]) {
-    const f = join(src, from);
-    if (existsSync(f)) cpSync(f, join(APP_DIR, to));
-  }
+  // ...и переносим проверенные файлы программы
+  for (const f of readdirSync(staging)) cpSync(join(staging, f), join(APP_DIR, f));
+  rmSync(staging, { recursive: true, force: true });
   writeFileSync(join(APP_DIR, 'version.txt'), latestSha + '\n');
   try {
     writeFileSync(join(APP_DIR, 'update.log'),
@@ -492,6 +634,8 @@ try {
   process.exit(10);
 } catch (e) {
   try { if (modulesBorrowed) restoreModules(); } catch { /* ignore */ }
+  // недокопированные файлы подготовки не должны оставаться в каталоге программы
+  try { rmSync(join(APP_DIR, '.install.tmp'), { recursive: true, force: true }); } catch { /* ignore */ }
   saveStats();
   log('обновление не удалось, остаёмся на текущей версии (' + (e?.message || e) + ')');
   cleanup();
