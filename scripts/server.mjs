@@ -357,7 +357,11 @@ export async function startServer(opts = {}) {
     cli.root = a;
   }
 
-  const preferred = Number(opts.port ?? cli.port ?? process.env.PORT ?? 8080);
+  const rawPort = opts.port ?? cli.port ?? process.env.PORT ?? 8080;
+  const preferred = Number(rawPort);
+  if (!Number.isInteger(preferred) || preferred < 0 || preferred > 65535) {
+    throw new Error(`Некорректный порт «${rawPort}»: укажите число от 0 до 65535.`);
+  }
   const HOST = opts.host || process.env.HOST || '0.0.0.0';
   const ROOT = resolve(opts.root || cli.root || process.env.WWW_ROOT || (await pickRoot()));
   const fallback = opts.fallbackPorts ?? 0;
@@ -943,7 +947,13 @@ export async function startServer(opts = {}) {
         return json(res, 404, { ok: false, error: 'неизвестная команда обновления' });
       }
 
-      let path = normalize(decodeURIComponent(url.pathname)).replace(/^([/\\])+/, '');
+      let decodedPath;
+      try { decodedPath = decodeURIComponent(url.pathname); }
+      catch {
+        res.writeHead(400, { 'content-type': 'text/plain; charset=utf-8' }).end('bad request');
+        return;
+      }
+      let path = normalize(decodedPath).replace(/^([/\\])+/, '');
       if (!path || path.endsWith('/')) path = join(path, 'index.html');
       const full = join(ROOT, path);
       const staticRel = relative(ROOT, full);
@@ -956,9 +966,14 @@ export async function startServer(opts = {}) {
       try {
         data = await readFile(full);
         hashed = /[\\/]assets[\\/]/.test(path); // у vite имена файлов в assets/ содержат хэш
-      } catch {
-        // SPA-fallback на index.html
-        data = await readFile(join(ROOT, 'index.html'));
+      } catch (e) {
+        // SPA-навигация получает index.html, но отсутствующие ресурсы не маскируем HTML-ответом.
+        if (extname(path) || path.startsWith('assets/')) {
+          res.writeHead(404, { 'content-type': 'text/plain; charset=utf-8', 'cache-control': 'no-store' }).end('not found');
+          return;
+        }
+        try { data = await readFile(join(ROOT, 'index.html')); }
+        catch { throw e; }
         type = 'text/html; charset=utf-8';
       }
       res.writeHead(200, {
