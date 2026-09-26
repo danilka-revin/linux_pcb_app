@@ -1,5 +1,5 @@
 // Мелкие UI-виджеты: числовое поле, диалог, кнопка с выпадающим меню.
-import { useEffect, useRef, useState, type ReactNode } from 'react';
+import { useCallback, useEffect, useRef, useState, type ReactNode } from 'react';
 import { createPortal } from 'react-dom';
 import { fmt } from '../pcb/model';
 import { Ic } from './icons';
@@ -123,28 +123,23 @@ export interface MenuEntry {
   sep?: boolean;
 }
 
-/**
- * Кнопка тулбара с выпадающим меню: компактно размещает группу редких
- * действий в один клик. Меню закрывается по Esc, клику мимо и после выбора.
- * Раскрывается порталом к <body> с фиксированным позиционированием — шапка
- * с overflow:hidden его не обрезает.
- */
-export function MenuBtn({
-  icon = 'more', title, items, align = 'left', active = false,
-}: {
-  icon?: string;
-  title: string;
-  items: MenuEntry[];
-  align?: 'left' | 'right';
-  active?: boolean;
-}) {
-  const [open, setOpen] = useState(false);
-  const [pos, setPos] = useState<{ top: number; left?: number; right?: number }>({ top: 0 });
-  const root = useRef<HTMLDivElement>(null);
-  const pop = useRef<HTMLDivElement>(null);
+/** Позиция всплывающего меню: портал к <body>, координаты фиксированные */
+interface MenuPos { top: number; left?: number; right?: number }
 
-  const toggle = () => {
-    if (!open && root.current) {
+/**
+ * Общее состояние выпадающего меню кнопки тулбара: измерение места под
+ * кнопкой, закрытие по Esc, клику мимо и после выбора пункта.
+ */
+function useMenuPos() {
+  const [open, setOpen] = useState(false);
+  const [pos, setPos] = useState<MenuPos>({ top: 0 });
+  const root = useRef<HTMLDivElement>(null);
+  // обычный мутабельный ref: html-элемент меню приходит из callback-ref
+  const pop = useRef<HTMLDivElement | null>(null);
+
+  // align: меню прижато к левому краю кнопки ('left') или к правому ('right')
+  const place = (align: 'left' | 'right') => {
+    if (root.current) {
       const r = root.current.getBoundingClientRect();
       setPos(align === 'right'
         ? { top: r.bottom + 6, right: Math.max(6, window.innerWidth - r.right) }
@@ -152,6 +147,15 @@ export function MenuBtn({
     }
     setOpen((o) => !o);
   };
+
+  // Меню у правого края окна упирается в него: измеряем ширину при появлении
+  // (до отрисовки кадра) и сдвигаем влево — иначе правая часть списка не видна.
+  const attachPop = useCallback((el: HTMLDivElement | null) => {
+    pop.current = el;
+    if (!el) return;
+    const maxLeft = Math.max(6, window.innerWidth - el.getBoundingClientRect().width - 6);
+    setPos((p) => (p.left === undefined || p.left <= maxLeft ? p : { ...p, left: maxLeft }));
+  }, []);
 
   useEffect(() => {
     if (!open) return;
@@ -170,40 +174,115 @@ export function MenuBtn({
     };
   }, [open]);
 
+  return { open, setOpen, pos, root, attachPop, place };
+}
+
+/** Список пунктов меню — один на все кнопки тулбара. */
+function PopMenu({ items, pos, attach, onPick }: {
+  items: MenuEntry[];
+  pos: MenuPos;
+  attach: (el: HTMLDivElement | null) => void;
+  onPick: () => void;
+}) {
+  return createPortal(
+    <div className="tb-pop" role="menu" ref={attach}
+      style={{ position: 'fixed', top: pos.top, left: pos.left, right: pos.right }}>
+      {items.map((it, i) => (it.sep ? (
+        <div key={i} className="tb-pop-sep" />
+      ) : (
+        <button
+          key={i}
+          type="button"
+          role="menuitem"
+          className="tb-pop-item"
+          disabled={it.disabled}
+          onClick={() => { onPick(); it.onClick?.(); }}
+        >
+          {it.icon ? <Ic n={it.icon} size={16} /> : <span className="tb-pop-ico" />}
+          <span className="tb-pop-label">{it.label}</span>
+          {it.kbd && <span className="tb-pop-kbd">{it.kbd}</span>}
+        </button>
+      )))}
+    </div>,
+    document.body,
+  );
+}
+
+/**
+ * Кнопка тулбара с выпадающим меню: компактно размещает группу редких
+ * действий в один клик. Меню закрывается по Esc, клику мимо и после выбора.
+ * Раскрывается порталом к <body> с фиксированным позиционированием — шапка
+ * с overflow:hidden его не обрезает.
+ */
+export function MenuBtn({
+  icon = 'more', title, items, align = 'left', active = false,
+}: {
+  icon?: string;
+  title: string;
+  items: MenuEntry[];
+  align?: 'left' | 'right';
+  active?: boolean;
+}) {
+  const menu = useMenuPos();
+  const { open } = menu;
+
   return (
-    <div className={'tb-menu' + (align === 'right' ? ' right' : '')} ref={root}>
+    <div className={'tb-menu' + (align === 'right' ? ' right' : '')} ref={menu.root}>
       <button
         type="button"
         className={'tb-btn' + (open || active ? ' active' : '')}
         title={title}
         aria-haspopup="menu"
         aria-expanded={open}
-        onClick={toggle}
+        onClick={() => menu.place(align)}
       >
         <Ic n={icon} />
       </button>
-      {open && createPortal(
-        <div className="tb-pop" role="menu" ref={pop}
-          style={{ position: 'fixed', top: pos.top, left: pos.left, right: pos.right }}>
-          {items.map((it, i) => (it.sep ? (
-            <div key={i} className="tb-pop-sep" />
-          ) : (
-            <button
-              key={i}
-              type="button"
-              role="menuitem"
-              className="tb-pop-item"
-              disabled={it.disabled}
-              onClick={() => { setOpen(false); it.onClick?.(); }}
-            >
-              {it.icon ? <Ic n={it.icon} size={16} /> : <span className="tb-pop-ico" />}
-              <span className="tb-pop-label">{it.label}</span>
-              {it.kbd && <span className="tb-pop-kbd">{it.kbd}</span>}
-            </button>
-          )))}
-        </div>,
-        document.body,
-      )}
+      {open && <PopMenu items={items} pos={menu.pos} attach={menu.attachPop} onPick={() => menu.setOpen(false)} />}
+    </div>
+  );
+}
+
+/**
+ * Кнопка с боковым переключателем: основная часть выполняет главное действие
+ * (для предпросмотра платы — открыть окно в последнем режиме), узкая стрелка
+ * раскрывает список режимов. Внешне — одна кнопка, но оба режима доступны
+ * за один клик, как и раньше двумя отдельными кнопками.
+ */
+export function SplitBtn({
+  icon, title, menuTitle, onClick, items, active = false,
+}: {
+  icon: string;
+  title: string;
+  menuTitle: string;
+  onClick: () => void;
+  items: MenuEntry[];
+  active?: boolean;
+}) {
+  const menu = useMenuPos();
+  const { open } = menu;
+
+  return (
+    <div className="tb-split" ref={menu.root}>
+      <button
+        type="button"
+        className={'tb-btn split-main' + (active ? ' active' : '')}
+        title={title}
+        onClick={onClick}
+      >
+        <Ic n={icon} />
+      </button>
+      <button
+        type="button"
+        className={'tb-btn split-caret' + (open ? ' active' : '')}
+        title={menuTitle}
+        aria-haspopup="menu"
+        aria-expanded={open}
+        onClick={() => menu.place('left')}
+      >
+        <Ic n="caret" size={12} />
+      </button>
+      {open && <PopMenu items={items} pos={menu.pos} attach={menu.attachPop} onPick={() => menu.setOpen(false)} />}
     </div>
   );
 }

@@ -174,6 +174,20 @@ button { font: inherit; color: inherit; background: none; border: none; }
 .tb-pop-kbd { color: var(--muted); font-size: 11px; margin-left: 14px; }
 .tb-pop-sep { height: 1px; background: var(--line); margin: 4px 6px; }
 
+/* кнопка с боковым переключателем: снаружи — одна кнопка предпросмотра,
+   внутри две зоны: открыть предпросмотр и выбрать режим (2D или 3D) */
+.tb-split { display: flex; align-items: stretch; flex: none; border-radius: 8px; }
+.tb-split:hover { background: var(--surface-2); }
+.tb-split .tb-btn { background: none; color: var(--text-2); }
+.tb-split:hover .tb-btn, .tb-split .tb-btn.active { color: var(--text); }
+.tb-split .tb-btn.split-main { width: 27px; }
+.tb-split .tb-btn.split-caret {
+  width: 13px; padding: 0;
+  border-left: 1px solid var(--line); border-radius: 0 8px 8px 0;
+}
+.tb-split .tb-btn.split-caret.active { color: var(--accent-text); }
+@media (pointer: coarse) { .tb-split .tb-btn.split-caret { width: 18px; } }
+
 /* ---------- вертикальный док инструментов у холста ---------- */
 .tool-dock {
   position: absolute; left: 8px; top: 8px; z-index: 5;
