@@ -1134,3 +1134,46 @@ canvas { display: block; }
 /* загрузка модального окна с полосой */
 .modal-loading { width: 360px; }
 .modal-loading h2 { margin-top: 0; }
+
+/* Классический послойный просмотр: максимум места для самой платы. */
+.board-preview-modal { max-width: 1100px; width: min(96vw, 1100px); }
+.preview-tabs { justify-content: space-between; gap: 12px; margin-bottom: 16px; }
+.preview-document { display: flex; gap: 4px; flex-direction: column; text-align: right; min-width: 0; }
+.preview-document strong { overflow-wrap: anywhere; font-size: 13px; }
+.preview-document > span { color: var(--muted); font-size: 12px; }
+.bp2d-toolbar { padding: 12px; gap: 12px; border-radius: 6px; }
+.bp2d-segments { display: inline-flex; flex-wrap: wrap; gap: 3px; }
+.bp2d-segments .btn { font-size: 12px; }
+.bp2d-theme { margin-left: auto; }
+.bp2d-theme select { max-width: 260px; }
+.bp2d-layers { padding-top: 10px; border-top: 1px solid var(--line); gap: 8px 18px; }
+.bp2d-layers .chk { cursor: pointer; gap: 5px; }
+.bp2d-layers .is-disabled { opacity: .35; cursor: default; }
+.bp2d-layers .bp2d-swatch { width: 8px; height: 8px; border: none; border-radius: 50%; }
+.bp2d-canvas-wrap { width: 100%; min-height: 240px; border-radius: 5px; box-shadow: 0 0 0 1px var(--line); }
+.bp2d-canvas-wrap canvas { display: block; width: 100%; height: 100%; touch-action: none; }
+.bp2d-canvas-wrap canvas:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px; }
+.bp2d-view-label { position: absolute; top: 14px; left: 16px; pointer-events: none; font: 10px system-ui, sans-serif; letter-spacing: 1.3px; color: #b6c2cf; background: #151b23e8; padding: 6px 8px; border-radius: 3px; }
+.bp2d-navigation { position: absolute; bottom: 12px; right: 12px; display: flex; align-items: center; gap: 4px; border: 1px solid #38414d; border-radius: 6px; background: #151b23f2; padding: 4px; color: #e0e7ef; }
+.bp2d-navigation .btn { background: #222b36; border-color: #38414d; color: #e0e7ef; min-width: 30px; }
+.bp2d-navigation > span { min-width: 48px; text-align: center; font: 11px monospace; }
+.bp2d-status { display: flex; flex-wrap: wrap; gap: 10px 16px; padding: 6px 2px; font-size: 12px; color: var(--muted); align-items: center; }
+.bp2d-status label { display: inline-flex; align-items: center; gap: 6px; }
+.bp2d-help { margin-left: auto; font-size: 11px; }
+@media (max-width: 650px) {
+  .bp2d-theme { margin-left: 0; flex-wrap: wrap; }
+  .bp2d-theme select { max-width: 100%; }
+  .preview-document { text-align: left; }
+  .bp2d-help { width: 100%; margin-left: 0; }
+}
+.bp2d-warning { padding: 6px 10px; border-left: 2px solid var(--accent); color: var(--muted); font-size: 11px; line-height: 1.5; }
+.board-preview-modal .foot { align-items: center; flex-wrap: wrap; }
+
+/* WebGL-холст заполняет доступное место, состояние ошибки не оставляет пустое окно. */
+.bp3d-viewport { position: relative; width: 100%; min-height: 240px; border: 1px solid var(--line); border-radius: 8px; overflow: hidden; }
+.bp3d-viewport .bp3d-canvas-wrap { position: absolute; inset: 0; border-radius: 0; }
+.bp3d-canvas-wrap canvas { display: block; width: 100%; height: 100%; touch-action: none; }
+.bp3d-message { position: absolute; inset: 0; display: flex; flex-direction: column; align-items: center; justify-content: center; padding: 24px; text-align: center; background: var(--surface-2); }
+.bp3d-message p { max-width: 540px; overflow-wrap: anywhere; }
+.bp3d-row select { max-width: 100%; }
+@media (max-width: 650px) { .bp3d-row label { max-width: 100%; flex-wrap: wrap; } }

@@ -2177,15 +2177,15 @@ export default function App({ cloudUser, onLogout }: { cloudUser?: CloudUser; on
       ),
       preview: (
         <div className="tb-group" key="preview">
-          {tb('preview2d', '2D предпросмотр — разные цвета платы', () => { setBoardPreviewTab('2d'); setDialog('board-preview'); })}
+          {tb('preview2d', '2D предпросмотр — Sprint Layout', () => { setBoardPreviewTab('2d'); setDialog('board-preview'); })}
           {tb('preview3d', '3D предпросмотр — объёмная плата', () => { setBoardPreviewTab('3d'); setDialog('board-preview'); })}
           <MenuBtn
             title="Предпросмотр платы"
             items={[
-              { icon: 'preview2d', label: '2D предпросмотр — цвета и слои', onClick: () => { setBoardPreviewTab('2d'); setDialog('board-preview'); } },
+              { icon: 'preview2d', label: '2D предпросмотр — Sprint Layout', onClick: () => { setBoardPreviewTab('2d'); setDialog('board-preview'); } },
               { icon: 'preview3d', label: '3D предпросмотр — объёмная плата', onClick: () => { setBoardPreviewTab('3d'); setDialog('board-preview'); } },
               { sep: true },
-              { icon: 'eye', label: 'Открыть оба (2D + 3D)', onClick: () => { setBoardPreviewTab('2d'); setDialog('board-preview'); } },
+              { icon: 'eye', label: 'Предпросмотр платы (2D / 3D)', onClick: () => { setBoardPreviewTab('2d'); setDialog('board-preview'); } },
             ]}
           />
         </div>

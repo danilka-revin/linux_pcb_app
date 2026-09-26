@@ -21,7 +21,7 @@
     "test:ssr": "esbuild test/ssr.tsx --bundle --platform=node --format=esm --outfile=node_modules/.cache/ssr.mjs --log-level=warning && node node_modules/.cache/ssr.mjs",
     "test:cloud-ui": "esbuild test/cloud-ui.tsx --bundle --platform=node --format=esm --outfile=node_modules/.cache/cloud-ui.mjs --log-level=warning && node node_modules/.cache/cloud-ui.mjs",
     "test:lay6": "esbuild test/lay6rt.ts --bundle --platform=node --format=esm --outfile=node_modules/.cache/lay6rt.mjs --log-level=warning && node node_modules/.cache/lay6rt.mjs",
-    "test": "npm run test:smoke && npm run test:grid && npm run test:gen && npm run test:kicad && npm run test:partreel && npm run test:ssr && npm run test:cloud-ui && npm run test:lay6 && npm run test:route && npm run test:nets && npm run test:inventory && npm run test:cnc && npm run test:server && npm run test:cloud",
+    "test": "npm run test:smoke && npm run test:grid && npm run test:gen && npm run test:kicad && npm run test:partreel && npm run test:ssr && npm run test:cloud-ui && npm run test:lay6 && npm run test:route && npm run test:nets && npm run test:inventory && npm run test:cnc && npm run test:server && npm run test:cloud && npm run test:board-preview && npm run test:3d",
     "test:server": "node test/server.mjs",
     "test:cloud": "node test/cloud.mjs",
     "start": "node scripts/server.mjs",
@@ -33,7 +33,10 @@
     "test:cnc": "esbuild test/cnc.tsx --bundle --platform=node --format=esm --outfile=node_modules/.cache/cnc.mjs --log-level=warning && node node_modules/.cache/cnc.mjs",
     "test:gen": "esbuild test/gen.ts --bundle --platform=node --format=esm --outfile=node_modules/.cache/gen.mjs --log-level=warning && node node_modules/.cache/gen.mjs",
     "test:kicad": "esbuild test/kicad-footprint.ts --bundle --platform=node --format=esm --outfile=node_modules/.cache/kicad-footprint.mjs --log-level=warning && node node_modules/.cache/kicad-footprint.mjs",
-    "test:partreel": "esbuild test/partreel-search.ts --bundle --platform=node --format=esm --outfile=node_modules/.cache/partreel-search.mjs --log-level=warning && node node_modules/.cache/partreel-search.mjs"
+    "test:partreel": "esbuild test/partreel-search.ts --bundle --platform=node --format=esm --outfile=node_modules/.cache/partreel-search.mjs --log-level=warning && node node_modules/.cache/partreel-search.mjs",
+    "test:board-preview": "esbuild test/board-preview.tsx --bundle --platform=node --format=esm --outfile=node_modules/.cache/board-preview.mjs --log-level=warning && node node_modules/.cache/board-preview.mjs",
+    "test:3d": "esbuild test/board-preview-3d.tsx --bundle --platform=node --format=esm --outfile=node_modules/.cache/board-preview-3d.mjs --log-level=warning && node node_modules/.cache/board-preview-3d.mjs",
+    "test:preview-browser": "playwright test --config test/preview.playwright.config.ts"
   },
   "dependencies": {
     "clipper-lib": "^6.4.2",
@@ -42,6 +45,7 @@
     "three": "^0.186.1"
   },
   "devDependencies": {
+    "@playwright/test": "^1.63.0",
     "@types/clipper-lib": "^6.4.0",
     "@types/node": "^22.20.4",
     "@types/react": "^18.3.12",
