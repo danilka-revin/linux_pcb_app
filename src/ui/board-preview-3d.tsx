@@ -3,6 +3,7 @@ import { useEffect, useRef, useState } from 'react';
 import type { OrbitControls } from 'three/addons/controls/OrbitControls.js';
 import * as THREE from 'three';
 import type { Comp, Doc } from '../pcb/model';
+import { createComponentModel } from './component-model-3d';
 import { compTF } from '../pcb/expand';
 import { zOrdered } from '../pcb/render';
 import { BOARD_2D_THEMES, drawBoard2D, type Board2DThemeId } from './board-preview-2d';
@@ -149,12 +150,13 @@ export function BoardPreview3D({ doc, height = 520 }: { doc: Doc; width?: number
         controls.autoRotateSpeed = 1.2;
         controls.minDistance = extent * 0.15;
         controls.maxDistance = extent * 12;
+        const assemblyBounds = new THREE.Box3(new THREE.Vector3(0, 0, -thickness / 2), new THREE.Vector3(doc.w, doc.h, thickness / 2));
         const fit = () => {
           if (!controls) return;
           const fov = THREE.MathUtils.degToRad(camera.fov);
           const angle = Math.min(fov, 2 * Math.atan(Math.tan(fov / 2) * camera.aspect));
-          const distance = Math.hypot(doc.w, doc.h, thickness + 5) / 2 / Math.sin(angle / 2) * 1.15;
-          controls.target.set(doc.w / 2, doc.h / 2, 0);
+          const distance = assemblyBounds.getSize(new THREE.Vector3()).length() / 2 / Math.sin(angle / 2) * 1.15;
+          assemblyBounds.getCenter(controls.target);
           camera.position.copy(controls.target).add(new THREE.Vector3(0.3, -0.65, 1).normalize().multiplyScalar(distance));
           controls.update();
           controls.saveState();
@@ -185,12 +187,10 @@ export function BoardPreview3D({ doc, height = 520 }: { doc: Doc; width?: number
         scene.add(components);
         for (const e of doc.entities) {
           if (e.kind !== 'comp') continue;
-          const body = componentBody(e, thickness);
-          const mesh = new THREE.Mesh(new THREE.BoxGeometry(body.w, body.h, body.depth), new THREE.MeshStandardMaterial({ color: '#30343a', roughness: 0.75 }));
-          mesh.position.set(body.x, body.y, body.z);
-          mesh.rotation.z = THREE.MathUtils.degToRad(e.rot);
-          components.add(mesh);
+          components.add(createComponentModel(e, thickness));
         }
+        components.updateMatrixWorld(true);
+        assemblyBounds.union(new THREE.Box3().setFromObject(components));
         scene.traverse(obj => {
           if (!(obj instanceof THREE.Mesh)) return;
           for (const material of Array.isArray(obj.material) ? obj.material : [obj.material]) {
@@ -275,7 +275,7 @@ export function BoardPreview3D({ doc, height = 520 }: { doc: Doc; width?: number
       <span className="bp3d-swatch" style={{ background: theme.copperTop }} /> Медь K1
       <span className="bp3d-swatch" style={{ background: theme.copperBottom }} /> K2
       <span className="bp3d-swatch" style={{ background: theme.board }} /> Подложка
-      <span>Корпуса условные; сверловка показана на поверхности.</span>
+      <span>Корпуса с текстурами — приближённые, по типу и посадочному месту; не модели производителя. Сверловка показана на поверхности.</span>
     </div>
   </div>;
 }

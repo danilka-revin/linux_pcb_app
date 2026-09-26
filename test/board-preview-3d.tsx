@@ -2,6 +2,9 @@ import assert from 'node:assert/strict';
 import { createElement } from 'react';
 import { renderToString } from 'react-dom/server.browser';
 import * as THREE from 'three';
+import { componentPackage, createComponentModel } from '../src/ui/component-model-3d';
+import { EXAMPLES, FAMILY_HELP, generate } from '../src/pcb/gen';
+import { compTF, libElsToEnts } from '../src/pcb/expand';
 import type { Comp, Doc } from '../src/pcb/model';
 import { BoardPreview3D, componentBody, createBoardTexture, disposePreviewScene } from '../src/ui/board-preview-3d';
 
@@ -36,8 +39,45 @@ try {
   const back = createBoardTexture(doc, 'green', 'bottom');
   assert(calls.some(c => c.name === 'scale' && c.args[0] === -1), 'back-face UV uses mirrored texture');
   back.dispose();
+  // Every generator family, both board sides, non-zero rotation and local offsets.
+  for (const query of new Set([...EXAMPLES.map(e => e.query), ...FAMILY_HELP.map(e => e.example)])) {
+    const generated = generate(query);
+    assert(generated.ok && generated.els && generated.bl, query);
+    for (const side of ['top', 'bottom'] as const) {
+      const component: Comp = { ...comp, name: generated.title!, ents: libElsToEnts(generated.els), bl: generated.bl, side, rot: 37 };
+      const snapshot = JSON.stringify(component);
+      const model = createComponentModel(component, 1.6);
+      assert.equal(JSON.stringify(component), snapshot, 'model generation must not mutate the footprint');
+      model.updateMatrixWorld(true);
+      const point = model.localToWorld(new THREE.Vector3(2, 3, 1));
+      const expected = compTF(component)({ x: 2, y: 3 });
+      assert(Math.abs(point.x - expected.x) < 1e-8 && Math.abs(point.y - expected.y) < 1e-8, query);
+      assert(Math.abs(point.z - (side === 'top' ? 1.8 : -1.8)) < 1e-8, 'body points away from board');
+      let textured = 0;
+      model.traverse(o => {
+        if (!(o instanceof THREE.Mesh)) return;
+        const positions = o.geometry.getAttribute('position');
+        for (const value of positions.array) assert(Number.isFinite(value), query);
+        const mat = o.material as THREE.MeshStandardMaterial;
+        if (mat.map) { textured++; assert.equal(mat.map.colorSpace, THREE.SRGBColorSpace); }
+      });
+      if (model.userData.package !== 'footprint') assert(textured > 0, `${query}: missing textured body`);
+      const resources = new THREE.Scene(); resources.add(model); disposePreviewScene(resources);
+    }
+  }
+  for (const [name, kind] of [
+    ['DIP-16', 'ic'], ['Резистор 10 мм', 'resistor'], ['Светодиод 5 мм', 'led'],
+    ['Электролит Ø10', 'electrolytic'], ['TO-корпус · отверстие под винт', 'transistor'],
+    ['Клеммник 3×5', 'terminal'], ['DIP-переключатель 8', 'switch'], ['Отверстие Ø3', 'footprint'],
+    ['Arduino Nano', 'module'], ['Кварц HC-49S', 'crystal'], ['Гнездо 2×5', 'socket'],
+    ['R17', 'resistor'], ['unknown-part', 'generic'],
+  ]) assert.equal(componentPackage({ ...comp, name }), kind, name);
+  const fallback = createComponentModel({ ...comp, name: 'unknown-part', ents: undefined }, 1.6);
+  assert(fallback.children.length > 0, 'imported unknown component still has a textured model');
+  const fallbackScene = new THREE.Scene(); fallbackScene.add(fallback); disposePreviewScene(fallbackScene);
   globalThis.document = { createElement: () => ({ getContext: () => null }) } as unknown as Document;
   assert.throws(() => createBoardTexture(doc, 'green', 'top'), /текстуру/);
+  assert.throws(() => createComponentModel(comp, 1.6), /текстуру корпуса/);
 } finally {
   if (previousDocument) globalThis.document = previousDocument;
   else Reflect.deleteProperty(globalThis, 'document');
@@ -63,4 +103,4 @@ assert.deepEqual(counts, { geometry: 1, material: 1, texture: 1 });
 
 const html = renderToString(createElement(BoardPreview3D, { doc }));
 for (const text of ['Загрузка 3D-платы', 'aria-busy="true"', 'Вписать 3D', 'Каркас']) assert(html.includes(text));
-console.log('3D PREVIEW OK: texture aspect, transformed components, drill marks, backside, disposal, SSR');
+console.log('3D PREVIEW OK: texture aspect, transformed components, drill marks, backside, disposal, SSR, all generated package models and textures');
