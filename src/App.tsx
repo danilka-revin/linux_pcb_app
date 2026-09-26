@@ -22,7 +22,8 @@ import {
 } from './pcb/grid';
 import { productionFiles } from './pcb/gerber';
 import { autoroute, clearanceAt, pickEndpoint, endpointOf, type RouteEnd } from './pcb/autoroute';
-import { copperComponents, type NetRouteResult } from './pcb/netroute';
+import { copperComponents, type NetRouteVariants, type NetRouteVariant } from './pcb/netroute';
+import { AutoPlaceDialog, RouteVariantsDialog } from './ui/auto-layout';
 import { NetsPanel, NET_COLORS } from './ui/nets';
 import { InventoryDialog } from './ui/inventory';
 import { download, makeZip } from './pcb/zip';
@@ -421,6 +422,7 @@ export default function App({ cloudUser, onLogout }: { cloudUser?: CloudUser; on
   const [routeMode, setRouteMode] = useState<'pair' | 'nets'>('pair');
   const [activeNet, setActiveNet] = useState<string | null>(null);
   const [routing, setRouting] = useState<string | null>(null);
+  const [routeVariants, setRouteVariants] = useState<{ snapshot: M.Doc; variants: NetRouteVariant[] } | null>(null);
   const routeWorker = useRef<Worker | null>(null);
   const docRef = useRef(doc);
   docRef.current = doc;
@@ -440,7 +442,7 @@ export default function App({ cloudUser, onLogout }: { cloudUser?: CloudUser; on
   }, [doc, tool, routeMode]);
   const [routeA, setRouteA] = useState<RouteEnd | null>(null);
   const [routeMsg, setRouteMsg] = useState<{ msg: string; ok: boolean | null }>({ msg: '', ok: null });
-  const [dialog, setDialog] = useState<'new' | 'export' | 'cnc' | 'panelize' | 'about' | 'inventory' | 'uib' | 'colors' | 'grid' | 'close' | 'cloud' | 'account' | 'board-preview' | null>(null);
+  const [dialog, setDialog] = useState<'new' | 'export' | 'cnc' | 'panelize' | 'about' | 'inventory' | 'uib' | 'colors' | 'grid' | 'close' | 'cloud' | 'account' | 'board-preview' | 'autoplace' | null>(null);
   const [boardPreviewTab, setBoardPreviewTab] = useState<'2d' | '3d'>('2d');
   const [uiConf, setUiConf] = useState<UiState>(loadUi);
   // сохраняем конфигурацию интерфейса сразу (не autosave через таймаут)
@@ -1328,13 +1330,9 @@ export default function App({ cloudUser, onLogout }: { cloudUser?: CloudUser; on
         finish();
         if (event.data.type === 'error') { setRouteMsg({ msg: event.data.text, ok: false }); return; }
         if (docRef.current !== snapshot) { setRouteMsg({ msg: 'Плата была изменена во время расчёта. Запустите трассировку ещё раз.', ok: false }); return; }
-        const r = event.data.result as NetRouteResult;
+        const r = event.data.result as NetRouteVariants;
         if (r.errors.length) { setRouteMsg({ msg: r.errors.join('\n'), ok: false }); return; }
-        if (r.ents.length) commit({ ...snapshot, entities: [...snapshot.entities, ...r.ents] });
-        setSel(new Set());
-        const summary = r.missing ? `Осталось связей: ${r.missing}. ` : 'Все группы соединены. ';
-        const details = r.unresolved.map((n) => `«${n.name}»: ${n.missing}`).join('; ');
-        setRouteMsg({ msg: `${summary}Добавлено: ${r.length.toFixed(1)} мм, переходов: ${r.vias}. Проверено вариантов: ${r.attempts}.` + (details ? `\nНе разведены: ${details}. Проверьте ширину, зазоры и шаг сетки или разрешите верхний слой.` : ''), ok: r.missing === 0 });
+        setRouteVariants({ snapshot, variants: r.variants });
       };
       worker.postMessage({ doc: snapshot, opts: {
         trackW: defs.rtW, clearance: defs.rtClear, holeClear: defs.rtHoleClear,
@@ -1346,7 +1344,19 @@ export default function App({ cloudUser, onLogout }: { cloudUser?: CloudUser; on
       routeWorker.current?.terminate(); routeWorker.current = null; setRouting(null);
       setRouteMsg({ msg: 'Не удалось запустить фоновую трассировку. Плата не изменена.', ok: false });
     }
-  }, [doc, commit, defs]);
+  }, [doc, defs]);
+  const applyRouteVariant = (r: NetRouteVariant) => {
+    if (!routeVariants) return;
+    const { snapshot } = routeVariants;
+    setRouteVariants(null);
+    if (docRef.current !== snapshot) {
+      setRouteMsg({ msg: 'Плата изменилась. Рассчитайте варианты заново.', ok: false }); return;
+    }
+    if (r.ents.length) commit({ ...snapshot, entities: [...snapshot.entities, ...r.ents] });
+    setSel(new Set());
+    const details = r.unresolved.map((n) => `«${n.name}»: ${n.missing}`).join('; ');
+    setRouteMsg({ msg: `«${r.title}». ${r.missing ? `Осталось связей: ${r.missing}.` : 'Все группы соединены.'} Добавлено: ${r.length.toFixed(1)} мм, переходов: ${r.vias}.` + (details ? `\nНе разведены: ${details}.` : ''), ok: r.missing === 0 });
+  };
   const routeClick = useCallback((w: M.Pt, sp: M.Pt) => {
     const tol = defs.snapPx / Math.max(view.s, 0.01);
     let end = pickEndpoint(doc.entities, w, tol);
@@ -1629,7 +1639,7 @@ export default function App({ cloudUser, onLogout }: { cloudUser?: CloudUser; on
       if (e.code === 'Escape') { routeWorker.current.terminate(); routeWorker.current = null; setRouting(null); setRouteMsg({ msg: 'Трассировка отменена. Плата не изменена.', ok: null }); }
       e.preventDefault(); return;
     }
-    if (dialog || preview) return;   // окно открыто — плату не трогаем
+    if (dialog || preview || routeVariants) return;   // окно открыто — плату не трогаем
     const t = e.target as HTMLElement;
     if (t && (t.tagName === 'INPUT' || t.tagName === 'TEXTAREA' || t.tagName === 'SELECT' || t.isContentEditable)) return;
     const ctrl = e.ctrlKey || e.metaKey;
@@ -1709,7 +1719,7 @@ export default function App({ cloudUser, onLogout }: { cloudUser?: CloudUser; on
       default: break;
     }
   }, [
-    dialog, doc, undo, redo, savePrimary, copySel, startPaste, duplicateSel, finishOrCancel,
+    dialog, routeVariants, doc, undo, redo, savePrimary, copySel, startPaste, duplicateSel, finishOrCancel,
     deleteSel, place, preview, rotateSel, mirrorSel, draft, activeCu, mouse.wx, mouse.wy, fit,
     zoomAt, size, nudge, defs.grid, defs.gridUnit, defs.snapOn, setDefs, setTool,
   ]);
@@ -2155,6 +2165,7 @@ export default function App({ cloudUser, onLogout }: { cloudUser?: CloudUser; on
               { sep: true },
               { icon: 'gerber', label: 'Экспорт Gerber / PNG / ЧПУ…', kbd: 'Ctrl+E', onClick: () => setDialog('export') },
               { icon: 'cnc', label: 'G-code для фрезерного станка…', onClick: () => setDialog('cnc') },
+              { icon: 'fit', label: 'Автокомпоновка компонентов…', onClick: () => setDialog('autoplace') },
               { icon: 'panel', label: 'Размножить плату (панелизация)…', onClick: () => setDialog('panelize') },
               { sep: true },
               { icon: 'inventory', label: 'Перечень площадок и отверстий…', onClick: () => setDialog('inventory') },
@@ -2177,6 +2188,7 @@ export default function App({ cloudUser, onLogout }: { cloudUser?: CloudUser; on
           >
             <Ic n="gen" />
           </button>
+          {tb('panel', 'Автокомпоновка компонентов', () => setDialog('autoplace'))}
         </div>
       ),
       undo: (
@@ -2554,11 +2566,22 @@ export default function App({ cloudUser, onLogout }: { cloudUser?: CloudUser; on
         </span>
       </div>
 
+      {dialog === 'autoplace' && <AutoPlaceDialog doc={doc} selected={sel} clearance={defs.rtClear}
+        onClose={() => setDialog(null)} onApply={(r) => {
+          commit({ ...doc, entities: r.entities });
+          setDraft(null); setRouteA(null); setProbe(null); setRouteMsg({ msg: '', ok: null });
+          setDialog(null); fit();
+        }} />}
+      {routeVariants && <RouteVariantsDialog doc={routeVariants.snapshot} variants={routeVariants.variants}
+        onApply={applyRouteVariant} onClose={() => {
+          setRouteVariants(null);
+          setRouteMsg({ msg: 'Выбор отменён. Плата не изменена.', ok: null });
+        }} />}
       {routing !== null && <div className="modal-bg" role="dialog" aria-modal="true" aria-labelledby="routing-title">
         <div className="modal">
-          <h2 id="routing-title">Разводка всей платы</h2>
+          <h2 id="routing-title">Расчёт трёх вариантов трассировки групп</h2>
           <RoutingProgress text={routing} />
-          <p>Поиск выполняется в фоне. Готовый вариант будет добавлен одним действием; Ctrl+Z отменит всю разводку.</p>
+          <p>Поиск выполняется в фоне. После расчёта выберите один из трёх вариантов. До выбора плата не изменяется; Ctrl+Z отменит применение.</p>
           <button className="btn" autoFocus onClick={cancelRouting}>Отменить (Esc)</button>
         </div>
       </div>}

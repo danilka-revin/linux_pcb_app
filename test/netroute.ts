@@ -146,3 +146,45 @@ console.log('NETROUTE OK');
   }
   console.log('NETS: catalog SMD/connect terminals, both sides/all rotations, no vias, rerun OK');
 }
+
+// Explicit alternatives are independent, retain design rules and honestly mark identical geometry.
+{
+  const { routeNetVariants, routeGeometryKey } = await import('../src/pcb/netroute');
+  const d = M.newBoard(50, 40);
+  d.entities.push(pad('a', 8, 8), pad('b', 40, 8), pad('c', 25, 18), pad('d', 8, 30), pad('e', 40, 30));
+  d.nets = [net('branch', ['a', 'b', 'c']), net('other', ['d', 'e'])];
+  const before = JSON.stringify(d);
+  const progress: string[] = [];
+  const result = routeNetVariants(d, { ...O, allowTop: false }, text => progress.push(text));
+  assert.deepEqual(result.errors, []);
+  assert.equal(result.variants.length, 3);
+  assert.equal(new Set(result.variants.map(v => v.strategy)).size, 3);
+  assert.equal(JSON.stringify(d), before, 'calculating variants must not modify document');
+  assert(progress.some(s => s.includes('Вариант 3/3')));
+  for (const v of result.variants) {
+    check(d, v.ents);
+    assert.equal(v.vias, 0);
+    assert(v.ents.every(e => e.kind === 'track' && e.layer === 'k2' && e.w === O.trackW));
+    if (v.sameAs !== undefined) assert.equal(routeGeometryKey(v.ents), routeGeometryKey(result.variants[v.sameAs].ents));
+  }
+  assert(new Set(result.variants.map(v => routeGeometryKey(v.ents))).size >= 2, 'branching layout should have real geometric alternatives');
+  const done = applied(d, result.variants[0].ents);
+  const repeated = routeNetVariants(done, O);
+  assert(repeated.variants.every(v => v.missing === 0 && v.ents.length === 0), 'rerun must not duplicate copper');
+  assert.equal(repeated.variants[1].sameAs, 0);
+  assert.equal(repeated.variants[2].sameAs, 0);
+  assert(routeNetVariants({ ...d, nets: [] }, O).errors.length > 0);
+  assert.equal(routeNetVariants({ ...d, nets: [] }, O).variants.length, 0);
+  // Every profile keeps partial results visible instead of claiming a completed board.
+  const blocked = M.newBoard(50, 40);
+  blocked.entities = [pad('a', 8, 12), pad('b', 40, 12),
+    { id: 'wall', kind: 'track', w: 1, layer: 'k2', pts: [{ x: 25, y: 0 }, { x: 25, y: 40 }] }];
+  blocked.nets = [net('blocked', ['a', 'b'])];
+  const partial = routeNetVariants(blocked, { ...O, allowTop: false });
+  assert(partial.variants.every(v => v.missing === 1 && v.unresolved[0].name === 'blocked'));
+  for (const v of routeNetVariants(blocked, O).variants) {
+    check(blocked, v.ents);
+    assert.equal(v.vias, 2);
+  }
+  console.log('NET VARIANTS OK: three strategies, real alternatives, duplicate marking, same snapshot, restrictions, partial results');
+}
