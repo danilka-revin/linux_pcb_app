@@ -1,6 +1,6 @@
 // PSBees — редактор печатных плат для Linux и Windows (аналог Sprint-Layout;
 // фирменный стиль «пчелиный»: оса с молнией, золото на графите; тёмная и светлая темы).
-import { Fragment, useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from 'react';
+import { Fragment, Suspense, lazy, useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from 'react';
 import * as M from './pcb/model';
 import { expandComp, expandDoc, libElsToEnts } from './pcb/expand';
 import { bboxOf as libBBox } from './pcb/footprint';
@@ -25,6 +25,9 @@ import { copperComponents, type NetRouteResult } from './pcb/netroute';
 import { NetsPanel, NET_COLORS } from './ui/nets';
 import { InventoryDialog } from './ui/inventory';
 import { download, makeZip } from './pcb/zip';
+
+// ЧПУ открывают редко; CAM и его интерфейс загружаются по запросу, не при старте редактора.
+const CncDialog = lazy(() => import('./ui/cnc').then((m) => ({ default: m.CncDialog })));
 import { Ic } from './ui/icons';
 import {
   LayersPanel, PropsPanel, TOOLS,
@@ -40,6 +43,8 @@ import { LibPreviewDialog } from './ui/libpreview';
 import { applyCustomColors, loadCustomColors, saveCustomColors, type CustomColors } from './ui/palette';
 import { UiBuilderDialog, useUpdater } from './ui/updater';
 import { MenuBtn, Modal } from './ui/widgets';
+import { cloudApi, cloudError, CloudError, type CloudProject, type CloudProjectDetail, type CloudUser } from './cloud/api';
+import { CloudAccountDialog, CloudProjectsDialog, cloudSaveLabel, type CloudSaveState } from './cloud/projects';
 
 declare global {
   interface Window {
@@ -88,16 +93,17 @@ type Drag =
 
 const AUTOSAVE_KEY = 'lauaut.autosave';
 const QUERY_KEY = 'lauaut.genQuery';
-const loadQuery = (): string => {
+const queryKey = (userId?: string) => userId ? `${QUERY_KEY}.${userId}` : QUERY_KEY;
+const loadQuery = (userId?: string): string => {
   try {
-    return globalThis.localStorage?.getItem(QUERY_KEY) ?? 'dip 8';
+    return globalThis.localStorage?.getItem(queryKey(userId)) ?? 'dip 8';
   } catch {
     return 'dip 8';
   }
 };
-const saveQuery = (q: string): void => {
+const saveQuery = (q: string, userId?: string): void => {
   try {
-    globalThis.localStorage?.setItem(QUERY_KEY, q);
+    globalThis.localStorage?.setItem(queryKey(userId), q);
   } catch {
     /* приватный режим — не страшно */
   }
@@ -266,9 +272,23 @@ const DEFAULT_DEFS: Defs = {
   rtAutoPad: true,
 };
 
-function loadDoc(): M.Doc {
+function draftKey(userId?: string): string { return userId ? `psbees.cloud.draft.${userId}` : AUTOSAVE_KEY; }
+function openCloudKey(userId: string): string { return `psbees.cloud.open.${userId}`; }
+function rememberCloud(userId: string, project: CloudProject | null): void {
   try {
-    const raw = localStorage.getItem(AUTOSAVE_KEY);
+    if (project) sessionStorage.setItem(openCloudKey(userId), JSON.stringify({ id: project.id, version: project.version }));
+    else sessionStorage.removeItem(openCloudKey(userId));
+  } catch { /* недоступно хранилище вкладки */ }
+}
+function rememberDraft(userId: string, document: M.Doc): void {
+  try { sessionStorage.setItem(draftKey(userId), JSON.stringify(document)); } catch { /* лимит браузера */ }
+}
+
+function loadDoc(userId?: string): M.Doc {
+  try {
+    // На общем сервере не пишем приватную плату в общий localStorage компьютера:
+    // черновик живёт только в этой вкладке и удаляется при выходе из аккаунта.
+    const raw = (userId ? sessionStorage : localStorage).getItem(draftKey(userId));
     if (raw) {
       const d = JSON.parse(raw);
       if (d && Array.isArray(d.entities) && typeof d.w === 'number') return d as M.Doc;
@@ -287,9 +307,17 @@ function loadDefs(): Defs {
 
 const baseId = (id: string): string => id.split(':')[0];
 
-export default function App() {
+export default function App({ cloudUser, onLogout }: { cloudUser?: CloudUser; onLogout?: () => Promise<void> } = {}) {
   // ---------------- состояние ----------------
-  const [doc, setDoc] = useState<M.Doc>(loadDoc);
+  const [doc, setDoc] = useState<M.Doc>(() => loadDoc(cloudUser?.id));
+  const [activeCloud, setActiveCloud] = useState<CloudProject | null>(null);
+  const activeCloudRef = useRef<CloudProject | null>(null);
+  activeCloudRef.current = activeCloud;
+  const syncedCloudDoc = useRef<M.Doc | null>(null);
+  const savingCloud = useRef(false);
+  const restoreGeneration = useRef(0);
+  const [cloudStatus, setCloudStatus] = useState<CloudSaveState>('local');
+  const [cloudMessage, setCloudMessage] = useState('');
   const [sel, setSel] = useState<Set<string>>(new Set());
   const [tool, setToolRaw] = useState<ToolId2>('select');
   const [draft, setDraft] = useState<Draft | null>(null);
@@ -304,8 +332,8 @@ export default function App() {
   const [place, setPlace] = useState<Detail | null>(null);
   // деталь, открытая крупным предпросмотром
   const [preview, setPreview] = useState<Detail | null>(null);
-  const [query, setQueryRaw] = useState<string>(loadQuery);
-  const [store, setStore] = useState<Store>(loadStore);
+  const [query, setQueryRaw] = useState<string>(() => loadQuery(cloudUser?.id));
+  const [store, setStore] = useState<Store>(() => loadStore(cloudUser?.id));
   const [libTab, setLibTab] = useState<'gen' | 'lib' | 'catalog'>('gen');
   const [libFilter, setLibFilter] = useState('');
   const [collapsed, setCollapsed] = useState<Set<string>>(new Set());
@@ -314,14 +342,14 @@ export default function App() {
   const patchStore = useCallback((fn: (s: Store) => Store) => {
     setStore((prev) => {
       const nx = fn(prev);
-      saveStore(nx);
+      saveStore(nx, cloudUser?.id);
       return nx;
     });
-  }, []);
+  }, [cloudUser]);
   const setQuery = useCallback((q: string) => {
     setQueryRaw(q);
-    saveQuery(q);
-  }, []);
+    saveQuery(q, cloudUser?.id);
+  }, [cloudUser]);
   // генерация — чистая функция строки: правка любого параметра = правка строки
   const gen = useMemo(() => generate(query), [query]);
   const tree = useMemo(() => buildTree(store, libFilter), [store, libFilter]);
@@ -380,7 +408,7 @@ export default function App() {
   }, [doc, tool, routeMode]);
   const [routeA, setRouteA] = useState<RouteEnd | null>(null);
   const [routeMsg, setRouteMsg] = useState<{ msg: string; ok: boolean | null }>({ msg: '', ok: null });
-  const [dialog, setDialog] = useState<'new' | 'export' | 'panelize' | 'about' | 'inventory' | 'uib' | 'colors' | 'grid' | 'close' | null>(null);
+  const [dialog, setDialog] = useState<'new' | 'export' | 'cnc' | 'panelize' | 'about' | 'inventory' | 'uib' | 'colors' | 'grid' | 'close' | 'cloud' | 'account' | null>(null);
   const [uiConf, setUiConf] = useState<UiState>(loadUi);
   // сохраняем конфигурацию интерфейса сразу (не autosave через таймаут)
   const persistUi = useCallback((c: UiState) => {
@@ -389,7 +417,7 @@ export default function App() {
   }, []);
   // версия сборки (сервер отдаёт /version из dist/version.json)
   const [appVer, setAppVer] = useState<string | null>(null);
-  const upd = useUpdater(appVer);
+  const upd = useUpdater(appVer, !cloudUser);
   // «Тест цепи»: подсвеченная электрическая цепь (все связные пятки и дорожки)
   const [probe, setProbe] = useState<{
     entId: string; ents: Set<string>;
@@ -471,10 +499,11 @@ export default function App() {
   // ---------------- автосохранение ----------------
   useEffect(() => {
     const t = setTimeout(() => {
-      try { localStorage.setItem(AUTOSAVE_KEY, JSON.stringify(doc)); } catch { /* ignore */ }
+      if (docRef.current !== doc) return; // не затереть уже открытый другой проект старым таймером
+      try { (cloudUser ? sessionStorage : localStorage).setItem(draftKey(cloudUser?.id), JSON.stringify(doc)); } catch { /* ignore */ }
     }, 400);
     return () => clearTimeout(t);
-  }, [doc]);
+  }, [doc, cloudUser]);
   useEffect(() => {
     try { localStorage.setItem(DEFS_KEY, JSON.stringify(defs)); } catch { /* ignore */ }
   }, [defs]);
@@ -515,6 +544,46 @@ export default function App() {
   useEffect(() => {
     if (!fitted.current && size.w > 100) { fitted.current = true; fit(); }
   }, [size, fit]);
+  const fitRef = useRef(fit);
+  fitRef.current = fit;
+
+  // После обновления страницы безопасно восстанавливаем последний открытый
+  // проект. При несовпадении с черновиком вкладки НЕ отправляем его на сервер
+  // автоматически: это мог быть изменённый на другом компьютере проект.
+  useEffect(() => {
+    if (!cloudUser) return;
+    let saved: { id: string; version: number } | null = null;
+    try {
+      const raw = sessionStorage.getItem(openCloudKey(cloudUser.id));
+      if (raw) saved = JSON.parse(raw);
+    } catch { /* хранилище недоступно */ }
+    if (!saved || !/^[0-9a-f-]{36}$/i.test(saved.id)) return;
+    const userId = cloudUser.id;
+    const generation = restoreGeneration.current;
+    let alive = true;
+    void cloudApi<{ project: CloudProjectDetail }>(`/projects/${saved.id}`).then(({ project }) => {
+      if (!alive || generation !== restoreGeneration.current || activeCloudRef.current) return;
+      let hasDraft = false;
+      try { hasDraft = !!sessionStorage.getItem(draftKey(userId)); } catch { /* ignore */ }
+      const matches = !hasDraft || JSON.stringify(docRef.current) === JSON.stringify(project.document);
+      syncedCloudDoc.current = project.document;
+      activeCloudRef.current = project; setActiveCloud(project);
+      rememberCloud(userId, project);
+      if (matches) {
+        setDoc(project.document); rememberDraft(userId, project.document);
+        setCloudStatus('saved'); setCloudMessage('');
+        setTimeout(() => fitRef.current(project.document), 50);
+      } else {
+        setCloudStatus('conflict');
+        setCloudMessage('Черновик этой вкладки отличается от серверной платы. Сохраните копию или загрузите версию с сервера.');
+      }
+    }).catch((error: unknown) => {
+      if (!alive || generation !== restoreGeneration.current) return;
+      if (error instanceof CloudError && error.status === 404) rememberCloud(userId, null);
+      else { setCloudStatus('error'); setCloudMessage(cloudError(error)); }
+    });
+    return () => { alive = false; };
+  }, [cloudUser]);
 
   // ---------------- сетка и привязка ----------------
   // настройки сетки живут в общих настройках инструментов (defs), см. ui/grid.tsx
@@ -762,9 +831,164 @@ export default function App() {
 
   // ---------------- файл/экспорт ----------------
   const saveFile = useCallback(() => {
-    const blob = new Blob([JSON.stringify(doc, null, 1)], { type: 'application/json' });
-    download(`${doc.name || 'board'}.laypcb.json`, blob);
-  }, [doc]);
+    const snapshot = docRef.current;
+    const blob = new Blob([JSON.stringify(snapshot, null, 1)], { type: 'application/json' });
+    download(`${snapshot.name || 'board'}.laypcb.json`, blob);
+  }, []);
+
+  // На общем сервере локальный файл остаётся резервной копией. Новая плата,
+  // импорт и открытие другого проекта ОТВЯЗЫВАЮТ текущий ID: иначе автосейв
+  // тихо перезапишет чужую плату новым содержимым.
+  const prepareReplace = useCallback((): boolean => {
+    if (!cloudUser) return true;
+    if (savingCloud.current) { alert('Дождитесь окончания сохранения на сервере.'); return false; }
+    const current = activeCloudRef.current, snapshot = docRef.current;
+    const localWork = !current && (snapshot.entities.length > 1 || snapshot.name !== 'Плата' || snapshot.w !== 100 || snapshot.h !== 80 || !!snapshot.nets?.length);
+    if ((current && snapshot !== syncedCloudDoc.current) || localWork) {
+      if (!window.confirm('Текущая плата ещё не сохранена в облаке. Скачать её локальную копию и продолжить?')) return false;
+      saveFile();
+    }
+    restoreGeneration.current++;
+    rememberCloud(cloudUser.id, null);
+    setActiveCloud(null); activeCloudRef.current = null; syncedCloudDoc.current = null;
+    setCloudStatus('local'); setCloudMessage('');
+    return true;
+  }, [cloudUser, saveFile]);
+
+  const saveCloud = useCallback(async (): Promise<void> => {
+    if (!cloudUser) return;
+    const project = activeCloudRef.current;
+    if (!project) { setDialog('cloud'); return; }
+    if (cloudStatus === 'conflict') throw new CloudError('Сначала сохраните копию или откройте новую версию с сервера.', 409);
+    if (savingCloud.current) throw new CloudError('Сохранение уже выполняется.', 409);
+    const snapshot = docRef.current;
+    if (snapshot === syncedCloudDoc.current) { setCloudStatus('saved'); return; }
+    savingCloud.current = true; setCloudStatus('saving'); setCloudMessage('');
+    try {
+      const { project: updated } = await cloudApi<{ project: CloudProject }>(`/projects/${project.id}`, 'PUT', {
+        name: project.name, document: snapshot, version: project.version,
+      });
+      syncedCloudDoc.current = snapshot;
+      activeCloudRef.current = updated; setActiveCloud(updated);
+      rememberCloud(cloudUser.id, updated);
+      if (docRef.current === snapshot) rememberDraft(cloudUser.id, snapshot);
+      setCloudStatus(docRef.current === snapshot ? 'saved' : 'dirty');
+    } catch (error) {
+      setCloudStatus(error instanceof CloudError && error.status === 409 ? 'conflict' : 'error');
+      setCloudMessage(cloudError(error));
+      throw error;
+    } finally { savingCloud.current = false; }
+  }, [cloudUser, cloudStatus]);
+
+  // После привязки к проекту плата автоматически уходит на сервер через 1.8 с
+  // после последнего изменения. Ошибки и конфликты НЕ скрываются и не затираются.
+  useEffect(() => {
+    if (!cloudUser || !activeCloud || doc === syncedCloudDoc.current || cloudStatus === 'error' || cloudStatus === 'conflict') return;
+    if (!savingCloud.current && cloudStatus !== 'dirty') setCloudStatus('dirty');
+    const timer = setTimeout(() => { if (!savingCloud.current) void saveCloud().catch(() => {}); }, 1800);
+    return () => clearTimeout(timer);
+  }, [cloudUser, activeCloud, doc, cloudStatus, saveCloud]);
+
+  useEffect(() => {
+    if (!cloudUser) return;
+    const onLeave = (event: BeforeUnloadEvent) => {
+      rememberDraft(cloudUser.id, docRef.current);
+      const hasLocalWork = !activeCloud && (doc.entities.length > 1 || doc.name !== 'Плата');
+      if (savingCloud.current || (activeCloud && doc !== syncedCloudDoc.current) || hasLocalWork) {
+        event.preventDefault(); event.returnValue = '';
+      }
+    };
+    window.addEventListener('beforeunload', onLeave);
+    return () => window.removeEventListener('beforeunload', onLeave);
+  }, [cloudUser, activeCloud, doc]);
+
+  const createCloud = useCallback(async (name: string): Promise<void> => {
+    if (!cloudUser || savingCloud.current) throw new CloudError('Дождитесь окончания сохранения на сервере.', 409);
+    restoreGeneration.current++;
+    const snapshot = docRef.current;
+    savingCloud.current = true; setCloudStatus('saving'); setCloudMessage('');
+    try {
+      const { project } = await cloudApi<{ project: CloudProject }>('/projects', 'POST', { name, document: snapshot });
+      const updatedDoc = snapshot.name === project.name ? snapshot : { ...snapshot, name: project.name };
+      syncedCloudDoc.current = updatedDoc;
+      activeCloudRef.current = project; setActiveCloud(project);
+      rememberCloud(cloudUser.id, project);
+      if (docRef.current === snapshot) {
+        if (updatedDoc !== snapshot) setDoc(updatedDoc);
+        rememberDraft(cloudUser.id, updatedDoc);
+      }
+      setCloudStatus(docRef.current === snapshot ? 'saved' : 'dirty');
+    } catch (error) {
+      setCloudStatus('error'); setCloudMessage(cloudError(error)); throw error;
+    } finally { savingCloud.current = false; }
+  }, [cloudUser]);
+
+  const loadCloud = useCallback(async (project: CloudProject): Promise<boolean> => {
+    if (savingCloud.current) throw new CloudError('Дождитесь окончания сохранения на сервере.', 409);
+    const { project: latest } = await cloudApi<{ project: CloudProjectDetail }>(`/projects/${project.id}`);
+    if (!prepareReplace()) return false;
+    past.current = []; future.current = [];
+    setDoc(latest.document); syncedCloudDoc.current = latest.document;
+    setActiveCloud(latest); activeCloudRef.current = latest;
+    if (cloudUser) { rememberDraft(cloudUser.id, latest.document); rememberCloud(cloudUser.id, latest); }
+    setCloudStatus('saved'); setCloudMessage('');
+    setSel(new Set()); setDraft(null); setRouteA(null); setActiveNet(null);
+    setTimeout(() => fit(latest.document), 50);
+    return true;
+  }, [prepareReplace, fit, cloudUser]);
+
+  const reloadCloud = useCallback(async (): Promise<boolean> => {
+    const project = activeCloudRef.current;
+    if (!project) return false;
+    return loadCloud(project);
+  }, [loadCloud]);
+
+  const renameCloud = useCallback(async (project: CloudProject, name: string): Promise<void> => {
+    if (savingCloud.current) throw new CloudError('Дождитесь окончания сохранения на сервере.', 409);
+    try {
+      const { project: renamed } = await cloudApi<{ project: CloudProject }>(`/projects/${project.id}`, 'PATCH', { name, version: project.version });
+      if (activeCloudRef.current?.id === project.id) {
+        const currentDoc = docRef.current;
+        const wasSynced = currentDoc === syncedCloudDoc.current;
+        const nextDoc = { ...currentDoc, name: renamed.name };
+        if (wasSynced) syncedCloudDoc.current = nextDoc;
+        setDoc(nextDoc);
+        activeCloudRef.current = renamed; setActiveCloud(renamed);
+        if (cloudUser) { rememberCloud(cloudUser.id, renamed); rememberDraft(cloudUser.id, nextDoc); }
+        setCloudStatus(wasSynced ? 'saved' : 'dirty');
+      }
+    } catch (error) {
+      if (activeCloudRef.current?.id === project.id && error instanceof CloudError && error.status === 409) {
+        setCloudStatus('conflict'); setCloudMessage(cloudError(error));
+      }
+      throw error;
+    }
+  }, [cloudUser]);
+
+  const deleteCloud = useCallback(async (project: CloudProject): Promise<void> => {
+    if (savingCloud.current) throw new CloudError('Дождитесь окончания сохранения на сервере.', 409);
+    await cloudApi(`/projects/${project.id}`, 'DELETE', { version: project.version });
+    if (activeCloudRef.current?.id === project.id) {
+      if (docRef.current !== syncedCloudDoc.current) saveFile(); // сохранить несохранённую копию перед отвязкой
+      if (cloudUser) { rememberCloud(cloudUser.id, null); rememberDraft(cloudUser.id, docRef.current); }
+      setActiveCloud(null); activeCloudRef.current = null; syncedCloudDoc.current = null;
+      setCloudStatus('local'); setCloudMessage('');
+    }
+  }, [saveFile, cloudUser]);
+
+  const logoutCloud = useCallback(async () => {
+    if (!onLogout) return;
+    if (savingCloud.current) throw new CloudError('Дождитесь окончания сохранения на сервере.', 409);
+    if ((activeCloud && doc !== syncedCloudDoc.current) || (!activeCloud && (doc.entities.length > 1 || doc.name !== 'Плата'))) {
+      if (!window.confirm('Есть несохранённая плата. Скачать локальную копию и выйти?')) return;
+      saveFile();
+    }
+    await onLogout();
+    if (cloudUser) {
+      rememberCloud(cloudUser.id, null);
+      try { sessionStorage.removeItem(draftKey(cloudUser.id)); } catch { /* приватный режим */ }
+    }
+  }, [cloudUser, onLogout, activeCloud, doc, saveFile]);
 
   const openFile = useCallback((f: File) => {
     f.arrayBuffer().then((ab) => {
@@ -773,7 +997,9 @@ export default function App() {
           // Sprint-Layout: .lay6 — плата. Макросы .lmk платой не хранятся:
           // деталь рисует генератор по строке описания (.lmk грузится в библиотеку)
           const { doc: nd, warnings } = lay6ToDoc(ab);
-          commit(nd);
+          if (!prepareReplace()) return;
+          if (cloudUser) { past.current = []; future.current = []; setDoc(nd); rememberDraft(cloudUser.id, nd); }
+          else commit(nd);
           setSel(new Set());
           setTimeout(() => fit(nd), 50);
           if (warnings.length)
@@ -785,14 +1011,16 @@ export default function App() {
           throw new Error('формат');
         const nd = d as M.Doc;
         nd.entities.forEach((e) => { if (!e.id) e.id = M.uid(); });
-        commit(nd);
+        if (!prepareReplace()) return;
+        if (cloudUser) { past.current = []; future.current = []; setDoc(nd); rememberDraft(cloudUser.id, nd); }
+        else commit(nd);
         setSel(new Set());
         setTimeout(() => fit(nd), 50);
       } catch {
         alert('Не удалось открыть файл: неверный формат проекта.');
       }
     });
-  }, [commit, fit]);
+  }, [commit, fit, cloudUser, prepareReplace]);
 
   const exportLay6 = useCallback(() => {
     const base = (doc.name || 'board').replace(/[^\wа-яА-ЯёЁ-]+/g, '_');
@@ -855,11 +1083,11 @@ export default function App() {
       const r = importJSON(txt, store);
       if (!r.ok) { alert(r.error); return; }
       setStore(r.store);
-      saveStore(r.store);
+      saveStore(r.store, cloudUser?.id);
       setLibTab('lib');
       alert(`Загружено деталей: ${r.added}`);
     }).catch(() => alert('Не удалось прочитать файл.'));
-  }, [store, patchStore]);
+  }, [store, patchStore, cloudUser]);
 
   const exportGerber = useCallback(() => {
     const base = (doc.name || 'board').replace(/[^\wа-яА-ЯёЁ-]+/g, '_');
@@ -895,11 +1123,20 @@ export default function App() {
   }, [doc, commit, fit]);
 
   const newBoardDlg = useCallback((name: string, w: number, h: number) => {
-    commit(M.newBoard(w, h, name));
-    setSel(new Set());
+    if (!prepareReplace()) return;
+    const next = M.newBoard(w, h, name);
+    if (cloudUser) { past.current = []; future.current = []; setDoc(next); rememberDraft(cloudUser.id, next); }
+    else commit(next);
+    setSel(new Set()); setDraft(null); setRouteA(null);
     setDialog(null);
-    setTimeout(() => fit(), 50);
-  }, [commit, fit]);
+    setTimeout(() => fit(next), 50);
+  }, [commit, fit, cloudUser, prepareReplace]);
+
+  const savePrimary = useCallback(() => {
+    if (!cloudUser) { saveFile(); return; }
+    if (!activeCloudRef.current || cloudStatus === 'conflict') { setDialog('cloud'); return; }
+    void saveCloud().catch(() => setDialog('cloud'));
+  }, [cloudUser, cloudStatus, saveCloud, saveFile]);
 
   // ---------------- указатель ----------------
   const getPos = (e: { clientX: number; clientY: number }) => {
@@ -1351,7 +1588,7 @@ export default function App() {
       switch (e.code) {
         case 'KeyZ': if (e.shiftKey) redo(); else undo(); e.preventDefault(); return;
         case 'KeyY': redo(); e.preventDefault(); return;
-        case 'KeyS': saveFile(); e.preventDefault(); return;
+        case 'KeyS': savePrimary(); e.preventDefault(); return;
         case 'KeyO': fileRef.current?.click(); e.preventDefault(); return;
         case 'KeyA': setSel(new Set(doc.entities.map((en) => en.id))); e.preventDefault(); return;
         case 'KeyC': copySel(); e.preventDefault(); return;
@@ -1422,7 +1659,7 @@ export default function App() {
       default: break;
     }
   }, [
-    dialog, doc, undo, redo, saveFile, copySel, startPaste, duplicateSel, finishOrCancel,
+    dialog, doc, undo, redo, savePrimary, copySel, startPaste, duplicateSel, finishOrCancel,
     deleteSel, place, preview, rotateSel, mirrorSel, draft, activeCu, mouse.wx, mouse.wy, fit,
     zoomAt, size, nudge, defs.grid, defs.gridUnit, defs.snapOn, setDefs, setTool,
   ]);
@@ -1789,9 +2026,14 @@ export default function App() {
   }, [uiConf]);
   const updButton = upd.Button;
   const closeApplication = useCallback(() => {
+    if (cloudUser && (savingCloud.current || (activeCloud && doc !== syncedCloudDoc.current)
+      || (!activeCloud && (doc.entities.length > 1 || doc.name !== 'Плата')))) {
+      if (!window.confirm('Изменения ещё не сохранены на сервере. Скачать локальную копию и закрыть?')) return;
+      saveFile();
+    }
     // Синхронно сбрасываем текущую плату перед выходом, не полагаясь на таймер autosave.
     try {
-      localStorage.setItem(AUTOSAVE_KEY, JSON.stringify(doc));
+      (cloudUser ? sessionStorage : localStorage).setItem(draftKey(cloudUser?.id), JSON.stringify(doc));
       localStorage.setItem(DEFS_KEY, JSON.stringify(defs));
       SAVE_UI(uiConf);
     } catch { /* приватный режим / переполненное хранилище */ }
@@ -1804,7 +2046,7 @@ export default function App() {
     // В обычной вкладке браузер может запретить закрытие окна, открытого вручную.
     try { window.close(); } catch { /* браузер запрещает закрывать вкладку */ }
     setDialog('close');
-  }, [doc, defs, uiConf]);
+  }, [doc, defs, uiConf, cloudUser, activeCloud, saveFile]);
 
   // ---------------- верхняя панель (одна строка, конструктор интерфейса) ----------------
   // Мемоизирована: движение мыши не пересобирает шапку (в ней, среди прочего,
@@ -1824,12 +2066,16 @@ export default function App() {
       file: (
         <div className="tb-group" key="file">
           {tb('new', 'Новая плата', () => setDialog('new'))}
-          {tb('open', 'Открыть проект (Ctrl+O)', () => fileRef.current?.click())}
-          {tb('save', 'Сохранить проект (Ctrl+S)', saveFile)}
+          {tb('open', 'Открыть локальный файл (Ctrl+O)', () => fileRef.current?.click())}
+          {tb('save', cloudUser ? 'Сохранить на сервере (Ctrl+S)' : 'Скачать проект (Ctrl+S)', savePrimary)}
           <MenuBtn
             title="Экспорт и операции с платой"
             items={[
-              { icon: 'gerber', label: 'Экспорт Gerber / PNG…', kbd: 'Ctrl+E', onClick: () => setDialog('export') },
+              { icon: 'save', label: 'Скачать проект файлом (.laypcb.json)', onClick: saveFile },
+              ...(cloudUser ? [{ icon: 'cloud', label: 'Мои облачные проекты…', onClick: () => setDialog('cloud') }] : []),
+              { sep: true },
+              { icon: 'gerber', label: 'Экспорт Gerber / PNG / ЧПУ…', kbd: 'Ctrl+E', onClick: () => setDialog('export') },
+              { icon: 'cnc', label: 'G-code для фрезерного станка…', onClick: () => setDialog('cnc') },
               { icon: 'panel', label: 'Размножить плату (панелизация)…', onClick: () => setDialog('panelize') },
               { sep: true },
               { icon: 'inventory', label: 'Перечень площадок и отверстий…', onClick: () => setDialog('inventory') },
@@ -1899,7 +2145,7 @@ export default function App() {
 
     const quickActions = (
       <div className="tb-group toolbar-quick" key="quick-actions" aria-label="Обновление и настройки интерфейса">
-        {updButton}
+        {!cloudUser && updButton}
         {tb('uib', 'Конструктор интерфейса', () => setDialog('uib'))}
         {tb('palette', 'Настроить цвета интерфейса', () => setDialog('colors'))}
       </div>
@@ -1922,6 +2168,14 @@ export default function App() {
             {id === 'undo' && quickActions}
           </Fragment>
         ))}
+        {cloudUser && <div className="tb-group cloud-header-group" aria-label="Облачное хранилище">
+          <button className={'tb-btn cloud-header-save ' + cloudStatus} type="button"
+            title={`${activeCloud?.name ?? 'Локальный черновик'}: ${cloudSaveLabel(cloudStatus)}${cloudMessage ? ' · ' + cloudMessage : ''}`}
+            onClick={() => setDialog('cloud')}><Ic n="cloud" size={17} /><span>{cloudStatus === 'saved' ? 'Сохранено' : cloudStatus === 'saving' ? 'Сохранение…' : cloudStatus === 'conflict' ? 'Конфликт' : cloudStatus === 'error' ? 'Ошибка' : activeCloud ? 'Изменения…' : 'Не в облаке'}</span></button>
+          <button className="tb-btn cloud-header-projects" type="button" title="Открыть мои проекты на сервере" onClick={() => setDialog('cloud')}>Проекты</button>
+          <button className="tb-btn cloud-header-account" type="button" title={`Учётная запись: ${cloudUser.email}`} onClick={() => setDialog('account')}>
+            {cloudUser.email.split('@')[0]}</button>
+        </div>}
         <div className="tb-group toolbar-exit" key="exit" aria-label="Выход">
           <button type="button" className="tb-btn close-app" title="Закрыть приложение / сайт"
             aria-label="Закрыть приложение или вкладку" onClick={closeApplication}>
@@ -1930,7 +2184,8 @@ export default function App() {
         </div>
       </div>
     );
-  }, [uiConf, uiOrder, defs, view.s, view.mir, activeCu, size, theme, updButton, saveFile, undo, redo, fit, zoomAt, setDefs, closeApplication]);
+  }, [uiConf, uiOrder, defs, view.s, view.mir, activeCu, size, theme, updButton, saveFile, savePrimary,
+    cloudUser, activeCloud, cloudStatus, cloudMessage, undo, redo, fit, zoomAt, setDefs, closeApplication]);
 
   // ---------------- док инструментов у холста ----------------
   // Группа «Инструменты» конструктора интерфейса управляет видимостью дока.
@@ -2011,6 +2266,8 @@ export default function App() {
               />
             </div>
           ) : libTab === 'lib' ? (
+            <>
+            {cloudUser && <div className="cloud-library-hint">Детали хранятся только в этом браузере (для вашего аккаунта). Для переноса используйте экспорт/импорт библиотеки.</div>}
             <MacroTree
               store={store}
               tree={tree}
@@ -2043,6 +2300,7 @@ export default function App() {
               onExport={exportLibJson}
               onImport={() => libFileRef.current?.click()}
             />
+            </>
           ) : (
             <FootprintCatalog onPlace={placeFromCatalog} onSave={saveCatalogToLibrary} />
           )}
@@ -2067,7 +2325,7 @@ export default function App() {
     );
   }, [
     sidesConf, leftTab, activeCu, hidden, counts, doc, sel, place, preview, gen, query, store, tree,
-    libTab, libFilter, collapsed, editId, toggleHidden, setQuery, setLeftTab,
+    cloudUser, libTab, libFilter, collapsed, editId, toggleHidden, setQuery, setLeftTab,
     placeFromGen, placeFromCatalog, saveCatalogToLibrary, pickMacro, editMacro, saveGenToLibrary, updateGenMacro, exportLibJson, patchStore,
   ]);
 
@@ -2189,7 +2447,10 @@ export default function App() {
           </span>
         )}
         <span>{toolMeta.name}: {toolMeta.hint}</span>
-        <span className="lg"><span className="pulse" />локально · офлайн</span>
+        <span className="lg" title={cloudUser ? `${activeCloud?.name ?? 'Черновик'}: ${cloudSaveLabel(cloudStatus)}${cloudMessage ? ' · ' + cloudMessage : ''}` : 'Локальный режим без сервера проектов'}>
+          <span className={'pulse' + (cloudUser && (cloudStatus === 'error' || cloudStatus === 'conflict') ? ' cloud-pulse-error' : '')} />
+          {cloudUser ? `Облако · ${cloudStatus === 'saved' ? 'сохранено' : cloudStatus === 'saving' ? 'сохраняем' : cloudStatus === 'error' ? 'ошибка' : cloudStatus === 'conflict' ? 'конфликт' : activeCloud ? 'изменено' : 'черновик'}` : 'локально · офлайн'}
+        </span>
       </div>
 
       {routing !== null && <div className="modal-bg" role="dialog" aria-modal="true" aria-labelledby="routing-title">
@@ -2214,9 +2475,12 @@ export default function App() {
       {dialog === 'export' && (
         <ExportDialog
           onGerber={exportGerber} onPng={exportPng} onLay6={exportLay6}
-          onClose={() => setDialog(null)}
+          onCnc={() => setDialog('cnc')} onClose={() => setDialog(null)}
         />
       )}
+      {dialog === 'cnc' && <Suspense fallback={<div className="modal-bg" role="status">Загружаем настройки ЧПУ…</div>}>
+        <CncDialog doc={doc} onClose={() => setDialog(null)} />
+      </Suspense>}
       {dialog === 'panelize' && (
         <PanelizeDialog defX={doc.w + 2} defY={doc.h + 2} onOk={(c, r, gx, gy) => { panelize(c, r, gx, gy); setDialog(null); }} onClose={() => setDialog(null)} />
       )}
@@ -2250,6 +2514,13 @@ export default function App() {
         />
       )}
       {dialog === 'about' && <AboutDialog version={appVer} onClose={() => setDialog(null)} />}
+      {cloudUser && dialog === 'cloud' && <CloudProjectsDialog
+        current={activeCloud} docName={doc.name} status={cloudStatus} statusMessage={cloudMessage}
+        onClose={() => setDialog(null)} onCreate={createCloud} onOpen={loadCloud} onSave={saveCloud}
+        onReload={reloadCloud} onRename={renameCloud} onDelete={deleteCloud} onSaveFile={saveFile}
+      />}
+      {cloudUser && dialog === 'account' && <CloudAccountDialog user={cloudUser}
+        onClose={() => setDialog(null)} onLogout={logoutCloud} />}
       {dialog === 'close' && (
         <Modal
           title="Закрытие сайта"
@@ -2264,7 +2535,7 @@ export default function App() {
           <p>В установленном приложении PSBees эта кнопка закрывает окно программы.</p>
         </Modal>
       )}
-      {upd.Dialog}
+      {!cloudUser && upd.Dialog}
     </>
   );
 }

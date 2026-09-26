@@ -21,6 +21,10 @@ if (ver.short !== 'deadbee') throw new Error('version: ' + JSON.stringify(ver));
 
 const page = await (await fetch(url + '/')).text();
 if (!page.includes('<title>ok</title>')) throw new Error('index не отдался');
+const config = await (await fetch(url + '/api/cloud/config')).json();
+if (config.enabled !== false) throw new Error('обычный сервер не должен требовать учётные записи');
+const noCloud = await fetch(url + '/api/cloud/projects');
+if (noCloud.status !== 404 || !noCloud.headers.get('content-type').includes('json')) throw new Error('отключённый API не должен отдавать HTML');
 
 // Каталог: поиск валидирует запрос до загрузки сети, а raw endpoint не становится SSRF-прокси.
 const emptyCatalogSearch = await fetch(url + '/api/footprints/search');

@@ -40,11 +40,12 @@ export function NewBoardDialog({
 }
 
 export function ExportDialog({
-  onGerber, onPng, onLay6, onClose,
+  onGerber, onPng, onLay6, onCnc, onClose,
 }: {
   onGerber: () => void;
   onPng: (o: ExportPngOpts) => void;
   onLay6: () => void;
+  onCnc: () => void;
   onClose: () => void;
 }) {
   const [layer, setLayer] = useState<ExportPngOpts['layer']>('k2');
@@ -60,12 +61,21 @@ export function ExportDialog({
       <h3 style={{ margin: '4px 0 6px', fontSize: 13 }}>Производство (Gerber + сверловка)</h3>
       <p>
         ZIP-архив: верхняя и нижняя медь (RS-274X), обе шелкографии, контур платы и файл
-        сверловки Excellon. Подходит для заводов (JLCPCB и др.) и ЧПУ.
+        сверловки Excellon. Для заводов (JLCPCB и др.); это НЕ G-code для станка.
       </p>
       <div className="row" style={{ marginTop: 4 }}>
         <button className="btn primary" onClick={() => { onGerber(); onClose(); }}>
           Скачать Gerber ZIP
         </button>
+      </div>
+
+      <div className="sect">
+        <h3 style={{ margin: '0 0 6px', fontSize: 13 }}>Фрезерный станок (CNC / GRBL)</h3>
+        <p>Изоляция верхней меди, зеркальный низ, отдельная программа G-code для каждого сверла
+          с ручной сменой. Параметры резания и предпросмотр — перед скачиванием.</p>
+        <div className="row" style={{ marginTop: 4 }}>
+          <button className="btn primary" onClick={onCnc}>Настроить и скачать CNC ZIP…</button>
+        </div>
       </div>
 
       <div className="sect">

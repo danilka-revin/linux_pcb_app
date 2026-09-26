@@ -59,6 +59,32 @@ const partReelSearch: Plugin = {
   configurePreviewServer: installPartReelSearch,
 };
 
+// В dev-режиме без общего сервера интерфейс остаётся офлайн. При необходимости
+// PSBEES_CLOUD_BACKEND=http://127.0.0.1:8080 проксирует API того же происхождения.
+const cloudBackend = process.env.PSBEES_CLOUD_BACKEND;
+const offlineCloud: Plugin = {
+  name: 'cloud-offline-config',
+  configureServer(server) {
+    if (!cloudBackend) server.middlewares.use('/api/cloud', (req, res) => {
+      res.statusCode = req.method === 'GET' && req.url === '/config' ? 200 : 404;
+      res.setHeader('content-type', 'application/json; charset=utf-8');
+      res.setHeader('cache-control', 'no-store');
+      res.end(JSON.stringify(res.statusCode === 200
+        ? { ok: true, enabled: false }
+        : { ok: false, error: 'Облачный сервер не подключён.' }));
+    });
+  },
+  configurePreviewServer(server) {
+    if (!cloudBackend) server.middlewares.use('/api/cloud', (req, res) => {
+      res.statusCode = req.method === 'GET' && req.url === '/config' ? 200 : 404;
+      res.setHeader('content-type', 'application/json; charset=utf-8');
+      res.end(JSON.stringify(res.statusCode === 200
+        ? { ok: true, enabled: false }
+        : { ok: false, error: 'Облачный сервер не подключён.' }));
+    });
+  },
+};
+
 const footprintProxy: ProxyOptions = {
   target: 'https://partreel.com',
   changeOrigin: true,
@@ -78,17 +104,23 @@ const footprintProxy: ProxyOptions = {
 };
 
 export default defineConfig({
-  plugins: [react(), partReelSearch],
+  plugins: [react(), partReelSearch, offlineCloud],
   server: {
     host: true,
     port: 5173,
     allowedHosts: true,
-    proxy: { '^/api/footprints/': footprintProxy },
+    proxy: {
+      '^/api/footprints/': footprintProxy,
+      ...(cloudBackend ? { '^/api/cloud': { target: cloudBackend, changeOrigin: false } } : {}),
+    },
   },
   preview: {
     host: true,
     port: 4173,
     allowedHosts: true,
-    proxy: { '^/api/footprints/': footprintProxy },
+    proxy: {
+      '^/api/footprints/': footprintProxy,
+      ...(cloudBackend ? { '^/api/cloud': { target: cloudBackend, changeOrigin: false } } : {}),
+    },
   },
 });
