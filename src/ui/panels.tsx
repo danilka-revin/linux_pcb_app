@@ -25,7 +25,7 @@ export const TOOLS: { id: ToolId; name: string; icon: string; hint: string }[] =
   { id: 'fill', name: 'Полигон', icon: 'fill', hint: 'ЛКМ — вершины · ПКМ/Esc — замкнуть залитый полигон (земля)' },
   { id: 'text', name: 'Текст', icon: 'text', hint: 'Текст задаётся справа · ЛКМ — поставить · R — повернуть при установке' },
   { id: 'ruler', name: 'Линейка', icon: 'ruler', hint: 'ЛКМ — начало и конец измерения · Esc — убрать' },
-  { id: 'comp', name: 'Компонент', icon: 'comp', hint: 'Выберите компонент из библиотеки слева · R — повернуть · Q — сторона · ЛКМ — установить' },
+  { id: 'comp', name: 'Установка компонента', icon: 'comp', hint: 'Выберите деталь во вкладке «Детали» слева · R — повернуть · Q — сторона · ЛКМ — установить' },
 ];
 
 export interface Defs {
@@ -504,8 +504,8 @@ export function PropsPanel({
     case 'comp':
       return (
         <div className="props">
-          <h3>Компонент</h3>
-          <div className="hint">Выберите компонент в библиотеке слева, затем кликните по плате.</div>
+          <h3>Установка компонента</h3>
+          <div className="hint">Выберите деталь во вкладке «Детали» слева, затем кликните по плате. После выбора детали этот инструмент включается автоматически.</div>
         </div>
       );
     default:
@@ -521,6 +521,10 @@ export function PropsPanel({
             <span className="kbd"> Ctrl+A</span> — выделить всё,
             <span className="kbd"> G</span> — следующий шаг сетки,
             <span className="kbd"> Ctrl+G</span> — настройки сетки.
+          </div>
+          <div className="hint">
+            Чтобы поставить деталь: выберите её во вкладке «Детали» слева и щёлкните по плате.
+            Для автоматической компоновки уже установленных компонентов нажмите «Компоновка» сверху.
           </div>
         </div>
       );
