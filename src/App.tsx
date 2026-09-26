@@ -442,10 +442,11 @@ export default function App({ cloudUser, onLogout }: { cloudUser?: CloudUser; on
   const drag = useRef<Drag | null>(null);
   const clipboard = useRef<M.Entity[]>([]);
   const wrapRef = useRef<HTMLDivElement>(null);
-  // два слоя холста: базовый (сетка + плата + выделение) и оверлей (черновики,
+  // слои холста: базовый (сетка + плата + выделение), тест цепи и оверлей (черновики,
   // фантомы, перекрестие). Движение мыши перерисовывает только лёгкий оверлей —
   // дорогая база обновляется, лишь когда меняются плата/вид/слои/выделение.
   const baseRef = useRef<HTMLCanvasElement>(null);
+  const probeRef = useRef<HTMLCanvasElement>(null);
   const overRef = useRef<HTMLCanvasElement>(null);
   const baseRaf = useRef(0);
   const overRaf = useRef(0);
@@ -1740,16 +1741,6 @@ export default function App({ cloudUser, onLogout }: { cloudUser?: CloudUser; on
         ctx.restore();
       }
 
-      // «Тест цепи»: подсветка всей электрической цепи
-      if (probe && probeData) {
-        ctx.save();
-        for (const e of probeData.flat) {
-          if (!probe.ents.has(e.id)) continue;
-          drawEnt(ctx, view, e, { tint: COLORS.probe, alpha: 0.55, hidden: new Set() });
-        }
-        ctx.restore();
-      }
-
       // автотрассировка: зоны зазора вокруг отверстий (ближе дорожка не подойдёт)
       if (tool === 'route' && defs.rtHoleClear > 0) {
         ctx.save();
@@ -1797,9 +1788,28 @@ export default function App({ cloudUser, onLogout }: { cloudUser?: CloudUser; on
       }
     });
   }, [
-    doc, zEnts, view, hidden, sel, probe, probeData, gridConf, defs.showAxes,
+    doc, zEnts, view, hidden, sel, gridConf, defs.showAxes,
     defs.rtHoleClear, size, tool, routeMode, activeNet, netGeometry, theme, colors, toPx,
   ]);
+
+  // «Тест цепи»: отдельный слой мигает через CSS, не перерисовывая плату
+  // и не пересчитывая связность меди на каждом такте.
+  useEffect(() => {
+    const cv = probeRef.current;
+    if (!cv) return;
+    const dpr = window.devicePixelRatio || 1;
+    if (cv.width !== Math.round(size.w * dpr)) cv.width = Math.round(size.w * dpr);
+    if (cv.height !== Math.round(size.h * dpr)) cv.height = Math.round(size.h * dpr);
+    cv.style.width = size.w + 'px';
+    cv.style.height = size.h + 'px';
+    const ctx = cv.getContext('2d')!;
+    ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+    ctx.clearRect(0, 0, size.w, size.h);
+    if (tool !== 'probe' || !probe || !probeData) return;
+    for (const e of probeData.flat) {
+      if (probe.ents.has(e.id)) drawEnt(ctx, view, e, { tint: COLORS.probe });
+    }
+  }, [probe, probeData, tool, view, size, theme, colors]);
 
   // ---------------- отрисовка: оверлей (черновики, фантомы, перекрестие) ----------------
   // Лёгкий слой поверх платы: обновляется при движении курсора и рисовании,
@@ -2383,6 +2393,8 @@ export default function App({ cloudUser, onLogout }: { cloudUser?: CloudUser; on
         <div className="canvas-wrap" ref={wrapRef}>
           {/* базовый слой: сетка + плата (не реагирует на мышь) */}
           <canvas ref={baseRef} className="canvas-base" />
+          <canvas ref={probeRef} aria-hidden="true"
+            className={`canvas-probe${tool === 'probe' && probe ? ' is-active' : ''}`} />
           {/* оверлей: черновики, фантомы, перекрестие; принимает события */}
           <canvas
             ref={overRef}
