@@ -1180,3 +1180,24 @@ canvas { display: block; }
 .bp3d-export-label { font-size: 12px; color: var(--muted, inherit); }
 .bp3d-export-note { font-size: 11px; opacity: .7; }
 .bp3d-export-error { font-size: 12px; color: #e5484d; }
+
+/* Compact placement and explicit group-routing choice. */
+.modal.auto-layout-modal { width: 1040px; max-width: calc(100vw - 32px); }
+.layout-preview { display: block; width: 100%; height: auto; max-height: 36vh; object-fit: contain; background: #161c23; border-radius: 6px; margin: 14px 0; }
+.layout-settings { display: flex; flex-wrap: wrap; gap: 18px; align-items: center; margin: 18px 0; }
+.layout-settings > label { display: flex; gap: 8px; align-items: center; }
+.layout-settings .txt { width: 76px; }
+.route-variants { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 12px; }
+.route-variant { display: flex; flex-direction: column; gap: 10px; padding: 16px; border: 1px solid var(--line); border-radius: 8px; cursor: pointer; }
+.route-variant.selected { border-color: var(--accent); background: var(--accent-soft); }
+.route-variant input { accent-color: var(--accent); }
+.route-variant dl { margin: auto 0 0; font-variant-numeric: tabular-nums; }
+.route-variant dl > div { display: flex; justify-content: space-between; gap: 8px; margin: 6px 0; }
+.route-variant dd { margin: 0; font-weight: 600; }
+.route-variant .route-msg { margin: 0; }
+.route-choice-modal .layout-preview { max-height: 24vh; }
+.auto-layout-modal .foot { flex-wrap: wrap; position: sticky; bottom: -20px; background: var(--surface); padding: 12px 0 4px; }
+@media (max-width: 720px) {
+  .route-variants { grid-template-columns: 1fr; }
+  .layout-settings { align-items: flex-start; flex-direction: column; }
+}

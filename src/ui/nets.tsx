@@ -44,10 +44,10 @@ export function NetsPanel({ nets, active, setActive, onChange, onNew, onRoute, e
         return <div key={id}><span title={id}>{i + 1}. {p ? `${p.kind === 'smd' ? 'SMD' : p.tht ? 'PTH' : 'Контакт'} · ${p.layers.join('/').toUpperCase()} · ${p.x.toFixed(2)}; ${p.y.toFixed(2)} мм` : `Удалённая площадка (${id})`}</span><button className="btn tiny" aria-label={`Убрать площадку ${i + 1}`} onClick={() => onChange(nets.map((n) => n.id === active ? { ...n, pads: n.pads.filter((p) => p !== id) } : n))}>×</button></div>;
       })}</div>
     </>}
-    <button className="btn primary net-run" disabled={!nets.length || nets.some((n) => n.pads.length < 2)} onClick={onRoute}>Развести всю плату</button>
+    <button className="btn primary net-run" disabled={!nets.length || nets.some((n) => n.pads.length < 2)} onClick={onRoute}>Рассчитать 3 варианта</button>
     {info.msg && <div role="status" className={'route-msg ' + (info.ok === false ? 'bad' : info.ok ? 'ok' : '')}>{info.msg}</div>}
     <details className="hint"><summary>Переходы и сохранение проекта</summary>
-    <div className="hint">Сначала соединения без переходов на слоях контактов (SMD — K1 или K2, PTH — K2), затем обходы с переходами. Сравниваются до 3 порядков разводки: больше готовых связей, меньше переходов, короче дорожки. Абсолютный минимум не гарантируется.</div>
+    <div className="hint">Три стратегии: меньше переходов, короче дорожки и длинные связи первыми. После расчёта сравните сводки и предпросмотр, затем примените один вариант. Совпавшие результаты отмечаются. Трассировка двух точек работает как раньше. Абсолютный минимум не гарантируется.</div>
     <div className="hint">Существующая медь сохраняется. Повторный запуск добавляет недостающие связи. Группы сохраняются в проекте JSON; в .lay6 — только медь.</div>
     </details>
   </section>;
