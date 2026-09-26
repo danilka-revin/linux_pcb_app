@@ -18,7 +18,7 @@ export function NetsPanel({ nets, active, setActive, onChange, onNew, onRoute, e
   const selected = nets.find((n) => n.id === active);
   return <section className="props nets-panel">
     <h3>Группы соединений</h3>
-    <div className="hint">Одна группа — одна электрическая цепь. Выберите группу и кликайте по её площадкам на плате. Повторный клик убирает площадку.</div>
+    <div className="hint">Одна группа — одна электрическая цепь. Выберите группу и кликайте по её контактам на плате: PTH, SMD и переходам, включая выводы компонентов. Повторный клик убирает площадку.</div>
     <div className="row">
       <button className="btn" onClick={onNew}>+ Новая группа</button>
       <button className="btn" disabled={!selected} onClick={() => setActive(null)}>Готово</button>
@@ -41,13 +41,13 @@ export function NetsPanel({ nets, active, setActive, onChange, onNew, onRoute, e
       <div className="hint">Добавление в «{selected.name}»: выберите площадки на холсте. Голые крепёжные отверстия без меди не подключаются.</div>
       <div className="net-members">{selected.pads.map((id, i) => {
         const p = ends.get(id);
-        return <div key={id}><span title={id}>{i + 1}. {p ? `${p.x.toFixed(2)}; ${p.y.toFixed(2)} мм` : `Удалённая площадка (${id})`}</span><button className="btn tiny" aria-label={`Убрать площадку ${i + 1}`} onClick={() => onChange(nets.map((n) => n.id === active ? { ...n, pads: n.pads.filter((p) => p !== id) } : n))}>×</button></div>;
+        return <div key={id}><span title={id}>{i + 1}. {p ? `${p.kind === 'smd' ? 'SMD' : p.tht ? 'PTH' : 'Контакт'} · ${p.layers.join('/').toUpperCase()} · ${p.x.toFixed(2)}; ${p.y.toFixed(2)} мм` : `Удалённая площадка (${id})`}</span><button className="btn tiny" aria-label={`Убрать площадку ${i + 1}`} onClick={() => onChange(nets.map((n) => n.id === active ? { ...n, pads: n.pads.filter((p) => p !== id) } : n))}>×</button></div>;
       })}</div>
     </>}
     <button className="btn primary net-run" disabled={!nets.length || nets.some((n) => n.pads.length < 2)} onClick={onRoute}>Развести всю плату</button>
     {info.msg && <div role="status" className={'route-msg ' + (info.ok === false ? 'bad' : info.ok ? 'ok' : '')}>{info.msg}</div>}
     <details className="hint"><summary>Переходы и сохранение проекта</summary>
-    <div className="hint">Сначала низ K2, затем обходы через верх. Сравниваются до 3 порядков разводки: больше готовых связей, меньше переходов, короче дорожки. Абсолютный минимум не гарантируется.</div>
+    <div className="hint">Сначала соединения без переходов на слоях контактов (SMD — K1 или K2, PTH — K2), затем обходы с переходами. Сравниваются до 3 порядков разводки: больше готовых связей, меньше переходов, короче дорожки. Абсолютный минимум не гарантируется.</div>
     <div className="hint">Существующая медь сохраняется. Повторный запуск добавляет недостающие связи. Группы сохраняются в проекте JSON; в .lay6 — только медь.</div>
     </details>
   </section>;

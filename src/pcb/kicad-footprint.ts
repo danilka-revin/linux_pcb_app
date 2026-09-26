@@ -261,8 +261,12 @@ export function parseKicadFootprint(source: string): ParsedKicadFootprint {
       const dims = size(primitive);
       if (!position || !dims) { warnings.add('Часть площадок пропущена: в записи нет корректных координат или размера.'); continue; }
       const [x, ky] = world([position.x, position.y]);
-      if (padType === 'smd') {
+      if (padType === 'smd' || padType === 'connect') {
         const layers = layersOf(primitive);
+        if (!layers.some(l => ['F.Cu', 'B.Cu', '*.Cu'].includes(l))) {
+          warnings.add('Площадка без слоя меди пропущена: она не является электрическим контактом.');
+          continue;
+        }
         const hasFront = layers.includes('F.Cu') || layers.includes('*.Cu');
         const hasBack = layers.includes('B.Cu') || layers.includes('*.Cu');
         const sides: ('k1' | 'k2')[] = hasFront && hasBack ? ['k1', 'k2'] : hasBack ? ['k2'] : ['k1'];

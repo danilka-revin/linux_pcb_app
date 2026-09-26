@@ -26,6 +26,7 @@ export interface RouteOpts {
   step: number;        // шаг сетки трассировки, мм
   viaCost: number;     // «цена» одного перехода (в мм длины дорожки)
   topMul: number;      // множитель длины на верхнем слое (>1 — предпочитать низ)
+  allowVias?: boolean; // false: искать на разрешённых слоях без переходов
   allowTop: boolean;   // разрешить верхний слой и переходы
   angle: '45' | '90';  // допустимые направления
   edge?: number;       // отступ от края платы, мм (по умолчанию = зазор)
@@ -38,6 +39,7 @@ export interface RouteEnd {
                        // площадка — только K2, SMD — свой слой, переход — оба
   r: number;           // радиус собственной меди точки (площадки), мм
   entId?: string;      // id примитива (после развёртки), к которому подключаемся
+  kind?: 'pad' | 'via' | 'smd';
   tht?: boolean;       // площадка-«пяточка» (вход только по K2 — сторона пайки)
 }
 
@@ -225,16 +227,17 @@ function otherShapes(e: Entity): Shape[] {
 // ---------------------------------------------------------------------------
 
 /** Найти медный примитив (площадку/переход/SMD) под точкой для подключения */
-export function pickEndpoint(entities: Entity[], p: Pt, tol: number): RouteEnd | null {
+export function pickEndpoint(entities: Entity[], p: Pt, tol: number, layer?: Cu): RouteEnd | null {
   const flat = expandDoc(entities);
-  let best: { e: Entity; d: number } | null = null;
+  let best: { e: Entity; d: number; edge: number } | null = null;
   for (const e of flat) {
     if (e.kind !== 'pad' && e.kind !== 'via' && e.kind !== 'smd') continue;
+    if (layer && !endpointOf(e)?.layers.includes(layer)) continue;
     for (const s of copperShapes(e)) {
       const d = shapeDist(s, p.x, p.y);
       if (d <= tol) {
         const dc = Math.hypot(p.x - e.x, p.y - e.y);
-        if (!best || dc < best.d) best = { e, d: dc };
+        if (!best || d < best.edge - 1e-6 || (Math.abs(d - best.edge) < 1e-6 && dc < best.d)) best = { e, d: dc, edge: d };
       }
     }
   }
@@ -245,15 +248,15 @@ export function pickEndpoint(entities: Entity[], p: Pt, tol: number): RouteEnd |
 export function endpointOf(e: Entity): RouteEnd | null {
   if (e.kind === 'pad') {
     // «Пяточка»: пайка со стороны K2 — вход только по нижнему слою (всегда, даже без отверстия)
-    return { x: e.x, y: e.y, layers: ['k2'], r: e.size / 2, entId: e.id, tht: true };
+    return { x: e.x, y: e.y, layers: ['k2'], r: e.size / 2, entId: e.id, kind: 'pad', tht: true };
   }
   // «Мостовая» (переход) — доступна с любого слоя
-  if (e.kind === 'via') return { x: e.x, y: e.y, layers: ['k2', 'k1'], r: e.size / 2, entId: e.id };
+  if (e.kind === 'via') return { x: e.x, y: e.y, layers: ['k2', 'k1'], r: e.size / 2, entId: e.id, kind: 'via' };
   if (e.kind === 'smd') {
     // К SMD — только по слою самой площадки
     const rot = ((Math.round(e.rot) % 180) + 180) % 180;
     const r = Math.min(rot === 90 ? e.h : e.w, rot === 90 ? e.w : e.h) / 2;
-    return { x: e.x, y: e.y, layers: [e.layer], r, entId: e.id };
+    return { x: e.x, y: e.y, layers: [e.layer], r, entId: e.id, kind: 'smd' };
   }
   return null;
 }
@@ -419,12 +422,20 @@ function search(
 
   // стартовые узлы: внутри собственной площадки A (или ближайшие)
   const nodesNear = (P: RouteEnd): number[] => {
+    // Длинная узкая SMD-площадка — не круг с радиусом половины ширины.
+    // Используем всю её медь: выход у торца может быть свободен, хотя центр
+    // окружён соседними выводами и между ними не проходит узел сетки.
+    const terminal = netShapes.filter(s => s.id === P.entId);
+    const bb = terminal.length ? terminal.reduce<[number, number, number, number]>(
+      (b, s) => [Math.min(b[0], s.bb[0]), Math.min(b[1], s.bb[1]), Math.max(b[2], s.bb[2]), Math.max(b[3], s.bb[3])],
+      [Infinity, Infinity, -Infinity, -Infinity]) : null;
+    const reach = st + trackNeed;
     const rr = Math.max(P.r, st * 0.75);
     const out: number[] = [];
-    const i1 = Math.max(0, Math.floor((P.x - rr) / st) - ix0), i2 = Math.min(W - 1, Math.ceil((P.x + rr) / st) - ix0);
-    const j1 = Math.max(0, Math.floor((P.y - rr) / st) - iy0), j2 = Math.min(H - 1, Math.ceil((P.y + rr) / st) - iy0);
+    const i1 = Math.max(0, Math.floor((bb ? bb[0] - reach : P.x - rr) / st) - ix0), i2 = Math.min(W - 1, Math.ceil((bb ? bb[2] + reach : P.x + rr) / st) - ix0);
+    const j1 = Math.max(0, Math.floor((bb ? bb[1] - reach : P.y - rr) / st) - iy0), j2 = Math.min(H - 1, Math.ceil((bb ? bb[3] + reach : P.y + rr) / st) - iy0);
     for (let j = j1; j <= j2; j++) for (let i = i1; i <= i2; i++)
-      if (Math.hypot(X(i) - P.x, Y(j) - P.y) <= rr + 1e-6) out.push(j * W + i);
+      if (terminal.length ? terminal.some(s => shapeDist(s, X(i), Y(j)) <= reach + 1e-6) : Math.hypot(X(i) - P.x, Y(j) - P.y) <= rr + 1e-6) out.push(j * W + i);
     if (!out.length) {
       const i = Math.round(P.x / st) - ix0, j = Math.round(P.y / st) - iy0;
       if (i >= 0 && i < W && j >= 0 && j < H) out.push(j * W + i);
@@ -432,7 +443,7 @@ function search(
     return out;
   };
   // короткий подвод «узел сетки → центр площадки» тоже должен соблюдать зазоры
-  const stubOk = (li: number, x: number, y: number, P: RouteEnd): boolean => {
+  const stubSegmentOk = (li: number, x: number, y: number, P: Pt): boolean => {
     const l: Cu = li ? 'k2' : 'k1';
     const seg: [number, number, number, number] = [x, y, P.x, P.y];
     for (const s of obst) {
@@ -445,6 +456,16 @@ function search(
     }
     return true;
   };
+  const stubPath = (li: number, x: number, y: number, P: RouteEnd): Pt[] | null => {
+    if (stubSegmentOk(li, x, y, P)) return [];
+    // Выход вдоль узкой площадки, затем на сетку: диагональный подвод
+    // из центра мог пересекать соседний вывод даже при свободном торце.
+    for (const bend of [{ x, y: P.y }, { x: P.x, y }]) {
+      if (stubSegmentOk(li, x, y, bend) && stubSegmentOk(li, bend.x, bend.y, P)) return [bend];
+    }
+    return null;
+  };
+  const stubOk = (li: number, x: number, y: number, P: RouteEnd): boolean => stubPath(li, x, y, P) !== null;
   const startCells = nodesNear(A);
   const goalCells = new Set(nodesNear(B));
   for (const c of startCells) {
@@ -511,7 +532,7 @@ function search(
       }
     }
     // переход на другой слой
-    if (o.allowTop && viaOk(c) && inEdge(i, j, edge + o.viaSize / 2)) {
+    if (o.allowTop && o.allowVias !== false && viaOk(c) && inEdge(i, j, edge + o.viaSize / 2)) {
       const oli = 1 - li;
       if (free(oli, c)) {
         const nk = key(oli, c, 8);
@@ -536,6 +557,11 @@ function search(
     nodes.push({ x: +X(i).toFixed(4), y: +Y(j).toFixed(4), l: li ? 'k2' : 'k1' });
   }
   nodes.reverse();
+  const first = nodes[0], last = nodes[nodes.length - 1];
+  const entry = stubPath(first.l === 'k1' ? 0 : 1, first.x, first.y, A)!;
+  const exit = stubPath(last.l === 'k1' ? 0 : 1, last.x, last.y, B)!;
+  nodes.unshift(...entry.slice().reverse().map(p => ({ ...p, l: first.l })));
+  nodes.push(...exit.map(p => ({ ...p, l: last.l })));
   return { nodes };
 }
 
@@ -611,7 +637,9 @@ export function autoroute(
 ): RouteResult {
   const fail = (msg: string): RouteResult => ({ ok: false, ents: [], length: 0, vias: 0, msg, drc: 0 });
   if (Math.hypot(A.x - B.x, A.y - B.y) < 1e-6) return fail('Точки совпадают');
-  if (!(o.step > 0.05)) return fail('Слишком мелкий шаг сетки');
+  if (!Number.isFinite(o.step) || o.step < 0.02) return fail('Минимальный шаг сетки трассировки — 0.02 мм');
+  if (!o.allowTop && [A, B].some(p => !p.layers.includes('k2')))
+    return fail('Выбран SMD-контакт на K1. Включите «Разрешить верх (K1) и переходы»: по K2 к нему подключиться нельзя.');
 
   const flat = expandDoc(entities);
   const shapes = flat.flatMap(copperShapes);

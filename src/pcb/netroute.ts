@@ -78,12 +78,12 @@ export function routeNets(doc: Doc, opts: RouteOpts, progress: (text: string) =>
     const result = empty();
     let entities = [...doc.entities];
     let comp = initial;
-    // Переходы в пакетном режиме сильно «дороже» длины: сначала всё по K2.
+    // Переходы в пакетном режиме сильно «дороже» длины: сначала на слоях контактов, без переходов.
     const o = { ...opts, viaCost: Math.max(opts.viaCost, (doc.w + doc.h) * 2) };
-    for (const allowTop of opts.allowTop ? [false, true] : [false]) {
+    for (const allowVias of opts.allowTop && opts.allowVias !== false ? [false, true] : [false]) {
       for (const net of order) {
         while (netMissing(net, comp) > 0) {
-          progress(`Вариант ${attempts}/${orders.length} · ${allowTop ? 'обходы через верх' : 'нижний слой'} · ${net.name}`);
+          progress(`Вариант ${attempts}/${orders.length} · ${allowVias ? 'обходы с переходами' : 'по слоям контактов без переходов'} · ${net.name}`);
           const pairs: { a: RouteEnd; b: RouteEnd; d: number }[] = [];
           for (let i = 0; i < net.pads.length; i++) for (let j = i + 1; j < net.pads.length; j++) {
             if (comp.get(net.pads[i]) === comp.get(net.pads[j])) continue;
@@ -93,8 +93,8 @@ export function routeNets(doc: Doc, opts: RouteOpts, progress: (text: string) =>
           pairs.sort((a, b) => a.d - b.d);
           let chosen: RouteResult | null = null;
           // Ограниченный перебор альтернатив для большой цепи: это эвристика, не полный поиск.
-          for (const { a, b } of pairs.slice(0, allowTop ? 6 : 24)) {
-            const r = autoroute(entities, doc.w, doc.h, a, b, { ...o, allowTop }, net.pads);
+          for (const { a, b } of pairs.slice(0, allowVias ? 6 : 24)) {
+            const r = autoroute(entities, doc.w, doc.h, a, b, { ...o, allowVias }, net.pads);
             if (!r.ok || r.drc !== 0) continue;
             if (!chosen || r.vias < chosen.vias || (r.vias === chosen.vias && r.length < chosen.length)) chosen = r;
             if (r.vias === 0) break;

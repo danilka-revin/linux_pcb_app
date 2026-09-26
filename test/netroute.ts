@@ -124,3 +124,25 @@ function check(d: M.Doc, ents: M.Entity[]) {
   console.log('NETS: mixed SMD/THT, one via, mounting-hole clearance retained');
 }
 console.log('NETROUTE OK');
+
+// Imported SMDs remain terminals inside mirrored/rotated catalog components.
+{
+  const { parseKicadFootprint } = await import('../src/pcb/kicad-footprint');
+  const { libElsToEnts } = await import('../src/pcb/expand');
+  const fp = parseKicadFootprint(`(footprint "catalog-smd"
+    (pad "1" smd rect (at 0 0) (size 2 1) (layers "F.Cu"))
+    (pad "2" connect rect (at 6 0) (size 2 1) (layers "F.Cu")))`);
+  for (const side of ['top', 'bottom'] as const) for (const rot of [0, 90, 180, 270]) {
+    const d = M.newBoard(30, 30);
+    d.entities.push({ id: 'catalog', kind: 'comp', lib: '', name: fp.name, x: 15, y: 15, side, rot, ents: libElsToEnts(fp.els), bl: fp.bbox });
+    d.nets = [net('smd', ['catalog:0', 'catalog:1'])];
+    const r = routeNets(d, O);
+    assert.deepEqual(r.errors, []);
+    assert.equal(r.missing, 0, `${side}/${rot}: SMD group disconnected`);
+    assert.equal(r.vias, 0, 'same-layer SMD must not require vias');
+    assert(r.ents.every(e => e.kind === 'track' && e.layer === (side === 'top' ? 'k1' : 'k2')));
+    check(d, r.ents);
+    assert.equal(routeNets(applied(d, r.ents), O).ents.length, 0);
+  }
+  console.log('NETS: catalog SMD/connect terminals, both sides/all rotations, no vias, rerun OK');
+}

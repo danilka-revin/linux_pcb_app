@@ -2,7 +2,7 @@
 import * as M from '../src/pcb/model';
 import { generate } from '../src/pcb/gen';
 import { expandDoc, libElsToEnts } from '../src/pcb/expand';
-import { autoroute, pickEndpoint, copperShapes, shapeDist, type RouteOpts } from '../src/pcb/autoroute';
+import { autoroute, endpointOf, pickEndpoint, copperShapes, shapeDist, type RouteOpts } from '../src/pcb/autoroute';
 
 const assert = (c: boolean, m: string): void => { if (!c) { console.error('FAIL:', m); process.exit(1); } };
 const O: RouteOpts = {
@@ -199,3 +199,31 @@ console.log('AUTOROUTE REAL OK');
   console.log('7:', r1.msg, '|', r2.msg);
 }
 console.log('AUTOROUTE ENTRY OK');
+
+// Narrow off-grid catalog SMDs: escape along the whole land, not a tiny
+// inscribed circle at its centre. Neighbouring pins remain foreign copper.
+{
+  const smd = (id: string, y: number): M.Entity => ({ id, kind: 'smd', x: 10.25, y, w: 3, h: 0.3, rot: 0, layer: 'k1' });
+  const entities: M.Entity[] = [smd('a', 10.25), smd('above', 10.75), smd('below', 9.75),
+    { id: 'b', kind: 'smd', x: 20, y: 10.25, w: 2, h: 1, rot: 0, layer: 'k1' }];
+  const a = endpointOf(entities[0])!, b = endpointOf(entities[3])!;
+  const opts = { trackW: 0.25, clearance: 0.15, viaSize: 0.6, viaDrill: 0.3, step: 0.5, viaCost: 8, topMul: 1.5, allowTop: true, allowVias: false, angle: '45' as const };
+  const r = autoroute(entities, 30, 20, a, b, opts);
+  assert(r.ok && r.drc === 0 && r.vias === 0, 'narrow off-grid SMD: ' + r.msg);
+  assert(r.ents.every(e => e.kind === 'track' && e.layer === 'k1'), 'SMD route stays on K1');
+  const forbidden = autoroute(entities, 30, 20, a, b, { ...opts, allowTop: false });
+  assert(!forbidden.ok && forbidden.msg.includes('SMD-контакт на K1'), 'explain disabled SMD layer');
+  console.log('AUTOROUTE SMD: narrow off-grid terminals, no vias, layer diagnostics OK');
+}
+
+// A click inside a long land must not select a nearby smaller pad's centre.
+{
+  const lands: M.Entity[] = [
+    { id: 'long', kind: 'smd', x: 5, y: 5, w: 6, h: 1, rot: 0, layer: 'k1' },
+    { id: 'near', kind: 'smd', x: 7.5, y: 6, w: 0.5, h: 0.5, rot: 0, layer: 'k1' },
+  ];
+  assert(pickEndpoint(lands, { x: 7.5, y: 5.4 }, 1)?.entId === 'long', 'actual copper hit precedes centre distance');
+  const a = endpointOf(lands[0])!, b = endpointOf(lands[1])!;
+  const tiny = autoroute(lands, 10, 10, a, b, { ...O, step: 0.02 });
+  assert(!tiny.msg.includes('шаг сетки'), 'advertised 0.02 mm step is accepted on a small board');
+}

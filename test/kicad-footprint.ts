@@ -62,3 +62,9 @@ try { parseKicadFootprint('x'.repeat(4 * 1024 * 1024 + 1)); } catch { rejected =
 assert(rejected, 'enforce size limit');
 
 console.log(`KiCad footprint parser OK (${parsed.els.length + th.els.length} primitives checked)`);
+
+const edge = parseKicadFootprint(`(footprint "edge"
+ (pad "1" connect rect (at 0 0) (size 2 4) (layers "F.Cu" "F.Mask"))
+ (pad "2" smd rect (at 5 0) (size 2 2) (layers "F.Paste")))`);
+assert(edge.stats.smd === 1, 'edge connector copper is a routable SMD terminal; paste-only is not');
+assert(edge.els[0].kind === 'smd' && edge.els[0].layer === 'k1', 'connect layer preserved');

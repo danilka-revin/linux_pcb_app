@@ -333,6 +333,11 @@ export function PropsPanel({
           <div className="sub">
             {routeGroups ? 'Параметры для всех групп' : routeInfo?.picking === 'b' ? 'Шаг 2: кликните вторую точку' : 'Шаг 1: кликните первую точку'}
           </div>
+          <button type="button" className="btn" onClick={() => setDefs({ rtW: 0.25, rtClear: 0.15, rtStep: 0.2, rtAllowTop: true })}>
+            Профиль SMD: 0.25 мм / зазор 0.15 мм
+          </button>
+          <div className="hint">Для мелкого шага выводов выбирайте подходящие ширину и зазор.
+            Профиль SMD — отправная точка, не гарантия технологичности платы; зазор до отверстий не меняется.</div>
           <NI label="Ширина дорожки, мм" value={defs.rtW} min={0.1} on={(v) => setDefs({ rtW: v })} />
           <NI label="Зазор до дорожек, мм" value={defs.rtClear} min={0.1} on={(v) => setDefs({ rtClear: v })} />
           <NI label="Зазор до отверстий, мм" value={defs.rtHoleClear} min={0.1} on={(v) => setDefs({ rtHoleClear: v })} />
@@ -395,7 +400,9 @@ export function PropsPanel({
           <SI label="Углы" value={defs.angle} options={[['45', '45°'], ['90', '90°'], ['free', 'Свободно']]} on={(v) => setDefs({ angle: v as Defs['angle'] })} />
           <div className="hint">
             ЛКМ — точки, ПКМ/Esc — закончить. <span className="kbd">L</span> во время прокладки —
-            переход на другой слой с виой.
+            переход на другой слой с виой. Центры выводов, в том числе внутри компонентов,
+            подхватываются автоматически; Alt отключает привязку. При старте с пятачка выбирается
+            K2, с SMD — слой площадки. Для подключения к площадке другого слоя сначала нажмите L.
           </div>
         </div>
       );
