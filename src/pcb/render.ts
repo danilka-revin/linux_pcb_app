@@ -27,7 +27,7 @@ export const COLORS = {
   holeFill: '#0f1115',
   holeRing: 'rgba(233,236,241,.35)',
   sel: '#ffc233',
-  probe: '#ffd23f',
+  probe: '#c45cff',
   grid: '#232830',
   gridMajor: '#333c49',
   gridOrigin: '#4a5563',
@@ -47,7 +47,7 @@ const CANVAS_THEMES: Record<ThemeId, { colors: typeof COLORS; ui: typeof CANVAS_
     colors: {
       bg: '#0f1115', k1: '#2f80ed', k2: '#35c46a', s1: '#e5484d', s2: '#e8c93e',
       outline: '#e9ecf1', both: '#f0a63c', holeFill: '#0f1115',
-      holeRing: 'rgba(233,236,241,.35)', sel: '#ffc233', probe: '#ffd23f',
+      holeRing: 'rgba(233,236,241,.35)', sel: '#ffc233', probe: '#c45cff',
       grid: '#232830', gridMajor: '#333c49', gridOrigin: '#4a5563', axes: '#3a414d',
     },
     ui: { ink: '#ffffff', labelBg: 'rgba(13,16,20,.88)', labelInk: '#a7b0bc', crosshair: 'rgba(255,255,255,.14)' },
@@ -56,7 +56,7 @@ const CANVAS_THEMES: Record<ThemeId, { colors: typeof COLORS; ui: typeof CANVAS_
     colors: {
       bg: '#eef1f4', k1: '#2f80ed', k2: '#2aa35c', s1: '#d93a3f', s2: '#c9930a',
       outline: '#232a34', both: '#e08e00', holeFill: '#eef1f4',
-      holeRing: 'rgba(35,42,52,.45)', sel: '#e08e00', probe: '#d97706',
+      holeRing: 'rgba(35,42,52,.45)', sel: '#e08e00', probe: '#9333ea',
       grid: '#d7dce3', gridMajor: '#bcc3cc', gridOrigin: '#9aa3ad', axes: '#c2c9d2',
     },
     ui: { ink: '#232a34', labelBg: 'rgba(255,255,255,.92)', labelInk: '#45505c', crosshair: 'rgba(20,30,40,.13)' },

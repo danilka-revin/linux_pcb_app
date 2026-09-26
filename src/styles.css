@@ -397,9 +397,18 @@ input, select, textarea { user-select: text; }
    (предпросмотр макроса и сетки) на весь экран — они ложились под холст
    платы и выглядели как перекрытые сеткой. */
 canvas { display: block; }
-.canvas-base, .canvas-over { position: absolute; inset: 0; cursor: crosshair; }
+.canvas-base, .canvas-probe, .canvas-over { position: absolute; inset: 0; cursor: crosshair; }
 /* базовый слой (сетка + плата) не принимает события — они у оверлея */
-.canvas-base { pointer-events: none; }
+.canvas-base, .canvas-probe { pointer-events: none; }
+.canvas-probe { opacity: 0; }
+.canvas-probe.is-active { animation: probe-blink 1s steps(1, end) infinite; }
+@keyframes probe-blink {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0; }
+}
+@media (prefers-reduced-motion: reduce) {
+  .canvas-probe.is-active { animation: none; opacity: 1; }
+}
 .canvas-over { touch-action: none; }
 
 /* ---------- панель свойств ---------- */

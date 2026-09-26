@@ -3,6 +3,7 @@ import { readFileSync } from 'node:fs';
 import { createElement } from 'react';
 import { renderToString } from 'react-dom/server.browser';
 import App from '../src/App';
+import { COLORS, setCanvasTheme } from '../src/pcb/render';
 import { GenPanel, MacroTree, genSpecText } from '../src/ui/genpanel';
 import { addMacro, buildTree, createFolder, emptyStore, makeMacro } from '../src/pcb/userlib';
 import { generate } from '../src/pcb/gen';
@@ -14,6 +15,30 @@ if (!html.includes('toolbar') || !html.includes('status')) throw new Error('layo
 if (!html.includes('Bees')) throw new Error('brand not rendered');
 if (!html.includes('logo.png')) throw new Error('bee logo not rendered');
 if (!html.includes('светлую тему') && !html.includes('тёмную тему')) throw new Error('theme toggle not rendered');
+// Тест цепи: отдельный прозрачный слой между платой и интерактивным оверлеем.
+{
+  const base = html.indexOf('class="canvas-base"');
+  const probe = html.indexOf('class="canvas-probe"');
+  const over = html.indexOf('class="canvas-over"');
+  if (!(base >= 0 && base < probe && probe < over)) throw new Error('probe canvas stacking order');
+  if (html.includes('canvas-probe is-active')) throw new Error('probe must not blink before selection');
+  const css = readFileSync('src/styles.css', 'utf8');
+  if (!/\.canvas-base, \.canvas-probe\s*\{\s*pointer-events: none/.test(css)) {
+    throw new Error('probe canvas must not intercept pointer events');
+  }
+  if (!/\.canvas-probe\.is-active\s*\{\s*animation: probe-blink 1s steps\(1, end\) infinite/.test(css)) {
+    throw new Error('probe must blink once per second');
+  }
+  if (!/@media \(prefers-reduced-motion: reduce\)\s*\{\s*\.canvas-probe\.is-active\s*\{\s*animation: none; opacity: 1/.test(css)) {
+    throw new Error('reduced motion must keep the probe visible without blinking');
+  }
+  for (const [theme, color] of [['dark', '#c45cff'], ['light', '#9333ea']] as const) {
+    setCanvasTheme(theme);
+    if (COLORS.probe !== color || COLORS.probe === COLORS.sel) throw new Error(`${theme}: probe must be purple, not selection yellow`);
+  }
+  setCanvasTheme('dark');
+}
+
 // сетка и панель деталей должны быть в разметке (проверка, что интерфейс подключён)
 const must = [
   'Настроить сетку',        // выбор шага в тулбаре + диалог
