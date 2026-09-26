@@ -19,6 +19,7 @@ import { readFile, stat, mkdir, writeFile, rm, rename } from 'node:fs/promises';
 import { dirname, extname, join, normalize, resolve } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { execFile, spawn } from 'node:child_process';
+import { parsePartReelIndex, searchPartReel } from './partreel-search.mjs';
 
 const here = fileURLToPath(new URL('.', import.meta.url));
 const DEFAULT_REPO = 'https://github.com/danilka-revin/linux_pcb_app.git';
@@ -75,7 +76,7 @@ const execFileP = (cmd, args, opts = {}) => new Promise((resolveP) => {
     ...opts,
     env: { ...process.env, ...QUIET_ENV, ...(opts.env || {}) },
     timeout: opts.timeout ?? 60000,
-    maxBuffer: 16 * 1024 * 1024,
+    maxBuffer: opts.maxBuffer ?? 16 * 1024 * 1024,
     windowsHide: true,
     shell: IS_WIN && /^(npm|npx)$/.test(cmd),
   }, (err, stdout, stderr) => {
@@ -188,6 +189,75 @@ async function githubJson(url, timeout = 10000) {
     if (c.err) throw new Error('GitHub: ' + (e?.cause?.code || e?.message || e));
     return JSON.parse(c.stdout);
   }
+}
+
+// PartReel — необязательный, публичный источник KiCad-футпринтов. Статический
+// JSON и файлы кэшируются в памяти процесса, чтобы не скачивать каталог заново
+// на каждый поиск. Внешний URL всегда фиксирован/allowlisted (без SSRF).
+const PARTREEL_ORIGIN = 'https://partreel.com';
+const partReelCache = new Map();
+const partReelFlights = new Map();
+const PARTREEL_TTL = 6 * 60 * 60 * 1000;
+const PARTREEL_MAX_JSON = 32 * 1024 * 1024;
+const PARTREEL_MAX_MOD = 4 * 1024 * 1024;
+
+async function fetchPartReel(url, maxBytes, timeout = 20000) {
+  try {
+    const r = await fetch(url, {
+      signal: AbortSignal.timeout(timeout),
+      headers: { accept: url.endsWith('.kicad_mod') ? 'text/plain' : 'application/json', 'user-agent': 'PSBees-PCB/0.1' },
+    });
+    if (!r.ok) throw Object.assign(new Error(`PartReel HTTP ${r.status}`), { http: true });
+    const length = Number(r.headers.get('content-length'));
+    if (Number.isFinite(length) && length > maxBytes) throw new Error('PartReel-файл превышает допустимый размер.');
+    const data = Buffer.from(await r.arrayBuffer());
+    if (data.length > maxBytes) throw new Error('PartReel-файл превышает допустимый размер.');
+    return data;
+  } catch (e) {
+    if (e?.http || /превышает допустимый размер/.test(e?.message || '')) throw e;
+    // Резервный транспорт для Node-сборок, где системный CA/proxy не виден fetch.
+    const c = await execFileP('curl', ['-sS', '-L', '--fail', '--max-time', String(Math.ceil(timeout / 1000)),
+      '--max-filesize', String(maxBytes), '-A', 'PSBees-PCB/0.1', url], {
+      timeout: timeout + 3000, maxBuffer: maxBytes + 1024,
+    });
+    if (c.err) throw new Error(`PartReel недоступен: ${String(e?.cause?.code || e?.message || c.stderr || 'ошибка сети').slice(0, 180)}`);
+    const data = Buffer.from(c.stdout, 'utf8');
+    if (data.length > maxBytes) throw new Error('PartReel-файл превышает допустимый размер.');
+    return data;
+  }
+}
+
+async function cachedPartReel(key, url, maxBytes, ttl = PARTREEL_TTL) {
+  const hit = partReelCache.get(key);
+  if (hit && hit.until > Date.now()) return hit.data;
+  if (partReelFlights.has(key)) return partReelFlights.get(key);
+  const promise = fetchPartReel(url, maxBytes).then((data) => {
+    // Небольшой FIFO-кэш; истёкшие/старые файлы уйдут первыми.
+    if (partReelCache.size >= 64) partReelCache.delete(partReelCache.keys().next().value);
+    partReelCache.set(key, { data, until: Date.now() + ttl });
+    return data;
+  }).finally(() => partReelFlights.delete(key));
+  partReelFlights.set(key, promise);
+  return promise;
+}
+
+let parsedPartReelIndex = null;
+let parsedPartReelUntil = 0;
+let parsedPartReelFlight = null;
+async function getPartReelIndex() {
+  if (parsedPartReelIndex && parsedPartReelUntil > Date.now()) return parsedPartReelIndex;
+  if (parsedPartReelFlight) return parsedPartReelFlight;
+  parsedPartReelFlight = (async () => {
+    const data = await cachedPartReel('index', `${PARTREEL_ORIGIN}/api/v1/parts.json`, PARTREEL_MAX_JSON);
+    let raw;
+    try { raw = JSON.parse(data.toString('utf8')); }
+    catch { throw new Error('PartReel вернул некорректный JSON-каталог.'); }
+    const index = parsePartReelIndex(raw);
+    parsedPartReelIndex = index;
+    parsedPartReelUntil = Date.now() + PARTREEL_TTL;
+    return index;
+  })().finally(() => { parsedPartReelFlight = null; });
+  return parsedPartReelFlight;
 }
 
 // поддерживает ли node ключ --use-system-ca (системные сертификаты для fetch)
@@ -774,6 +844,65 @@ export async function startServer(opts = {}) {
           res.end('{"ok":true,"sha":"dev"}');
         }
         return;
+      }
+
+      if (url.pathname.startsWith('/api/footprints/')) {
+        if (req.method !== 'GET') return json(res, 405, { ok: false, error: 'Каталог поддерживает только GET.' });
+        const cacheHeaders = {
+          'x-content-type-options': 'nosniff',
+          'cache-control': 'public, max-age=3600, stale-while-revalidate=86400',
+        };
+        try {
+          if (url.pathname === '/api/footprints/search') {
+            const query = (url.searchParams.get('q') || '').trim();
+            if (!query || query.length > 120) return json(res, 400, { ok: false, error: 'Введите поисковый запрос длиной до 120 символов.' });
+            const requestedCategory = url.searchParams.get('category') || 'all';
+            const category = ['all', 'smd', 'modules'].includes(requestedCategory) ? requestedCategory : 'all';
+            const verifiedOnly = url.searchParams.get('verified') === 'true';
+            const index = await getPartReelIndex();
+            const result = searchPartReel(index, { query, category, verifiedOnly, limit: 40 });
+            res.writeHead(200, { ...cacheHeaders, 'cache-control': 'no-store', 'content-type': 'application/json; charset=utf-8' });
+            res.end(JSON.stringify(result));
+            return;
+          }
+
+          if (url.pathname === '/api/footprints/index') {
+            const data = await cachedPartReel('index', `${PARTREEL_ORIGIN}/api/v1/parts.json`, PARTREEL_MAX_JSON);
+            let parsed;
+            try { parsed = JSON.parse(data.toString('utf8')); }
+            catch { throw new Error('PartReel вернул некорректный JSON-каталог.'); }
+            const entries = Array.isArray(parsed) ? parsed : parsed?.parts ?? parsed?.items ?? parsed?.data;
+            if (!Array.isArray(entries)) throw new Error('Формат каталога PartReel изменился: список деталей не найден.');
+            res.writeHead(200, { ...cacheHeaders, 'content-type': 'application/json; charset=utf-8', 'content-length': data.length });
+            res.end(data);
+            return;
+          }
+
+          const detail = /^\/api\/footprints\/detail\/([A-Za-z0-9_-]{1,120})$/.exec(url.pathname);
+          if (detail) {
+            const id = detail[1];
+            const data = await cachedPartReel(`detail:${id}`, `${PARTREEL_ORIGIN}/api/v1/parts/${encodeURIComponent(id)}.json`, 2 * 1024 * 1024);
+            try { JSON.parse(data.toString('utf8')); }
+            catch { throw new Error('PartReel вернул некорректную карточку компонента.'); }
+            res.writeHead(200, { ...cacheHeaders, 'content-type': 'application/json; charset=utf-8', 'content-length': data.length });
+            res.end(data);
+            return;
+          }
+
+          if (url.pathname === '/api/footprints/raw') {
+            const path = url.searchParams.get('path') || '';
+            if (!/^\/library\/(?:[A-Za-z0-9._~-]+\/)*[A-Za-z0-9._~-]+\.kicad_mod$/.test(path) || path.includes('..')) {
+              return json(res, 400, { ok: false, error: 'Некорректный путь к футпринту PartReel.' });
+            }
+            const data = await cachedPartReel(`mod:${path}`, `${PARTREEL_ORIGIN}${path}`, PARTREEL_MAX_MOD);
+            res.writeHead(200, { ...cacheHeaders, 'content-type': 'text/plain; charset=utf-8', 'content-length': data.length });
+            res.end(data);
+            return;
+          }
+          return json(res, 404, { ok: false, error: 'Неизвестный маршрут каталога футпринтов.' });
+        } catch (e) {
+          return json(res, 502, { ok: false, error: e?.message || 'Не удалось получить данные PartReel.' });
+        }
       }
 
       if (url.pathname.startsWith('/update/')) {

@@ -3,6 +3,7 @@
 import { Fragment, useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from 'react';
 import * as M from './pcb/model';
 import { expandComp, expandDoc, libElsToEnts } from './pcb/expand';
+import { bboxOf as libBBox } from './pcb/footprint';
 import { lay6ToDoc, docToLay6, hasLay6Magic, lmkToEnts } from './pcb/lay6';
 import {
   addMacro, buildTree, createFolder, exportJSON, importJSON, loadStore, makeMacro,
@@ -30,6 +31,7 @@ import {
   type Defs, type ToolId,
 } from './ui/panels';
 import { GenPanel, MacroTree, genSpecText } from './ui/genpanel';
+import { FootprintCatalog, type CatalogSelection } from './ui/catalog';
 import {
   AboutDialog, ColorsDialog, ExportDialog, NewBoardDialog, PanelizeDialog, type ExportPngOpts,
 } from './ui/dialogs';
@@ -37,7 +39,15 @@ import { GridDialog, GridQuickPanel, GridToolbar, gridOf } from './ui/grid';
 import { LibPreviewDialog } from './ui/libpreview';
 import { applyCustomColors, loadCustomColors, saveCustomColors, type CustomColors } from './ui/palette';
 import { UiBuilderDialog, useUpdater } from './ui/updater';
-import { MenuBtn } from './ui/widgets';
+import { MenuBtn, Modal } from './ui/widgets';
+
+declare global {
+  interface Window {
+    psbees?: {
+      closeApp: () => void;
+    };
+  }
+}
 
 type ToolId2 = ToolId;
 
@@ -117,21 +127,17 @@ const GROUP_DEFS: { id: string; label: string }[] = [
   { id: 'grid', label: 'Сетка и углы' },
   { id: 'layer', label: 'Слой K1 / K2' },
   { id: 'view', label: 'Вид' },
-  { id: 'about', label: 'Тема, «Обновить», интерфейс и справка' },
+  { id: 'about', label: 'Тема и справка' },
 ];
 const GROUP_ORDER: string[] = GROUP_DEFS.map((g) => g.id);
 const GROUP_NAMES: Record<string, string> = Object.fromEntries(GROUP_DEFS.map((g) => [g.id, g.label]));
 
 /**
  * Группы, которые нельзя спрятать конструктором интерфейса.
- *
- * В последней группе живёт меню «⋯» — единственный вход в конструктор интерфейса,
- * «Цвета интерфейса» и «О программе». Спрятав её, вернуть кнопки было бы нечем:
- * выход из настройки пропал бы вместе с самими настройками. Поэтому «about»
- * показывается всегда, а сохранённая в браузере конфигурация с ней в списке
- * скрытых просто игнорируется.
+ * Быстрые кнопки обновления и настроек добавляются сразу после undo/redo,
+ * поэтому эта группа остаётся на панели даже при пользовательской настройке.
  */
-const PINNED_GROUPS: string[] = ['about'];
+const PINNED_GROUPS: string[] = ['undo'];
 
 /**
  * Инструменты рисования вынесены из верхней панели в вертикальный док у холста
@@ -196,7 +202,7 @@ function loadUi(): UiState {
       if (d && Array.isArray(d.ids) && Array.isArray(d.hidden)) {
         return {
           ids: d.ids.filter((id: string) => GROUP_DEFS.some((g) => g.id === id)),
-          // «about» не скрывается: в нём меню с настройками интерфейса (см. PINNED_GROUPS)
+          // закреплённые группы очищаем из сохранённого списка скрытых
           hidden: d.hidden
             .filter((id: string) => GROUP_DEFS.some((g) => g.id === id))
             .filter((id: string) => !PINNED_GROUPS.includes(id)),
@@ -300,7 +306,7 @@ export default function App() {
   const [preview, setPreview] = useState<Detail | null>(null);
   const [query, setQueryRaw] = useState<string>(loadQuery);
   const [store, setStore] = useState<Store>(loadStore);
-  const [libTab, setLibTab] = useState<'gen' | 'lib'>('gen');
+  const [libTab, setLibTab] = useState<'gen' | 'lib' | 'catalog'>('gen');
   const [libFilter, setLibFilter] = useState('');
   const [collapsed, setCollapsed] = useState<Set<string>>(new Set());
   // деталь из библиотеки, которую правим строкой генератора («Обновить»)
@@ -374,7 +380,7 @@ export default function App() {
   }, [doc, tool, routeMode]);
   const [routeA, setRouteA] = useState<RouteEnd | null>(null);
   const [routeMsg, setRouteMsg] = useState<{ msg: string; ok: boolean | null }>({ msg: '', ok: null });
-  const [dialog, setDialog] = useState<'new' | 'export' | 'panelize' | 'about' | 'inventory' | 'uib' | 'colors' | 'grid' | null>(null);
+  const [dialog, setDialog] = useState<'new' | 'export' | 'panelize' | 'about' | 'inventory' | 'uib' | 'colors' | 'grid' | 'close' | null>(null);
   const [uiConf, setUiConf] = useState<UiState>(loadUi);
   // сохраняем конфигурацию интерфейса сразу (не autosave через таймаут)
   const persistUi = useCallback((c: UiState) => {
@@ -946,6 +952,48 @@ export default function App() {
     setPlace(d);
     setToolRaw('comp');
   }, [detailFromGen]);
+
+  const detailFromCatalog = useCallback((selection: CatalogSelection): Detail => {
+    const fp = selection.footprint;
+    const sizeText = `${M.fmt(fp.bbox[2] - fp.bbox[0])} × ${M.fmt(fp.bbox[3] - fp.bbox[1])} мм`;
+    const spec = [
+      fp.stats.smd ? `${fp.stats.smd} SMD` : '',
+      fp.stats.plated ? `${fp.stats.plated} PTH` : '',
+      fp.stats.holes ? `${fp.stats.holes} отверстий` : '',
+      sizeText,
+    ].filter(Boolean).join(' · ');
+    const note = [
+      `Источник: PartReel (${selection.pageUrl}).`,
+      `Лицензия: ${selection.license}; атрибуция: PartReel.`,
+      selection.verified ? 'PartReel помечает запись как verified.' : 'Запись не отмечена PartReel как verified.',
+      selection.provenance ? `Происхождение: ${selection.provenance}.` : '',
+      ...fp.warnings,
+      'Проверьте размеры по даташиту перед изготовлением.',
+    ].filter(Boolean).join(' ');
+    return {
+      name: selection.part.name || fp.name,
+      ents: libElsToEnts(fp.els),
+      bl: libBBox(fp.els),
+      spec,
+      note,
+      query: `PartReel:${selection.part.id}`,
+    };
+  }, []);
+
+  const placeFromCatalog = useCallback((selection: CatalogSelection) => {
+    setPlace(detailFromCatalog(selection));
+    setPlaceRot(0);
+    setPlaceSide('top');
+    setToolRaw('comp');
+    setPreview(null);
+  }, [detailFromCatalog]);
+
+  const saveCatalogToLibrary = useCallback((selection: CatalogSelection) => {
+    const detail = detailFromCatalog(selection);
+    const macro = makeMacro(detail.name, detail.ents, { note: detail.note });
+    patchStore((st) => addMacro(st, macro));
+    setLibTab('lib');
+  }, [detailFromCatalog, patchStore]);
 
   /** деталь из дерева → ставим на плату */
   const pickMacro = useCallback((m: Macro) => {
@@ -1740,11 +1788,28 @@ export default function App() {
     return [...base.filter((id) => id !== 'about'), ...add, ...tail];
   }, [uiConf]);
   const updButton = upd.Button;
+  const closeApplication = useCallback(() => {
+    // Синхронно сбрасываем текущую плату перед выходом, не полагаясь на таймер autosave.
+    try {
+      localStorage.setItem(AUTOSAVE_KEY, JSON.stringify(doc));
+      localStorage.setItem(DEFS_KEY, JSON.stringify(defs));
+      SAVE_UI(uiConf);
+    } catch { /* приватный режим / переполненное хранилище */ }
+
+    if (window.psbees?.closeApp) {
+      window.psbees.closeApp();
+      return;
+    }
+
+    // В обычной вкладке браузер может запретить закрытие окна, открытого вручную.
+    try { window.close(); } catch { /* браузер запрещает закрывать вкладку */ }
+    setDialog('close');
+  }, [doc, defs, uiConf]);
 
   // ---------------- верхняя панель (одна строка, конструктор интерфейса) ----------------
   // Мемоизирована: движение мыши не пересобирает шапку (в ней, среди прочего,
-  // выпадающий список шага сетки почти на сотню позиций). Редкие действия
-  // («Экспорт», «Интерфейс») убраны в компактные выпадающие меню.
+  // выпадающий список шага сетки почти на сотню позиций). Быстрые кнопки
+  // обновления и настройки стоят сразу после стрелок undo/redo.
   const toolbar = useMemo(() => {
     const tb = (
       n: string, title: string, onClick: () => void, opts?: { active?: boolean; disabled?: boolean },
@@ -1827,24 +1892,22 @@ export default function App() {
           {tb(theme === 'dark' ? 'sun' : 'moon',
             theme === 'dark' ? 'Включить светлую тему' : 'Включить тёмную тему',
             () => setTheme(theme === 'dark' ? 'light' : 'dark'))}
-          {updButton}
-          <MenuBtn
-            align="right"
-            title="Интерфейс и справка"
-            items={[
-              { icon: 'uib', label: 'Конструктор интерфейса…', onClick: () => setDialog('uib') },
-              { icon: 'palette', label: 'Цвета интерфейса…', onClick: () => setDialog('colors') },
-              { sep: true },
-              { icon: 'about', label: 'О программе', onClick: () => setDialog('about') },
-            ]}
-          />
+          {tb('about', 'О программе', () => setDialog('about'))}
         </div>
       ),
     };
 
+    const quickActions = (
+      <div className="tb-group toolbar-quick" key="quick-actions" aria-label="Обновление и настройки интерфейса">
+        {updButton}
+        {tb('uib', 'Конструктор интерфейса', () => setDialog('uib'))}
+        {tb('palette', 'Настроить цвета интерфейса', () => setDialog('colors'))}
+      </div>
+    );
+
     // порядок групп: сохранённый в localStorage, иначе порядок по умолчанию;
-    // «Инструменты» (tools) теперь живут в вертикальном доке у холста,
-    // «about» (меню с настройками интерфейса) спрятать нельзя — см. PINNED_GROUPS
+    // инструменты рисования живут в вертикальном доке у холста. Группа undo
+    // закреплена и всегда выводит быстрые кнопки сразу после стрелок отмены/повтора.
     const hiddenSet = new Set(uiConf.hidden);
     const order = uiOrder.filter((id) => id !== 'tools' && (!hiddenSet.has(id) || PINNED_GROUPS.includes(id)));
     return (
@@ -1853,10 +1916,21 @@ export default function App() {
           <span className="brandmark"><BeeMark /></span>
           <span className="brandtext"><b>PS<em>Bees</em></b><small>PCB · LINUX · WINDOWS · SPRINT-LAYOUT</small></span>
         </div>
-        {order.map((id) => groups[id])}
+        {order.map((id) => (
+          <Fragment key={id}>
+            {groups[id]}
+            {id === 'undo' && quickActions}
+          </Fragment>
+        ))}
+        <div className="tb-group toolbar-exit" key="exit" aria-label="Выход">
+          <button type="button" className="tb-btn close-app" title="Закрыть приложение / сайт"
+            aria-label="Закрыть приложение или вкладку" onClick={closeApplication}>
+            <Ic n="close" />
+          </button>
+        </div>
       </div>
     );
-  }, [uiConf, uiOrder, defs, view.s, view.mir, activeCu, size, theme, updButton, saveFile, undo, redo, fit, zoomAt, setDefs]);
+  }, [uiConf, uiOrder, defs, view.s, view.mir, activeCu, size, theme, updButton, saveFile, undo, redo, fit, zoomAt, setDefs, closeApplication]);
 
   // ---------------- док инструментов у холста ----------------
   // Группа «Инструменты» конструктора интерфейса управляет видимостью дока.
@@ -1909,12 +1983,15 @@ export default function App() {
     const macroCount = store.macros.length;
     const renderGenPane = () => (
       <>
-        <div className="tabs">
+        <div className="tabs lib-tabs">
           <button type="button" className={libTab === 'gen' ? 'on' : ''} onClick={() => setLibTab('gen')}>
             Генератор
           </button>
           <button type="button" className={libTab === 'lib' ? 'on' : ''} onClick={() => setLibTab('lib')}>
             Библиотека{macroCount ? ` (${macroCount})` : ''}
+          </button>
+          <button type="button" className={libTab === 'catalog' ? 'on' : ''} onClick={() => setLibTab('catalog')}>
+            Каталог
           </button>
         </div>
         <div className="pane-scroll">
@@ -1933,7 +2010,7 @@ export default function App() {
                 onNewFolder={(n) => { patchStore((st) => createFolder(st, n, null)); setLibTab('lib'); }}
               />
             </div>
-          ) : (
+          ) : libTab === 'lib' ? (
             <MacroTree
               store={store}
               tree={tree}
@@ -1966,6 +2043,8 @@ export default function App() {
               onExport={exportLibJson}
               onImport={() => libFileRef.current?.click()}
             />
+          ) : (
+            <FootprintCatalog onPlace={placeFromCatalog} onSave={saveCatalogToLibrary} />
           )}
         </div>
       </>
@@ -1989,7 +2068,7 @@ export default function App() {
   }, [
     sidesConf, leftTab, activeCu, hidden, counts, doc, sel, place, preview, gen, query, store, tree,
     libTab, libFilter, collapsed, editId, toggleHidden, setQuery, setLeftTab,
-    placeFromGen, pickMacro, editMacro, saveGenToLibrary, updateGenMacro, exportLibJson, patchStore,
+    placeFromGen, placeFromCatalog, saveCatalogToLibrary, pickMacro, editMacro, saveGenToLibrary, updateGenMacro, exportLibJson, patchStore,
   ]);
 
   const rightColumn = useMemo(() => (
@@ -2171,6 +2250,20 @@ export default function App() {
         />
       )}
       {dialog === 'about' && <AboutDialog version={appVer} onClose={() => setDialog(null)} />}
+      {dialog === 'close' && (
+        <Modal
+          title="Закрытие сайта"
+          className="close-help-modal"
+          onClose={() => setDialog(null)}
+          foot={<button className="btn primary" onClick={() => setDialog(null)}>Понятно</button>}
+        >
+          <p>
+            Браузер не разрешает сайту закрывать вкладки, которые открыли вручную.
+            Закройте эту вкладку сочетанием Ctrl+W или кнопкой × в браузере.
+          </p>
+          <p>В установленном приложении PSBees эта кнопка закрывает окно программы.</p>
+        </Modal>
+      )}
       {upd.Dialog}
     </>
   );

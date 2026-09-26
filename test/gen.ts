@@ -117,7 +117,7 @@ const EXTRA: Record<string, string[]> = {
   pack: ['to220', 'to-92', 'корпус TO-3P'],
   sot: ['sot-23', 'sot-89', 'транзистор smd'],
   elco: ['электролит 10 мм шаг 5', 'конденсатор 100нф шаг 5.08'],
-  module: ['esp32 devkit', 'duino nano', 'raspberry pi pico', 'nodemcu'],
+  module: ['esp32 devkit', 'duino nano', 'raspberry pi pico', 'nodemcu', 'blue pill', 'stm32f103c8t6'],
   shield: ['nano shield m3 крепёж', 'pro shield', 'arduino uno shield'],
   board: ['плата 60x40 4 m3', 'плата 100x80, отступ 4'],
   hole: ['крепёжное отверстие m3 x4 шаг 20', '2 отверстия 3.2'],
@@ -264,6 +264,12 @@ expect('электролит 10 мм шаг 5', { family: 'elco', d: 10, pitch: 
 expect('esp32 devkit', { family: 'module', n: 19, holes: 2, holeD: 2.7 });
 expect('duino nano', { family: 'module', n: 15, holes: 0 });
 expect('raspberry pi pico', { family: 'module', n: 20, holes: 2 });
+expect('blue pill', { family: 'module', n: 20, rowW: 15.24, bodyW: 22.86, bodyH: 53.34, holes: 0, specPins: 40, specHoles: 0 });
+{
+  const r = generate('blue pill');
+  if (!String(r.params?.names).startsWith('VBAT,PC13,PC14,PC15,PA0')) fail('Blue Pill header 1 pin order');
+  if (!String(r.params?.names).includes('|3V3,GND,5V,PB9,PB8')) fail('Blue Pill header 2 pin order');
+}
 expect('nano shield m3 крепёж', { family: 'shield', holes: true, holeD: 3.2 });
 expect('arduino uno shield', { family: 'shield', w: 68.58, h: 53.34 });
 expect('плата 60x40 4 m3', { family: 'board', bw: 60, bh: 40, holes: 4, holeD: 3.2 });
