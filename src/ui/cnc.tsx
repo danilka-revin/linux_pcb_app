@@ -3,6 +3,7 @@
 // Рядом с каждой группой параметров — интерактивная схема «что за что отвечает»
 // (те же схемы вшиваются в ZIP как 00b_SHEMY_PARAMETROV.svg); построение и
 // проверка показываются интерактивными полосами прогресса.
+// Просмотр теперь не обязателен для скачивания и открывается в отдельном окне.
 import { useEffect, useMemo, useRef, useState } from 'react';
 import type { Doc } from '../pcb/model';
 import type { CncJob, CncStage } from '../pcb/cnc';
@@ -16,6 +17,7 @@ import { Modal, NI } from './widgets';
 import { ProgressBar, type PbStep } from './progress';
 import { Scheme } from './cnc-schemes';
 import { CncPreview } from './cnc-preview';
+import { openCncPreviewWindow } from './cnc-preview-window';
 
 const KEY = 'psbees.cnc.settings';
 const n = (v: number) => String(Number(v.toFixed(3)));
@@ -51,7 +53,7 @@ export function CncDialog({ doc, onClose }: { doc: Doc; onClose: () => void }) {
   const [bp, setBp] = useState<{ stage: CncStage; frac: number } | null>(null);
   const [reviewed, setReviewed] = useState(false);
   const [previewSide, setPreviewSide] = useState<'top' | 'bottom'>('top');
-  const [seenSides, setSeenSides] = useState({ top: false, bottom: false });
+  const [showInlinePreview, setShowInlinePreview] = useState(false);
   const [analysis, setAnalysis] = useState<CncBoardAnalysis | null>(null);
   const [fitNote, setFitNote] = useState('');
   const worker = useRef<Worker | null>(null);
@@ -62,7 +64,7 @@ export function CncDialog({ doc, onClose }: { doc: Doc; onClose: () => void }) {
   useEffect(() => () => { worker.current?.terminate(); worker.current = null; }, []);
   useEffect(() => {
     worker.current?.terminate(); worker.current = null;
-    setJob(null); setReviewed(false); setBuilding(false); setBp(null); setSeenSides({ top: false, bottom: false });
+    setJob(null); setReviewed(false); setBuilding(false); setBp(null);
     setAnalysis(null); setFitNote(''); fitDone.current = false;
     const w = new Worker(new URL('../pcb/cnc.worker.ts', import.meta.url), { type: 'module' });
     w.onmessage = (event: MessageEvent<{ type?: string; analysis?: CncBoardAnalysis; error?: string }>) => {
@@ -88,7 +90,7 @@ export function CncDialog({ doc, onClose }: { doc: Doc; onClose: () => void }) {
 
   const invalidate = () => {
     worker.current?.terminate(); worker.current = null;
-    setJob(null); setReviewed(false); setBuilding(false); setBp(null); setSeenSides({ top: false, bottom: false }); setError('');
+    setJob(null); setReviewed(false); setBuilding(false); setBp(null); setError('');
   };
   const change = <K extends keyof CncSettings>(key: K, value: CncSettings[K]) => {
     invalidate();
@@ -119,7 +121,6 @@ export function CncDialog({ doc, onClose }: { doc: Doc; onClose: () => void }) {
         worker.current = null; next.terminate(); setBuilding(false); setBp(null);
         if ('ok' in event.data && event.data.ok) {
           setJob(event.data.job);
-          setSeenSides({ top: previewSide === 'top', bottom: previewSide === 'bottom' });
         } else setError('error' in event.data ? event.data.error : 'Не удалось построить траектории ЧПУ.');
       };
       next.onerror = () => {
@@ -135,16 +136,24 @@ export function CncDialog({ doc, onClose }: { doc: Doc; onClose: () => void }) {
   };
 
   const save = () => {
-    if (!job || !reviewed || !seenAll) return;
+    if (!job) return;
+    // Просмотр теперь не обязателен — скачивание доступно сразу после построения.
     const base = (doc.name || 'board').replace(/[^\wа-яА-ЯёЁ-]+/g, '_').slice(0, 100) || 'board';
     download(`${base}_cnc_grbl.zip`, makeZip(job.files));
     try { globalThis.localStorage?.setItem(KEY, JSON.stringify(settings)); }
     catch { /* приватный режим браузера */ }
   };
 
-  const needTop = !!job && (job.topLoops > 0 || (job.drills.length > 0 && settings.drillSide === 'top'));
-  const needBottom = !!job && (job.bottomLoops > 0 || (job.drills.length > 0 && settings.drillSide === 'bottom'));
-  const seenAll = (!needTop || seenSides.top) && (!needBottom || seenSides.bottom);
+  const openPreview = (side: 'top' | 'bottom') => {
+    if (!job) return;
+    setPreviewSide(side);
+    openCncPreviewWindow(doc, settings, job, side);
+  };
+
+  const openCurrentPreview = () => {
+    if (!job) return;
+    openCncPreviewWindow(doc, settings, job, previewSide);
+  };
 
   // Схемы пересчитываются вместе с параметрами: цифры на чертежах всегда живые.
   const schemes = useMemo(() => ({
@@ -175,20 +184,17 @@ export function CncDialog({ doc, onClose }: { doc: Doc; onClose: () => void }) {
     return ((done + bp.frac * (STAGES[idx]?.weight ?? 0)) / total) * 100;
   })();
 
-  // Готовность к экспорту: сколько проверок уже выполнено (интерактивные шаги).
+  // Готовность к экспорту: просмотр теперь опционален и в отдельном окне.
   const reviewSteps: PbStep[] = [
     { id: 'build', label: 'Построить траектории', state: job ? 'done' : 'wait', hint: 'Расчёт изоляции, сверловки и G-code в фоновом потоке.' },
     {
-      id: 'top', label: 'Просмотреть верх K1', state: !job ? 'wait' : !needTop ? 'skip' : seenSides.top ? 'done' : 'wait',
-      hint: 'Сверьте медь, канавку реза и нажмите «Старт — ход станка», чтобы увидеть, как пойдёт фреза.',
-      onSelect: () => { setPreviewSide('top'); setSeenSides((v) => ({ ...v, top: true })); },
+      id: 'preview',
+      label: 'Просмотр в отдельном окне (необязательно)',
+      state: job ? 'done' : 'wait',
+      hint: 'Откройте просмотр в отдельном окне, чтобы сверить медь и ход фрезы. Скачивание доступно и без просмотра.',
+      onSelect: () => { if (job) openCurrentPreview(); },
     },
-    {
-      id: 'bottom', label: 'Просмотреть низ K2 (зеркало)', state: !job ? 'wait' : !needBottom ? 'skip' : seenSides.bottom ? 'done' : 'wait',
-      hint: 'Низ показан зеркально — как он выглядит после переворота лево/право.',
-      onSelect: () => { setPreviewSide('bottom'); setSeenSides((v) => ({ ...v, bottom: true })); },
-    },
-    { id: 'confirm', label: 'Подтвердить проверку', state: reviewed ? 'done' : 'wait', hint: 'Галочка внизу: превью, нули, зажимы и инструменты проверены.' },
+    { id: 'confirm', label: 'Подтвердить проверку (необязательно)', state: reviewed ? 'done' : 'wait', hint: 'Галочка для вашей проверки — не блокирует скачивание.' },
   ];
   const reviewDone = reviewSteps.filter((s) => s.state === 'done').length;
   const reviewPct = (reviewDone / reviewSteps.length) * 100;
@@ -197,14 +203,17 @@ export function CncDialog({ doc, onClose }: { doc: Doc; onClose: () => void }) {
   const fits = analysis ? isolationFits(settings, analysis) : null;
   const pick = analysis ? pickForBoard(settings, analysis, doc) : null;
 
+  const hasTop = !!job && (job.topLoops > 0 || (job.drills.length > 0 && settings.drillSide === 'top'));
+  const hasBottom = !!job && (job.bottomLoops > 0 || (job.drills.length > 0 && settings.drillSide === 'bottom'));
+
   return <Modal title="ЧПУ: фрезеровка и сверловка (G-code / GRBL)" className="cnc-modal" onClose={onClose}
     foot={<>
       <button className="btn" onClick={onClose}>Закрыть</button>
       <button className="btn" disabled={building} onClick={build}>{building ? 'Строим траектории…' : 'Построить и проверить'}</button>
-      <button className="btn primary" disabled={!job || !reviewed || !seenAll || building} onClick={save}>Скачать CNC ZIP</button>
+      <button className="btn primary" disabled={!job || building} onClick={save}>Скачать CNC ZIP</button>
     </>}>
     <p className="cnc-intro">Плата «{doc.name}», {n(doc.w)} × {n(doc.h)} мм. Фреза обходит дорожки канавкой — это не зачистка всей фольги.
-      Зазоры ниже <b>подстраиваются под щели этой платы</b>. После построения можно <b>смотреть, как пойдёт станок</b>.
+      Зазоры ниже <b>подстраиваются под щели этой платы</b>. После построения можно <b>смотреть, как пойдёт станок</b> в отдельном окне (просмотр не обязателен).
       Под группами — схемы «что за что отвечает» (они же в ZIP: <code>00b_SHEMY_PARAMETROV.svg</code>).
       Числа — <b>пример, а не проверенный режим вашего станка</b>.</p>
 
@@ -311,13 +320,13 @@ export function CncDialog({ doc, onClose }: { doc: Doc; onClose: () => void }) {
 
     {error && <p role="alert" className="cnc-error">{error}</p>}
     <section className="cnc-result">
-      <h3>6. {job ? 'Проверьте траектории перед загрузкой в станок' : 'Готовность к экспорту'}</h3>
+      <h3>6. {job ? 'Готово — можно скачивать (просмотр не обязателен)' : 'Готовность к экспорту'}</h3>
       <ProgressBar
         label="Готовность к экспорту"
         pct={reviewPct}
-        tone={reviewDone === reviewSteps.length ? 'ok' : 'accent'}
+        tone={job ? 'ok' : 'accent'}
         steps={reviewSteps}
-        meta={reviewDone === reviewSteps.length ? 'Все проверки выполнены — можно скачивать ZIP.' : job ? 'Нажимайте на шаги: схема откроет нужную сторону превью.' : 'Нажмите «Построить и проверить» — расчёт идёт в фоне.'}
+        meta={job ? 'Траектории построены. Просмотр — в отдельном окне, не обязателен для скачивания.' : 'Нажмите «Построить и проверить» — расчёт идёт в фоне.'}
       />
       {job && <>
       <p>Верх K1: <b>{job.topLoops}</b> замкнутых контуров; низ K2 (зеркало X): <b>{job.bottomLoops}</b>;
@@ -327,18 +336,41 @@ export function CncDialog({ doc, onClose }: { doc: Doc; onClose: () => void }) {
       <Scheme built={schemes.files} />
       <p>Самостоятельные файлы ZIP (запускайте только нужный файл после ручной установки инструмента):</p>
       <ul className="cnc-file-list">{job.files.map((f) => <li key={f.name}>{f.name}</li>)}</ul>
-      <div className="radio-row" role="tablist" aria-label="Предпросмотр фрезеровки">
-        <button className={'btn' + (previewSide === 'top' ? ' primary' : '')} role="tab" aria-selected={previewSide === 'top'} onClick={() => { setPreviewSide('top'); setSeenSides((v) => ({ ...v, top: true })); }}>Верх K1</button>
-        <button className={'btn' + (previewSide === 'bottom' ? ' primary' : '')} role="tab" aria-selected={previewSide === 'bottom'} onClick={() => { setPreviewSide('bottom'); setSeenSides((v) => ({ ...v, bottom: true })); }}>Низ K2 — зеркально</button>
+
+      <div className="cnc-preview-actions">
+        <h4>Предпросмотр — в отдельном окне (необязательно)</h4>
+        <p className="muted">Откройте ход фрезы в отдельном окне — его удобно держать рядом со станком. Скачать ZIP можно и без просмотра.</p>
+        <div className="radio-row" style={{ flexWrap: 'wrap', gap: '8px' }}>
+          <button className="btn primary" onClick={() => openPreview('top')} disabled={!hasTop}>Просмотр K1 в отдельном окне</button>
+          <button className="btn primary" onClick={() => openPreview('bottom')} disabled={!hasBottom}>Просмотр K2 в отдельном окне</button>
+          <button className="btn" onClick={openCurrentPreview}>Открыть текущий ({previewSide === 'top' ? 'K1' : 'K2'}) в отдельном окне</button>
+          <button className="btn" onClick={() => setShowInlinePreview((v) => !v)}>{showInlinePreview ? 'Скрыть встроенный просмотр' : 'Показать встроенный просмотр (необязательно)'}</button>
+        </div>
       </div>
-      <CncPreview doc={doc} settings={settings} job={job} side={previewSide} />
-      <p>Низ фрезеруется <b>только после физического переворота лево/право</b> в той же оснастке: X′ = ширина платы − X. X/Y не перенастраивать; Z0 выставить по поверхности низа.</p>
-      {!seenAll && <p className="cnc-error">Просмотрите обе стороны с операциями, прежде чем подтверждать экспорт.</p>}
-      <label className="chk cnc-confirm"><input type="checkbox" checked={reviewed} disabled={!seenAll} onChange={(e) => setReviewed(e.target.checked)} />
-        Я проверил(а) превью обеих сторон, привязку нуля, зажимы и инструменты. Перед работой выполню холостой прогон и проверю параметры резания своего станка.</label>
+
+      {showInlinePreview && (
+        <>
+          <div className="radio-row" role="tablist" aria-label="Предпросмотр фрезеровки (встроенный, необязательный)">
+            <button className={'btn' + (previewSide === 'top' ? ' primary' : '')} role="tab" aria-selected={previewSide === 'top'} onClick={() => setPreviewSide('top')}>Верх K1 (встроенный)</button>
+            <button className={'btn' + (previewSide === 'bottom' ? ' primary' : '')} role="tab" aria-selected={previewSide === 'bottom'} onClick={() => setPreviewSide('bottom')}>Низ K2 — зеркально (встроенный)</button>
+            <button className="btn" onClick={openCurrentPreview}>↗ В отдельном окне</button>
+          </div>
+          <CncPreview doc={doc} settings={settings} job={job} side={previewSide} />
+          <p>Низ фрезеруется <b>только после физического переворота лево/право</b> в той же оснастке: X′ = ширина платы − X. X/Y не перенастраивать; Z0 выставить по поверхности низа.</p>
+        </>
+      )}
+
+      {!showInlinePreview && (
+        <p className="muted">Встроенный просмотр скрыт — используйте кнопки выше, чтобы открыть его в отдельном окне. Это окно можно держать рядом со станком.</p>
+      )}
+
+      <label className="chk cnc-confirm" style={{ marginTop: '12px' }}>
+        <input type="checkbox" checked={reviewed} onChange={(e) => setReviewed(e.target.checked)} />
+        Я проверил(а) привязку нуля, зажимы и инструменты (необязательно, не блокирует скачивание). Перед работой выполню холостой прогон и проверю параметры резания своего станка.
+      </label>
       </>}
     </section>
     <div className="hint cnc-warning">Перед запуском прочитайте инструкцию и схемы в ZIP. Не запускайте файлы подряд без ручной смены сверла и настройки Z0.
-      Контроллер должен поддерживать GRBL-совместимый G-code. Параметры этого компьютера сохраняются после скачивания.</div>
+      Контроллер должен поддерживать GRBL-совместимый G-code. Параметры этого компьютера сохраняются после скачивания. Просмотр — необязателен и доступен в отдельном окне.</div>
   </Modal>;
 }
