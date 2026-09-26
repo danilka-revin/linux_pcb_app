@@ -749,3 +749,214 @@ canvas { display: block; }
 .catalog-links a { color: var(--accent-text); text-decoration: none; }
 .catalog-links a:hover { text-decoration: underline; }
 .catalog-footnote { margin-top: 10px; padding-top: 7px; border-top: 1px solid var(--line-soft); font-size: 9px; }
+
+/* ======================= общий сервер / аккаунты ======================= */
+.cloud-gate {
+  flex: 1; min-height: 0; overflow-y: auto;
+  display: flex; justify-content: center; align-items: safe center;
+  padding: 30px 16px;
+  background: radial-gradient(circle at 78% 17%, var(--accent-soft), transparent 42%), var(--page);
+}
+.cloud-auth {
+  width: 430px; max-width: 100%; padding: 30px;
+  background: var(--surface); border: 1px solid var(--line); border-radius: 16px;
+  box-shadow: var(--shadow);
+}
+.cloud-auth-brand { display: flex; align-items: center; gap: 14px; margin-bottom: 30px; }
+.cloud-auth-brand img { border-radius: 12px; flex: none; }
+.cloud-auth-brand b { display: block; font-size: 21px; letter-spacing: .02em; }
+.cloud-auth-brand em, .admin-title em { color: var(--accent-text); font-style: normal; }
+.cloud-auth-brand span { color: var(--muted); font-size: 11px; }
+.cloud-auth h1 { margin: 0 0 6px; font-size: 22px; }
+.cloud-auth p { color: var(--muted); font-size: 12px; margin: 0 0 22px; line-height: 1.55; }
+.cloud-auth form { display: flex; flex-direction: column; gap: 8px; }
+.cloud-auth form label { color: var(--text-2); font-size: 12px; margin-top: 9px; }
+.cloud-auth .txt { height: 40px; padding: 0 12px; }
+.cloud-auth form .btn { margin-top: 15px; padding: 10px; }
+.cloud-switch { display: block; color: var(--accent-text); cursor: pointer; margin: 22px auto 0; text-align: center; }
+.cloud-switch:hover, .admin-link:hover { text-decoration: underline; }
+.cloud-auth-note { font-size: 11px; line-height: 1.6; color: var(--muted); margin-top: 18px; }
+.cloud-loading { text-align: center; }
+.cloud-loading img { margin-bottom: 20px; }
+.cloud-loading h1 { font-size: 18px; }
+.cloud-error {
+  color: var(--danger-ink); background: var(--danger-bg);
+  border: 1px solid var(--danger); border-radius: 8px;
+  padding: 10px 12px; font-size: 12px; line-height: 1.5; margin: 9px 0;
+  white-space: pre-wrap; overflow-wrap: anywhere;
+}
+.cloud-success { color: var(--ok-ink) !important; }
+
+/* Статус синхронизации постоянно виден в шапке, даже если спрятали «Файл». */
+.cloud-header-group { margin-left: auto; max-width: 410px; }
+.tb-btn.cloud-header-save, .tb-btn.cloud-header-projects, .tb-btn.cloud-header-account {
+  width: auto; padding: 0 9px; font-size: 11.5px; font-weight: 600; white-space: nowrap;
+}
+.tb-btn.cloud-header-save { gap: 5px; }
+.tb-btn.cloud-header-save.saved { color: var(--ok-ink); }
+.tb-btn.cloud-header-save.error, .tb-btn.cloud-header-save.conflict { color: var(--danger-ink); background: var(--danger-bg); }
+.tb-btn.cloud-header-save.dirty, .tb-btn.cloud-header-save.saving { color: var(--accent-text); }
+.tb-btn.cloud-header-account { max-width: 110px; overflow: hidden; text-overflow: ellipsis; }
+@media (max-width: 1100px) { .cloud-header-account { display: none !important; } }
+.cloud-pulse-error { background: var(--danger) !important; }
+
+/* Облачная библиотека плат: отдельный диалог, не ломает холст. */
+.modal.cloud-projects-modal { width: 800px; max-width: calc(100vw - 24px); max-height: 91vh; }
+.cloud-sync-banner {
+  display: flex; align-items: center; gap: 10px;
+  border: 1px solid var(--line); border-radius: 10px;
+  background: var(--surface-2); padding: 10px 12px; margin: 12px 0;
+}
+.cloud-sync-banner > div { min-width: 0; }
+.cloud-sync-banner strong { display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.cloud-sync-banner small { display: block; color: var(--muted); margin-top: 2px; }
+.cloud-sync-dot { width: 9px; height: 9px; border-radius: 50%; background: var(--muted); flex: none; }
+.cloud-sync-banner.saved .cloud-sync-dot { background: var(--ok); }
+.cloud-sync-banner.dirty .cloud-sync-dot, .cloud-sync-banner.saving .cloud-sync-dot { background: var(--accent); }
+.cloud-sync-banner.error .cloud-sync-dot, .cloud-sync-banner.conflict .cloud-sync-dot { background: var(--danger); }
+.cloud-alert { border: 1px solid var(--danger); border-radius: 9px; background: var(--danger-bg); color: var(--danger-ink); padding: 10px 12px; margin: 10px 0; font-size: 12px; }
+.cloud-alert .row { margin-top: 9px; }
+.cloud-create {
+  display: flex; flex-direction: column; align-items: flex-start; gap: 8px;
+  padding: 12px; background: var(--surface-2); border: 1px solid var(--line); border-radius: 10px;
+}
+.cloud-create label { font-weight: 700; font-size: 12px; }
+.cloud-create > div { width: 100%; display: flex; gap: 8px; }
+.cloud-create .txt { flex: 1; min-width: 0; padding: 5px 9px; }
+.cloud-create .btn { flex: none; }
+.cloud-list-head { display: flex; justify-content: space-between; align-items: baseline; margin: 12px 0 7px; gap: 8px; }
+.cloud-list-head h3 { margin: 0; font-size: 14px; }
+.cloud-list-head h3 span { color: var(--muted); font-size: 12px; }
+.cloud-list-head > span { color: var(--muted); font-size: 11px; }
+.cloud-list-search { display: flex; gap: 6px; }
+.cloud-list-search .txt { padding: 6px 10px; }
+.cloud-list { max-height: 35vh; min-height: 80px; overflow: auto; margin-top: 8px; }
+.cloud-list > p { text-align: center; padding: 16px; color: var(--muted); }
+.cloud-list-item { display: flex; align-items: center; gap: 12px; border-bottom: 1px solid var(--line); padding: 9px 3px; }
+.cloud-list-item.current { background: var(--accent-soft); }
+.cloud-list-meta { flex: 1; min-width: 0; padding-left: 5px; }
+.cloud-list-meta strong { display: flex; align-items: center; gap: 8px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.cloud-list-meta small { display: block; color: var(--muted); margin-top: 3px; font-size: 11px; }
+.cloud-list-actions { display: flex; gap: 4px; flex-wrap: wrap; justify-content: flex-end; }
+.cloud-list-actions .btn { white-space: nowrap; }
+.cloud-footnote { font-size: 11px !important; }
+.cloud-pill { display: inline-flex; align-items: center; padding: 2px 8px; border-radius: 20px; border: 1px solid var(--line); color: var(--muted); font-size: 10px; white-space: nowrap; font-weight: 600; }
+.cloud-pill.ok { color: var(--ok-ink); background: var(--ok-bg); border-color: transparent; }
+.cloud-pill.bad { color: var(--danger-ink); background: var(--danger-bg); border-color: transparent; }
+.modal.cloud-account-modal { width: 480px; }
+.cloud-password-form { display: grid; gap: 10px; }
+.cloud-password-form label { display: grid; gap: 4px; font-size: 12px; color: var(--text-2); }
+.cloud-password-form .txt { padding: 6px 10px; }
+.cloud-password-form button { justify-self: start; margin-top: 4px; }
+.admin-link { color: var(--accent-text); text-align: left; padding: 0; cursor: pointer; font-size: inherit; }
+
+/* Отдельное приложение администратора (/admin). */
+.cloud-admin { flex: 1; min-height: 0; overflow-y: auto; background: var(--page); }
+.admin-header {
+  display: flex; align-items: center; justify-content: space-between; gap: 14px;
+  min-height: 68px; padding: 10px clamp(16px, 4vw, 48px);
+  background: var(--surface); border-bottom: 1px solid var(--line);
+}
+.admin-title { display: flex; gap: 11px; align-items: center; min-width: 0; }
+.admin-title img { border-radius: 9px; flex: none; }
+.admin-title b { display: block; font-size: 16px; white-space: nowrap; }
+.admin-title small { display: block; color: var(--muted); font-size: 11px; }
+.admin-header-actions { display: flex; align-items: center; gap: 8px; }
+.admin-header-actions > span { display: inline-block; max-width: 220px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--muted); font-size: 11px; margin-right: 8px; }
+.admin-header-actions .btn, .cloud-gate a.btn { text-decoration: none; white-space: nowrap; }
+.admin-nav { display: flex; gap: 4px; padding: 0 clamp(16px, 4vw, 48px); background: var(--surface); border-bottom: 1px solid var(--line); overflow-x: auto; }
+.admin-nav button { padding: 12px 16px; border-bottom: 2px solid transparent; cursor: pointer; color: var(--muted); white-space: nowrap; }
+.admin-nav button.on { border-bottom-color: var(--accent); color: var(--text); font-weight: 700; }
+.admin-nav button:hover { color: var(--text); }
+.admin-body { width: min(1500px, 100%); margin: 0 auto; padding: 25px clamp(16px, 4vw, 48px) 50px; }
+.admin-heading { display: flex; justify-content: space-between; align-items: center; gap: 15px; margin-bottom: 22px; }
+.admin-heading h1 { margin: 0; font-size: 23px; }
+.admin-heading p { margin: 2px 0 0; color: var(--muted); }
+.admin-stats { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 12px; margin-bottom: 18px; }
+.admin-stats > div, .admin-card { border: 1px solid var(--line); border-radius: 11px; background: var(--surface); padding: 16px 18px; }
+.admin-stats span, .admin-stats small { display: block; color: var(--muted); font-size: 11px; }
+.admin-stats strong { display: block; font-size: 27px; margin: 6px 0 3px; color: var(--accent-text); font-variant-numeric: tabular-nums; }
+.admin-card { margin: 12px 0; }
+.admin-card h2 { margin: 0 0 8px; font-size: 15px; }
+.admin-card p { color: var(--muted); margin: 0; line-height: 1.6; }
+.admin-card code { color: var(--text); background: var(--surface-2); border-radius: 4px; padding: 1px 4px; user-select: text; }
+.admin-settings { display: flex; align-items: center; gap: 10px; margin-top: 13px; }
+.admin-card-title { display: flex; align-items: center; justify-content: space-between; gap: 10px; }
+.admin-events > div { display: flex; align-items: baseline; gap: 14px; padding: 9px 0; border-top: 1px solid var(--line); }
+.admin-events time { color: var(--muted); min-width: 115px; font-size: 11px; }
+.admin-events > div span { min-width: 190px; font-weight: 600; }
+.admin-events small { color: var(--muted); overflow-wrap: anywhere; }
+.admin-filters { display: flex; align-items: center; gap: 10px; margin-bottom: 12px; }
+.admin-filters .txt { max-width: 500px; padding: 7px 10px; }
+.admin-filters span { margin-left: auto; color: var(--muted); white-space: nowrap; }
+.admin-table-wrap { border: 1px solid var(--line); border-radius: 10px; overflow-x: auto; background: var(--surface); }
+.admin-table { width: 100%; border-collapse: collapse; text-align: left; min-width: 810px; }
+.admin-table th { color: var(--muted); font-size: 11px; font-weight: 600; background: var(--surface-2); white-space: nowrap; }
+.admin-table th, .admin-table td { padding: 11px 12px; border-bottom: 1px solid var(--line); vertical-align: middle; }
+.admin-table tr:last-child td { border-bottom: 0; }
+.admin-table td { font-size: 12px; }
+.admin-table td strong { display: block; font-weight: 600; overflow-wrap: anywhere; }
+.admin-table td small { display: block; color: var(--muted); margin-top: 2px; }
+.admin-table td:nth-last-child(2) { white-space: nowrap; }
+.admin-actions { display: flex; flex-wrap: wrap; gap: 4px; min-width: 180px; }
+.admin-empty { padding: 22px; text-align: center; color: var(--muted); }
+.cloud-pages { display: flex; align-items: center; justify-content: center; gap: 16px; margin-top: 15px; color: var(--muted); }
+@media (max-width: 900px) {
+  .admin-stats { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .admin-header-actions > span { display: none; }
+}
+@media (max-width: 600px) {
+  .cloud-auth { padding: 22px; }
+  .cloud-list-item { flex-direction: column; align-items: stretch; }
+  .cloud-list-actions { justify-content: flex-start; }
+  .cloud-create > div { flex-direction: column; }
+  .admin-title b { font-size: 12px; }
+  .admin-title small { display: none; }
+  .admin-header-actions .btn { padding: 4px 6px; font-size: 11px; }
+  .admin-nav button { padding: 10px; font-size: 11px; }
+  .admin-stats { grid-template-columns: 1fr 1fr; gap: 8px; }
+  .admin-stats > div { padding: 10px; }
+  .admin-stats strong { font-size: 20px; }
+  .admin-events > div { flex-wrap: wrap; gap: 3px 8px; }
+  .admin-filters { flex-wrap: wrap; }
+}
+.cloud-library-hint { margin: 8px 10px; padding: 8px; border-radius: 7px; background: var(--info-bg); color: var(--muted); font-size: 10.5px; line-height: 1.5; }
+
+/* ---------- ЧПУ: подготовка G-code, безопасность и предпросмотр ---------- */
+.cnc-modal { width: 880px; max-width: 96vw; }
+.cnc-modal .foot { flex-wrap: wrap; position: sticky; bottom: -18px; z-index: 2;
+  background: var(--surface); padding: 12px 0 3px; border-top: 1px solid var(--line); }
+.cnc-intro { border-left: 3px solid var(--accent); padding-left: 12px; }
+.cnc-settings section, .cnc-result { border-top: 1px solid var(--line); margin-top: 16px; padding-top: 12px; }
+.cnc-settings h3, .cnc-result h3 { margin: 0 0 6px; font-size: 14px; }
+.cnc-settings p, .cnc-result p { margin: 4px 0 8px; }
+.cnc-fields { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 0 16px; }
+.cnc-fields .field { min-width: 0; }
+.cnc-fields .field label { flex: 0 0 170px; }
+.cnc-fields .txt { min-width: 0; }
+.cnc-error { background: var(--danger-bg); border: 1px solid var(--danger);
+  border-radius: 8px; padding: 10px 12px; color: var(--danger-ink) !important; }
+.cnc-preview { display: block; margin-top: 12px; width: 100%; height: min(360px, 50vh);
+  background: #131b26; border: 1px solid var(--line); border-radius: 8px; }
+.cnc-preview-board { fill: #1c2835; stroke: #b7c4d3; stroke-width: 1.2;
+  vector-effect: non-scaling-stroke; }
+.cnc-preview-copper { fill: rgba(255, 194, 51, .72); stroke: none; }
+.cnc-preview-path { fill: none; stroke: #72e8f4; stroke-width: 1.6;
+  vector-effect: non-scaling-stroke; }
+.cnc-preview-hole { fill: #ff6a64; stroke: #fff; stroke-width: .8;
+  vector-effect: non-scaling-stroke; }
+.cnc-preview-legend { margin-top: 6px; color: var(--muted); font-size: 11.5px; }
+.cnc-confirm { background: var(--accent-soft); border: 1px solid var(--accent-line);
+  border-radius: 8px; padding: 10px 12px; font-weight: 600; line-height: 1.4; }
+.cnc-confirm input { flex: none; }
+.cnc-warning { border-top: 1px solid var(--line); margin-top: 12px; }
+@media (max-width: 680px) {
+  .cnc-fields { grid-template-columns: 1fr; }
+  .cnc-fields .field label { flex-basis: 54%; }
+  .cnc-modal .foot { justify-content: center; }
+  .cnc-modal .foot .btn { padding: 7px 9px; }
+}
+.cnc-file-list { columns: 2; margin: 3px 0 12px; padding-left: 19px;
+  font: 11.5px/1.7 ui-monospace, 'Cascadia Code', Consolas, monospace; color: var(--text-2); }
+.cnc-file-list li { break-inside: avoid; overflow-wrap: anywhere; }
+@media (max-width: 680px) { .cnc-file-list { columns: 1; } }

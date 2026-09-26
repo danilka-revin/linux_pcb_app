@@ -91,6 +91,7 @@ if (!gotLock) {
         host: '127.0.0.1',
         root,
         fallbackPorts: 30,
+        cloudDataDir: null, // Electron остаётся персональным офлайн-клиентом, даже если задана переменная окружения сервера
       });
       localServer = server.server;
       await createWindow(server.url);

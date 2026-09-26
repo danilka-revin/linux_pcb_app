@@ -86,7 +86,7 @@ export function fmtDur(ms: number | null | undefined): string {
   return `${m} мин ${String(s % 60).padStart(2, '0')} с`;
 }
 
-export function useUpdater(version: string | null) {
+export function useUpdater(version: string | null, enabled = true) {
   const [st, setSt] = useState<UpdaterState>({
     phase: 'idle', msg: '', detail: [], from: version ?? '', to: '',
     repo: '', branch: 'main', latestMsg: '', behind: 0,
@@ -240,8 +240,10 @@ export function useUpdater(version: string | null) {
     } catch { /* статус придёт через long-poll */ }
   }, []);
 
-  // обновление уже идёт (перезагрузили страницу посреди процесса) — подхватываем
+  // обновление уже идёт (перезагрузили страницу посреди процесса) — подхватываем.
+  // В общем режиме /update отключён по соображениям безопасности.
   useEffect(() => {
+    if (!enabled) return;
     let stop = false;
     (async () => {
       try {
@@ -254,7 +256,7 @@ export function useUpdater(version: string | null) {
       } catch { /* нет сервера с обновлением */ }
     })();
     return () => { stop = true; };
-  }, [follow]);
+  }, [follow, enabled]);
 
   // процент в заголовке вкладки, пока диалог свёрнут
   const pct = st.phase === 'running' && st.progress ? Math.round(st.progress.pct * 100) : null;

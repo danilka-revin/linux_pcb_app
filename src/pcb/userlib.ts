@@ -136,9 +136,13 @@ const readJSON = (key: string): unknown => {
   }
 };
 
-export function loadStore(): Store {
-  const cur = readJSON(KEY);
+const storeKey = (userId?: string): string => userId ? `${KEY}.${userId}` : KEY;
+
+/** В общем режиме библиотека локальна для данного аккаунта/браузера, но не общая между аккаунтами. */
+export function loadStore(userId?: string): Store {
+  const cur = readJSON(storeKey(userId));
   if (cur) return normalizeStore(cur);
+  if (userId) return emptyStore(); // не показывать другому пользователю старые глобальные макросы
   const legacy = migrateLegacy(readJSON(OLD_KEY));
   if (legacy) {
     saveStore(legacy);
@@ -147,9 +151,9 @@ export function loadStore(): Store {
   return emptyStore();
 }
 
-export function saveStore(store: Store): void {
+export function saveStore(store: Store, userId?: string): void {
   try {
-    globalThis.localStorage?.setItem(KEY, JSON.stringify(store));
+    globalThis.localStorage?.setItem(storeKey(userId), JSON.stringify(store));
   } catch {
     /* приватный режим/переполнение — библиотека останется только в памяти */
   }

@@ -52,6 +52,7 @@ export const ICONS: Record<string, ReactNode> = {
   open: <>{P('M3 19V8a2 2 0 012-2h4l2 2.5h8a2 2 0 012 2V19a2 2 0 01-2 2H5a2 2 0 01-2-2z')}</>,
   save: <>{P('M5 3h11l3 3v15H5z')}{P('M8.5 3v5h7V3M8 21v-7h8v7')}</>,
   gerber: <>{P('M12 3v9.5M8 9l4 4 4-4')}{P('M4.5 16h15M4.5 20h15')}</>,
+  cnc: <>{P('M4 5h16M4 10h9M13 10l5 4-4 5M7 14v6M4 20h6')}{C(18, 14, 2)}</>,
   png: (
     <>
       {R(3, 5, 18, 14, 2)}
@@ -66,6 +67,7 @@ export const ICONS: Record<string, ReactNode> = {
   angle90: <>{P('M5 19h14M5 19V7')}</>,
   anglefree: <>{P('M5 19h14M5 19L15 12')}</>,
   update: <>{P('M21 12a9 9 0 11-2.64-6.36')}{P('M21 3v6h-6')}</>,
+  cloud: <>{P('M6 18h12a4 4 0 00.7-7.94A6.7 6.7 0 006 9.2 4.5 4.5 0 006 18z')}{P('M12 10v5m-2-2 2 2 2-2')}</>,
   close: <>{P('M6 6l12 12')}{P('M18 6L6 18')}</>,
   uib: <>{R(3, 4, 7, 7)}{R(14, 4, 7, 7)}{R(3, 15, 7, 5)}{R(14, 15, 7, 5)}</>,
   about: <>{C(12, 12, 9)}{P('M12 11v5.5')}<circle cx="12" cy="7.8" r="1.1" fill="currentColor" stroke="none" /></>,

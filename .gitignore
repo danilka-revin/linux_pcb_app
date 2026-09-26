@@ -6,3 +6,7 @@ release/
 dist.old/
 dist.new/
 .update-cache/
+/psbees-data/
+*.sqlite
+*.sqlite-wal
+*.sqlite-shm

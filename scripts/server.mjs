@@ -16,7 +16,7 @@
 // standalone-клон (--self) не перезапускается — страницу перезагружает браузер.
 import { createServer } from 'node:http';
 import { readFile, stat, mkdir, writeFile, rm, rename } from 'node:fs/promises';
-import { dirname, extname, join, normalize, resolve } from 'node:path';
+import { dirname, extname, isAbsolute, join, normalize, relative, resolve, sep } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { execFile, spawn } from 'node:child_process';
 import { parsePartReelIndex, searchPartReel } from './partreel-search.mjs';
@@ -345,13 +345,14 @@ function lockPackageCount(lockText) {
  * @returns {Promise<{ port: number, host: string, root: string, url: string, server: import('node:http').Server }>}
  */
 export async function startServer(opts = {}) {
-  // разбор ключей командной строки: --self, --app-dir <dir>, затем [порт] [корень]
+  // разбор ключей командной строки: --self, --cloud, --app-dir <dir>, затем [порт] [корень]
   const argv = process.argv.slice(2);
-  const cli = { port: null, root: null, appDir: null, self: false };
+  const cli = { port: null, root: null, appDir: null, self: false, cloud: false };
   for (let i = 0; i < argv.length; i++) {
     const a = argv[i];
     if (a === '--app-dir' || a === '--appdir') { cli.appDir = argv[++i]; continue; }
     if (a === '--self') { cli.self = true; continue; }
+    if (a === '--cloud') { cli.cloud = true; continue; }
     if (/^\d+$/.test(a)) { cli.port = a; continue; }
     cli.root = a;
   }
@@ -365,6 +366,25 @@ export async function startServer(opts = {}) {
   const APP_DIR = explicitAppDir ? resolve(explicitAppDir) : (opts.self || cli.self ? resolve(join(here, '..')) : resolve(ROOT, '..'));
   const IS_SELF = (!!opts.self || cli.self) && !explicitAppDir;
   const STATS_FILE = join(APP_DIR, IS_SELF || !explicitAppDir ? 'node_modules/.cache/psbees-update.json' : '.update-cache/stats.json');
+
+  // Совместный режим включается явно. База данных НЕ должна находиться внутри
+  // статического ROOT; Electron всегда передаёт cloudDataDir: null.
+  const dataDir = Object.hasOwn(opts, 'cloudDataDir') ? opts.cloudDataDir : process.env.PSBEES_DATA_DIR;
+  if (cli.cloud && !dataDir) throw new Error('Укажите постоянный каталог PSBEES_DATA_DIR перед запуском --cloud.');
+  let cloud = null;
+  if (dataDir) {
+    const dataPath = resolve(dataDir);
+    const rel = relative(ROOT, dataPath);
+    if (!rel || (rel !== '..' && !rel.startsWith('..' + sep) && !isAbsolute(rel))) {
+      throw new Error('PSBEES_DATA_DIR должен находиться вне WWW_ROOT/dist (иначе проекты могут стать публичными).');
+    }
+    const quotaMb = Number(process.env.PSBEES_USER_QUOTA_MB || 250);
+    if (!Number.isSafeInteger(quotaMb) || quotaMb < 8 || quotaMb > 1_000_000) {
+      throw new Error('PSBEES_USER_QUOTA_MB: укажите целое число от 8 до 1000000.');
+    }
+    const { createCloudService } = await import('./cloud.mjs');
+    cloud = await createCloudService(dataPath, { quotaBytes: opts.cloudQuotaBytes ?? quotaMb * 1024 * 1024 });
+  }
 
   // как устроен «каталог приложения»:
   //  • git-клон — обновляем через git fetch + merge --ff-only;
@@ -846,6 +866,12 @@ export async function startServer(opts = {}) {
         return;
       }
 
+      if (url.pathname === '/api/cloud' || url.pathname.startsWith('/api/cloud/')) {
+        if (cloud) return await cloud.handle(req, res, url);
+        if (url.pathname === '/api/cloud/config') return json(res, 200, { ok: true, enabled: false });
+        return json(res, 404, { ok: false, error: 'Облачный режим не включён на этом сервере.' });
+      }
+
       if (url.pathname.startsWith('/api/footprints/')) {
         if (req.method !== 'GET') return json(res, 405, { ok: false, error: 'Каталог поддерживает только GET.' });
         const cacheHeaders = {
@@ -906,6 +932,9 @@ export async function startServer(opts = {}) {
       }
 
       if (url.pathname.startsWith('/update/')) {
+        // Старое API обновления было доступно без авторизации. На общем сервере
+        // отключаем его целиком: обновлять код может только админ на машине сервера.
+        if (cloud) return json(res, 403, { ok: false, error: 'Обновляйте общий сервер через терминал администратора.' });
         const cmd = url.pathname.slice('/update/'.length);
         if (cmd === 'status') return statusUpdate(req, res, url);
         if (cmd === 'check') return await checkUpdate(res);
@@ -917,7 +946,8 @@ export async function startServer(opts = {}) {
       let path = normalize(decodeURIComponent(url.pathname)).replace(/^([/\\])+/, '');
       if (!path || path.endsWith('/')) path = join(path, 'index.html');
       const full = join(ROOT, path);
-      if (!full.startsWith(ROOT)) { // защита от ../
+      const staticRel = relative(ROOT, full);
+      if (staticRel === '..' || staticRel.startsWith('..' + sep) || isAbsolute(staticRel)) {
         res.writeHead(403).end('forbidden');
         return;
       }
@@ -940,6 +970,7 @@ export async function startServer(opts = {}) {
       res.writeHead(500).end(String(e));
     }
   });
+  server.on('close', () => cloud?.close());
 
   // перезапуск после обновления: освобождаем порт, запускаем новый процесс, выходим
   const restartSelf = () => {
@@ -963,23 +994,28 @@ export async function startServer(opts = {}) {
   // после перезапуска старый процесс может ещё пару секунд держать порт
   const retryBusy = process.env.PSBEES_RESTARTED === '1' ? 40 : 0;
   let port = preferred;
-  for (let i = 0, busyTries = 0; i <= fallback; i++) {
-    try {
-      await listen(server, port, HOST);
-      break;
-    } catch (e) {
-      if (e && e.code === 'EADDRINUSE' && busyTries < retryBusy) {
-        busyTries++;
-        i--;
-        await new Promise((r) => setTimeout(r, 250));
-        continue;
+  try {
+    for (let i = 0, busyTries = 0; i <= fallback; i++) {
+      try {
+        await listen(server, port, HOST);
+        break;
+      } catch (e) {
+        if (e && e.code === 'EADDRINUSE' && busyTries < retryBusy) {
+          busyTries++;
+          i--;
+          await new Promise((r) => setTimeout(r, 250));
+          continue;
+        }
+        if (e && e.code === 'EADDRINUSE' && i < fallback) {
+          port = preferred === 0 ? 0 : port + 1;
+          continue;
+        }
+        throw e;
       }
-      if (e && e.code === 'EADDRINUSE' && i < fallback) {
-        port = preferred === 0 ? 0 : port + 1;
-        continue;
-      }
-      throw e;
     }
+  } catch (e) {
+    cloud?.close(); // если порт занят, не оставлять открытую базу в импортировавшем нас процессе
+    throw e;
   }
   if (process.env.PSBEES_RESTARTED) delete process.env.PSBEES_RESTARTED;
 
