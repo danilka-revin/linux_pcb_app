@@ -43,6 +43,7 @@ import { LibPreviewDialog } from './ui/libpreview';
 import { applyCustomColors, loadCustomColors, saveCustomColors, type CustomColors } from './ui/palette';
 import { UiBuilderDialog, useUpdater } from './ui/updater';
 import { MenuBtn, Modal } from './ui/widgets';
+import { ProgressBar } from './ui/progress';
 import { cloudApi, cloudError, CloudError, type CloudProject, type CloudProjectDetail, type CloudUser } from './cloud/api';
 import { CloudAccountDialog, CloudProjectsDialog, cloudSaveLabel, type CloudSaveState } from './cloud/projects';
 
@@ -55,6 +56,33 @@ declare global {
 }
 
 type ToolId2 = ToolId;
+
+/** Живая полоса прогресса трассировки: процент по вариантам и прошедшее время. */
+function RoutingProgress({ text }: { text: string }) {
+  const start = useRef(Date.now());
+  const [now, setNow] = useState(Date.now());
+  useEffect(() => {
+    const t = setInterval(() => setNow(Date.now()), 500);
+    return () => clearInterval(t);
+  }, []);
+  const m = /Вариант (\d+)\/(\d+)/.exec(text);
+  const attempt = m ? Number(m[1]) : 0, total = m ? Number(m[2]) : 0;
+  const pct = total ? ((attempt - 1) / total) * 100 : 0;
+  const secs = Math.max(0, Math.round((now - start.current) / 1000));
+  const time = secs < 60 ? `${secs} с` : `${Math.floor(secs / 60)} мин ${String(secs % 60).padStart(2, '0')} с`;
+  return <ProgressBar
+    label={text || 'Подготовка трассировки…'}
+    pct={pct}
+    indeterminate={!total}
+    live
+    steps={total ? [
+      { id: 'prep', label: 'Подготовка сетки и связей', state: 'done' },
+      { id: 'search', label: `Перебор вариантов (${attempt}/${total})`, state: 'run', frac: total ? (attempt - 1) / total : 0 },
+      { id: 'apply', label: 'Применить разводку одним действием', state: 'wait' },
+    ] : undefined}
+    meta={<>{m ? `вариант ${attempt} из ${total}` : 'строим карту связей'} · прошло {time}</>}
+  />;
+}
 
 /** Фирменный логотип (оса с молнией) — значок в шапке. */
 function BeeMark({ size = 40 }: { size?: number }) {
@@ -2181,7 +2209,8 @@ export default function App({ cloudUser, onLogout }: { cloudUser?: CloudUser; on
         {cloudUser && <div className="tb-group cloud-header-group" aria-label="Облачное хранилище">
           <button className={'tb-btn cloud-header-save ' + cloudStatus} type="button"
             title={`${activeCloud?.name ?? 'Локальный черновик'}: ${cloudSaveLabel(cloudStatus)}${cloudMessage ? ' · ' + cloudMessage : ''}`}
-            onClick={() => setDialog('cloud')}><Ic n="cloud" size={17} /><span>{cloudStatus === 'saved' ? 'Сохранено' : cloudStatus === 'saving' ? 'Сохранение…' : cloudStatus === 'conflict' ? 'Конфликт' : cloudStatus === 'error' ? 'Ошибка' : activeCloud ? 'Изменения…' : 'Не в облаке'}</span></button>
+            onClick={() => setDialog('cloud')}><Ic n="cloud" size={17} /><span>{cloudStatus === 'saved' ? 'Сохранено' : cloudStatus === 'saving' ? 'Сохранение…' : cloudStatus === 'conflict' ? 'Конфликт' : cloudStatus === 'error' ? 'Ошибка' : activeCloud ? 'Изменения…' : 'Не в облаке'}</span>
+            {cloudStatus === 'saving' && <span className="cloud-btn-bar" />}</button>
           <button className="tb-btn cloud-header-projects" type="button" title="Открыть мои проекты на сервере" onClick={() => setDialog('cloud')}>Проекты</button>
           <button className="tb-btn cloud-header-account" type="button" title={`Учётная запись: ${cloudUser.email}`} onClick={() => setDialog('account')}>
             {cloudUser.email.split('@')[0]}</button>
@@ -2468,7 +2497,7 @@ export default function App({ cloudUser, onLogout }: { cloudUser?: CloudUser; on
       {routing !== null && <div className="modal-bg" role="dialog" aria-modal="true" aria-labelledby="routing-title">
         <div className="modal">
           <h2 id="routing-title">Разводка всей платы</h2>
-          <p aria-live="polite">{routing}</p>
+          <RoutingProgress text={routing} />
           <p>Поиск выполняется в фоне. Готовый вариант будет добавлен одним действием; Ctrl+Z отменит всю разводку.</p>
           <button className="btn" autoFocus onClick={cancelRouting}>Отменить (Esc)</button>
         </div>
@@ -2490,7 +2519,10 @@ export default function App({ cloudUser, onLogout }: { cloudUser?: CloudUser; on
           onCnc={() => setDialog('cnc')} onClose={() => setDialog(null)}
         />
       )}
-      {dialog === 'cnc' && <Suspense fallback={<div className="modal-bg" role="status">Загружаем настройки ЧПУ…</div>}>
+      {dialog === 'cnc' && <Suspense fallback={<div className="modal-bg" role="status"><div className="modal modal-loading">
+        <h2>Настройки ЧПУ</h2>
+        <ProgressBar label="Загружаем настройки ЧПУ…" indeterminate live meta="модуль фрезеровки и сверловки подгружается по запросу" />
+      </div></div>}>
         <CncDialog doc={doc} onClose={() => setDialog(null)} />
       </Suspense>}
       {dialog === 'panelize' && (

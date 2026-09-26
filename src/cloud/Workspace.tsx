@@ -2,6 +2,7 @@ import { useCallback, useEffect, useState, type FormEvent } from 'react';
 import App from '../App';
 import AdminApp from './admin';
 import { cloudApi, cloudError, CloudError, type CloudConfig, type CloudUser } from './api';
+import { ProgressBar } from '../ui/progress';
 
 type Gate = { config: CloudConfig; user: CloudUser | null };
 
@@ -62,6 +63,7 @@ function AuthScreen({ config, onLogin }: { config: CloudConfig; onLogin: (user: 
           </>}
           {error && <div className="cloud-error" role="alert">{error}</div>}
           <button className="btn primary" disabled={busy} type="submit">{busy ? 'Подождите…' : register ? 'Зарегистрироваться' : 'Войти'}</button>
+          {busy && <ProgressBar slim live indeterminate title="Отправляем данные учётной записи" />}
         </form>
         {config.registrationOpen && (
           <button className="cloud-switch" type="button" onClick={() => { setRegister(!register); setError(''); setPassword(''); setConfirm(''); }}>
@@ -114,6 +116,7 @@ export default function Workspace() {
     <div className="cloud-gate"><div className="cloud-auth cloud-loading">
       <img src="/logo.png" width={52} height={52} alt="" />
       <h1>{error ? 'Сервер недоступен' : 'Подключаемся к PSBees…'}</h1>
+      {!error && <ProgressBar label="Проверяем общий сервер" indeterminate live meta="настройки рабочего пространства и сеанс" />}
       {error && <><p role="alert">{error}</p><button className="btn primary" onClick={() => { setError(''); setRetry((n) => n + 1); }}>Повторить</button></>}
     </div></div>
   );

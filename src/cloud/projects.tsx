@@ -2,6 +2,7 @@ import { useCallback, useEffect, useMemo, useState, type FormEvent } from 'react
 import { download } from '../pcb/zip';
 import { Modal } from '../ui/widgets';
 import { cloudApi, cloudBytes, cloudDate, cloudError, type CloudProject, type CloudProjectDetail, type CloudUser } from './api';
+import { ProgressBar, StatBar } from '../ui/progress';
 
 export type CloudSaveState = 'local' | 'saved' | 'dirty' | 'saving' | 'error' | 'conflict';
 const LABELS: Record<CloudSaveState, string> = {
@@ -62,6 +63,8 @@ export function CloudProjectsDialog({ current, docName, status, statusMessage, o
       <span className="cloud-sync-dot" />
       <div><strong>{current ? current.name : 'Новая плата'}</strong><small>{cloudSaveLabel(status)}{statusMessage ? ` · ${statusMessage}` : ''}</small></div>
     </div>
+    {(status === 'saving' || loading || busy) && <ProgressBar slim live indeterminate
+      label="" title={status === 'saving' ? 'Отправка платы на сервер' : loading ? 'Загрузка списка проектов' : 'Операция с проектом'} />}
     {(status === 'error' || status === 'conflict') && <div className="cloud-alert" role="alert">
       {status === 'conflict' ? 'Сервер не перезаписан: скачайте свою копию или сохраните её как новый проект, затем откройте актуальную версию.'
         : 'Ваши изменения остались в редакторе. Повторите сохранение, когда соединение восстановится.'}
@@ -78,10 +81,16 @@ export function CloudProjectsDialog({ current, docName, status, statusMessage, o
     </div>
     <div className="cloud-list-head"><h3>Мои проекты <span>{items.length}</span></h3>
       <span>{cloudBytes(used)} / {cloudBytes(quota)}</span></div>
+    <StatBar
+      segments={[
+        { id: 'used', label: 'занято', value: used, tone: used / Math.max(quota, 1) > 0.9 ? 'danger' : 'accent', hint: `${cloudBytes(used)} ваших файлов` },
+        { id: 'free', label: 'свободно', value: Math.max(0, quota - used), tone: 'muted', hint: `${cloudBytes(Math.max(0, quota - used))} до квоты` },
+      ]}
+    />
     <div className="cloud-list-search"><input className="txt" type="search" value={filter} onChange={(e) => setFilter(e.target.value)} placeholder="Найти проект по названию…" aria-label="Поиск проекта" />
       <button className="btn" disabled={busy} onClick={() => void perform(async () => { /* обновить список */ })} title="Обновить список">↻</button></div>
     <div className="cloud-list">
-      {loading && <p>Загружаем проекты…</p>}
+      {loading && <ProgressBar label="Загружаем проекты…" indeterminate live meta="запрашиваем список у сервера" />}
       {!loading && !shown.length && <p>{filter ? 'По вашему запросу ничего не найдено.' : 'Пока нет облачных проектов. Сохраните первую плату выше.'}</p>}
       {shown.map((p) => <div className={'cloud-list-item' + (p.id === current?.id ? ' current' : '')} key={p.id}>
         <div className="cloud-list-meta"><strong>{p.name}{p.id === current?.id && <span className="cloud-pill ok">Открыт</span>}</strong>

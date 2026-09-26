@@ -969,3 +969,111 @@ canvas { display: block; }
   font: 11.5px/1.7 ui-monospace, 'Cascadia Code', Consolas, monospace; color: var(--text-2); }
 .cnc-file-list li { break-inside: avoid; overflow-wrap: anywhere; }
 @media (max-width: 680px) { .cnc-file-list { columns: 1; } }
+
+/* ---------- интерактивные схемы «что за что отвечает» (диалог ЧПУ) ---------- */
+.scheme { margin: 10px 0 4px; padding: 10px 12px 8px; background: var(--surface-2);
+  border: 1px solid var(--line); border-radius: 10px; }
+.scheme-title { font-size: 12px; font-weight: 700; color: var(--text); margin-bottom: 6px; }
+.scheme-svg { border-radius: 8px; background: var(--code-bg); padding: 4px 2px; overflow: hidden;
+  max-width: 640px; margin: 0 auto; }
+.scheme-svg svg { display: block; width: 100%; height: auto; max-height: 300px; }
+.scheme-svg [data-part] { transition: opacity .18s ease, filter .18s ease; cursor: help; }
+.scheme.has-hl .scheme-svg [data-part] { opacity: .18; }
+.scheme.has-hl .scheme-svg [data-part].is-hl { opacity: 1; filter: drop-shadow(0 0 5px var(--accent)); }
+.scheme-legend { display: flex; flex-wrap: wrap; gap: 5px; margin-top: 8px; }
+.scheme-chip {
+  font: 11px/1.2 inherit; color: var(--text-2); background: var(--surface);
+  border: 1px solid var(--line); border-radius: 999px; padding: 3px 9px; cursor: pointer;
+  transition: background .15s, color .15s, border-color .15s, transform .15s;
+}
+.scheme-chip:hover, .scheme-chip:focus-visible { border-color: var(--accent-line); color: var(--accent-text); transform: translateY(-1px); }
+.scheme-chip.active { background: var(--accent-soft); border-color: var(--accent); color: var(--accent-text); font-weight: 600; }
+.scheme-caption { margin: 7px 0 0; min-height: 28px; font-size: 11.5px; line-height: 1.5; color: var(--muted); }
+.scheme-caption b { color: var(--accent-text); }
+
+/* цвета узлов чертежей (в ZIP у схем свой встроенный стиль) */
+.scheme-svg text { font-family: 'Segoe UI', 'DejaVu Sans', sans-serif; fill: var(--text-2); font-size: 9px; }
+.scheme-svg .sch-board { fill: var(--surface); stroke: #47637e; stroke-width: 1; }
+.scheme-svg .sch-stock { fill: none; stroke: var(--muted); stroke-width: 1; stroke-dasharray: 5 3; }
+.scheme-svg .sch-copper { fill: #e9b63f; stroke: #b8891f; stroke-width: 1; }
+.scheme-svg .sch-copper-text { fill: #d9b25e; font-size: 8.5px; }
+.scheme-svg .sch-path { fill: none; stroke: #72e8f4; stroke-width: 1.6; stroke-dasharray: 4 2.5; }
+.scheme-svg .sch-path-text { fill: #72e8f4; font-size: 8.5px; }
+.scheme-svg .sch-tool { fill: #b7c4d3; stroke: #8b98a6; stroke-width: 1; }
+.scheme-svg .sch-dim { stroke: var(--muted); stroke-width: 1; }
+.scheme-svg .sch-dim-head { fill: var(--muted); }
+.scheme-svg .sch-dim-bg { fill: var(--code-bg); opacity: .92; }
+.scheme-svg .sch-dim-text { font-size: 8.5px; fill: var(--text-2); }
+.scheme-svg .sch-line { stroke: var(--text-2); stroke-width: 1.2; }
+.scheme-svg .sch-safe { stroke: var(--ok); stroke-width: 1.4; stroke-dasharray: 6 3; }
+.scheme-svg .sch-cut { stroke: #ff6a64; stroke-width: 1.3; fill: none; }
+.scheme-svg .sch-cut-text { fill: #ff8a84; font-size: 8.5px; }
+.scheme-svg .sch-cut-dash { stroke: #ff6a64; stroke-width: 1; stroke-dasharray: 4 3; }
+.scheme-svg .sch-clamp { fill: #5c6b7a; stroke: #8b98a6; stroke-width: 1; }
+.scheme-svg .sch-sel { fill: var(--accent-soft); stroke: var(--accent); stroke-width: 1.6; }
+.scheme-svg .sch-warn-text { fill: var(--warn); }
+.scheme-svg .sch-warn-box { fill: rgba(233, 198, 110, .12); stroke: var(--warn); stroke-width: 1; }
+.scheme-svg .sch-box-doc { fill: var(--surface); stroke: var(--muted); stroke-width: 1; }
+.scheme-svg .sch-box-iso { fill: rgba(114, 232, 244, .12); stroke: #72e8f4; stroke-width: 1; }
+.scheme-svg .sch-box-drill { fill: rgba(120, 140, 255, .14); stroke: #8b9bff; stroke-width: 1; }
+.scheme-svg .sch-box-cut { fill: rgba(233, 198, 110, .14); stroke: var(--warn); stroke-width: 1; }
+.scheme-svg .sch-box-name { font-size: 8.5px; font-family: ui-monospace, monospace; fill: var(--text); }
+.scheme-svg .sch-box-role { font-size: 8px; fill: var(--muted); }
+.scheme-svg .sch-flow { stroke: var(--muted); stroke-width: 1.4; marker-end: url(#sch-arr-files); }
+
+/* ---------- полосы прогресса: интерактивность поверх базовых стилей ---------- */
+.updp-slim { margin: 8px 0 2px; }
+.updp-slim .updp-track { height: 8px; }
+.updp-pct.clickable { background: none; border: 0; padding: 0 2px; cursor: pointer; font: inherit;
+  font-size: 20px; font-weight: 700; color: var(--accent-text); font-variant-numeric: tabular-nums; }
+.updp-pct.clickable:hover { color: var(--text); }
+.updp-step { cursor: default; }
+.updp-step.clickable, .updp-step.has-hint { cursor: pointer; }
+.updp-step:hover { background: var(--hover); color: var(--text); }
+.updp-step.has-hint:hover .updp-lab { color: var(--accent-text); }
+.updp-track:hover .updp-fill { filter: brightness(1.12); }
+.updp-track { transition: box-shadow .2s; }
+.updp-track:hover { box-shadow: 0 0 0 2px var(--accent-glow); }
+.updp-meta-main { min-width: 0; }
+
+/* ---------- полоса долей (состав платы, квота облака) ---------- */
+.statbar { margin: 8px 0 2px; }
+.statbar-track { display: flex; height: 14px; border-radius: 999px; overflow: hidden;
+  background: var(--code-bg); border: 1px solid var(--line); }
+.statbar-seg {
+  border: 0; min-width: 3px; padding: 0; cursor: pointer; position: relative;
+  background: var(--accent); transition: filter .15s, transform .15s;
+}
+.statbar-seg + .statbar-seg { border-left: 1px solid var(--line); }
+.statbar-seg span { font-size: 9px; font-weight: 700; color: var(--accent-ink); white-space: nowrap; overflow: hidden; }
+.statbar-seg.tone-ok { background: var(--ok); } .statbar-seg.tone-ok span { color: #10331c; }
+.statbar-seg.tone-warn, .statbar-seg.tone-danger { background: var(--danger); } .statbar-seg.tone-danger span { color: #fff; }
+.statbar-seg.tone-muted { background: var(--line); } .statbar-seg.tone-muted span { color: var(--muted); }
+.statbar-seg.tone-copper { background: #e9b63f; } .statbar-seg.tone-copper span { color: #4a3506; }
+.statbar-seg:hover, .statbar-seg.active { filter: brightness(1.15); transform: scaleY(1.18); z-index: 1; }
+.statbar-caption { margin-top: 5px; min-height: 16px; font-size: 11.5px; color: var(--muted); }
+.statbar-caption b { color: var(--accent-text); }
+.statbar-caption .muted { opacity: .8; }
+.statbar.empty .statbar-track { opacity: .45; }
+
+/* ---------- мини-полосы количества в перечне ---------- */
+.qty-cell { display: inline-flex; flex-direction: column; align-items: flex-end; gap: 3px; min-width: 62px; }
+.qty-cell b { font-variant-numeric: tabular-nums; color: var(--text); font-weight: 600; }
+.qty-bar { display: block; width: 100%; height: 4px; border-radius: 99px; background: var(--line-soft); overflow: hidden; }
+.qty-bar-fill { display: block; height: 100%; border-radius: inherit; background: linear-gradient(90deg, #e0a21a, var(--accent));
+  transition: width .4s cubic-bezier(.25, .8, .25, 1); }
+.qty-cell:hover .qty-bar-fill { filter: brightness(1.15); }
+
+/* ---------- кнопка «облако»: полоса сохранения ---------- */
+.tb-btn.cloud-header-save { position: relative; overflow: hidden; }
+.cloud-btn-bar {
+  position: absolute; left: 0; right: 0; bottom: 0; height: 3px;
+  background: repeating-linear-gradient(115deg, var(--accent) 0 8px, var(--accent-line) 8px 16px);
+  background-size: 200% 100%; animation: cloudBar 0.9s linear infinite;
+}
+@keyframes cloudBar { to { background-position: -32px 0; } }
+@media (prefers-reduced-motion: reduce) { .cloud-btn-bar { animation: none; } }
+
+/* загрузка модального окна с полосой */
+.modal-loading { width: 360px; }
+.modal-loading h2 { margin-top: 0; }
