@@ -43,7 +43,9 @@ export function compTF(c: Comp): (p: Pt) => Pt {
 function remapLayer(l: string, side: 'top' | 'bottom'): string {
   if (side === 'top') return l;
   if (l === 'k1') return 'k2';
+  if (l === 'k2') return 'k1';
   if (l === 's1') return 's2';
+  if (l === 's2') return 's1';
   return l;
 }
 
@@ -58,7 +60,7 @@ function xformEmbedded(e: Entity, c: Comp, tf: (p: Pt) => Pt, idx: string): Enti
     case 'hole': { const p = tf(e); return [{ ...e, id: idx, x: p.x, y: p.y }]; }
     case 'smd': {
       const p = tf(e);
-      return [{ ...e, id: idx, x: p.x, y: p.y, rot: (e.rot + c.rot + 360) % 180, layer: rl(e.layer) as 'k1' | 'k2' }];
+      return [{ ...e, id: idx, x: p.x, y: p.y, rot: ((bottom ? -e.rot : e.rot) + c.rot + 360) % 180, layer: rl(e.layer) as 'k1' | 'k2' }];
     }
     case 'line': {
       const a = tf({ x: e.x1, y: e.y1 }), b = tf({ x: e.x2, y: e.y2 });

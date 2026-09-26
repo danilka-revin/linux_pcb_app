@@ -1,3 +1,4 @@
+import { terminalPath } from './pcb/manual-route';
 // PSBees — редактор печатных плат для Linux и Windows (аналог Sprint-Layout;
 // фирменный стиль «пчелиный»: оса с молнией, золото на графите; тёмная и светлая темы).
 import { Fragment, Suspense, lazy, useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from 'react';
@@ -356,7 +357,7 @@ export default function App({ cloudUser, onLogout }: { cloudUser?: CloudUser; on
   const [defs, setDefsState] = useState<Defs>(loadDefs);
   const [hidden, setHidden] = useState<Set<M.LayerId>>(new Set());
   const [activeCu, setActiveCu] = useState<'k1' | 'k2'>('k1');
-  const [mouse, setMouse] = useState({ px: -100, py: -100, wx: 0, wy: 0 });
+  const [mouse, setMouse] = useState({ px: -100, py: -100, wx: 0, wy: 0, rx: 0, ry: 0, alt: false });
   const [size, setSize] = useState({ w: 640, h: 480 });
   // --- генератор деталей и личная библиотека (папки + сохранённые футпринты) ---
   // «что ставим»: снапшот детали (чтобы правка строки не меняла призрак под курсором)
@@ -630,6 +631,13 @@ export default function App({ cloudUser, onLogout }: { cloudUser?: CloudUser; on
     () => (defs.snapOn && defs.snapObj ? collectRefs(expandDoc(doc.entities)) : null),
     [defs.snapOn, defs.snapObj, doc.entities],
   );
+
+  const routePrimitives = useMemo(() => expandDoc(doc.entities), [doc.entities]);
+  const trackTerminal = useCallback((w: M.Pt, fine: boolean) => {
+    if (fine) return null;
+    const starting = draft?.t !== 'track';
+    return pickEndpoint(routePrimitives, w, defs.snapPx / Math.max(view.s, 0.01), starting ? undefined : activeCu);
+  }, [routePrimitives, draft, activeCu, defs.snapPx, view.s]);
 
   const snapPt = useCallback((w: M.Pt, fine: boolean): M.Pt => {
     if (fine) return w;                       // Alt — временно без привязки
@@ -1251,6 +1259,10 @@ export default function App({ cloudUser, onLogout }: { cloudUser?: CloudUser; on
   }, []);
 
   const placeFromCatalog = useCallback((selection: CatalogSelection) => {
+    setDraft(null);
+    setPasteTpl(null);
+    setRouteA(null);
+    setSel(new Set());
     setPlace(detailFromCatalog(selection));
     setPlaceRot(0);
     setPlaceSide('top');
@@ -1336,7 +1348,7 @@ export default function App({ cloudUser, onLogout }: { cloudUser?: CloudUser; on
     }
   }, [doc, commit, defs]);
   const routeClick = useCallback((w: M.Pt, sp: M.Pt) => {
-    const tol = 3 / view.s + 0.05;
+    const tol = defs.snapPx / Math.max(view.s, 0.01);
     let end = pickEndpoint(doc.entities, w, tol);
     if (routeMode === 'nets') {
       const nets = doc.nets ?? [];
@@ -1367,7 +1379,7 @@ export default function App({ cloudUser, onLogout }: { cloudUser?: CloudUser; on
     if (!routeA) {
       if (newPad) commit(base);
       setRouteA(end);
-      setRouteMsg({ msg: 'Первая точка: ' + M.fmt(end.x) + '; ' + M.fmt(end.y) + ' — выберите вторую', ok: null });
+      setRouteMsg({ msg: `Первый контакт (${end.kind === 'smd' ? 'SMD' : end.tht ? 'PTH' : 'переход'}, ${end.layers.join('/').toUpperCase()}): ` + M.fmt(end.x) + '; ' + M.fmt(end.y) + ' — выберите вторую', ok: null });
       return;
     }
     const r = autoroute(base.entities, base.w, base.h, routeA, end, {
@@ -1398,7 +1410,8 @@ export default function App({ cloudUser, onLogout }: { cloudUser?: CloudUser; on
       return;
     }
     const w = toWorld(view, px, py);
-    const sp = snapPt(w, e.altKey);
+    const terminal = tool === 'track' ? trackTerminal(w, e.altKey) : null;
+    const sp = terminal ? { x: terminal.x, y: terminal.y } : snapPt(w, e.altKey);
 
     if (e.button === 2) { finishOrCancel(); return; }
     if (e.button !== 0) return;
@@ -1427,13 +1440,16 @@ export default function App({ cloudUser, onLogout }: { cloudUser?: CloudUser; on
         break;
       }
       case 'track': {
-        setDraft((d) => {
-          if (!d || d.t !== 'track') return { t: 'track', pts: [{ ...sp, layer: activeCu }] };
-          const last = d.pts[d.pts.length - 1];
-          const c = constrain(last, sp);
-          if (Math.hypot(c.x - last.x, c.y - last.y) < 1e-6) return d;
-          return { ...d, pts: [...d.pts, { ...c, layer: activeCu }] };
-        });
+        if (!draft || draft.t !== 'track') {
+          const layer = terminal && !terminal.layers.includes(activeCu) ? terminal.layers[0] : activeCu;
+          setActiveCu(layer);
+          setDraft({ t: 'track', pts: [{ ...sp, layer }] });
+        } else {
+          const last = draft.pts[draft.pts.length - 1];
+          const next = terminal ? terminalPath(last, sp, defs.angle) : [constrain(last, sp)];
+          const points = next.filter(p => Math.hypot(p.x - last.x, p.y - last.y) > 1e-6);
+          setDraft({ ...draft, pts: [...draft.pts, ...points.map(p => ({ ...p, layer: activeCu }))] });
+        }
         break;
       }
       case 'pad':
@@ -1539,7 +1555,7 @@ export default function App({ cloudUser, onLogout }: { cloudUser?: CloudUser; on
     moveRaf.current = 0;
     const m = moveData.current;
     if (!m) return;
-    setMouse({ px: m.px, py: m.py, wx: m.wx, wy: m.wy });
+    setMouse({ ...m });
     const d = drag.current;
     if (!d) return;
     if (d.mode === 'pan') {
@@ -1561,7 +1577,8 @@ export default function App({ cloudUser, onLogout }: { cloudUser?: CloudUser; on
   const onPointerMove = (e: React.PointerEvent<HTMLCanvasElement>) => {
     const { px, py } = getPos(e);
     const w = toWorld(view, px, py);
-    const sp = snapPt(w, e.altKey);
+    const terminal = tool === 'track' ? trackTerminal(w, e.altKey) : null;
+    const sp = terminal ? { x: terminal.x, y: terminal.y } : snapPt(w, e.altKey);
     moveData.current = { px, py, wx: sp.x, wy: sp.y, rx: w.x, ry: w.y, alt: e.altKey };
     const d = drag.current;
     // рамку выделения обновляем синхронно — её читает onPointerUp
@@ -1861,6 +1878,22 @@ export default function App({ cloudUser, onLogout }: { cloudUser?: CloudUser; on
       ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
       ctx.clearRect(0, 0, size.w, size.h);
 
+      // Подсветка контакта, к которому привяжется дорожка (включая выводы макросов).
+      if ((tool === 'track' || tool === 'route') && mouse.px >= 0 && mouse.py >= 0) {
+        const at = { x: mouse.rx, y: mouse.ry };
+        const terminal = tool === 'route'
+          ? pickEndpoint(routePrimitives, at, defs.snapPx / Math.max(view.s, 0.01))
+          : trackTerminal(at, mouse.alt);
+        if (terminal) {
+          const p = toPx(terminal.x, terminal.y);
+          ctx.strokeStyle = COLORS.sel;
+          ctx.lineWidth = 1.5;
+          ctx.beginPath();
+          ctx.arc(p.px, p.py, Math.max(6, terminal.r * view.s + 3), 0, Math.PI * 2);
+          ctx.stroke();
+        }
+      }
+
       // черновик дорожки
       if (draft?.t === 'track' && draft.pts.length) {
         const pts = draft.pts;
@@ -1874,11 +1907,15 @@ export default function App({ cloudUser, onLogout }: { cloudUser?: CloudUser; on
         }
         // резиновый сегмент к курсору
         const last = pts[pts.length - 1];
-        const c = constrain(last, { x: mouse.wx, y: mouse.wy });
-        const a = toPx(last.x, last.y), b = toPx(c.x, c.y);
+        const terminal = trackTerminal({ x: mouse.rx, y: mouse.ry }, mouse.alt);
+        const target = terminal ?? { x: mouse.wx, y: mouse.wy };
+        const next = terminal ? terminalPath(last, target, defs.angle) : [constrain(last, target)];
+        const a = toPx(last.x, last.y);
         ctx.globalAlpha = 0.5;
         ctx.strokeStyle = activeCu === 'k1' ? COLORS.k1 : COLORS.k2;
-        ctx.beginPath(); ctx.moveTo(a.px, a.py); ctx.lineTo(b.px, b.py); ctx.stroke();
+        ctx.beginPath(); ctx.moveTo(a.px, a.py);
+        for (const p of next) { const b = toPx(p.x, p.y); ctx.lineTo(b.px, b.py); }
+        ctx.stroke();
         ctx.globalAlpha = 1;
         ctx.fillStyle = CANVAS_UI.ink;
         pts.forEach((p) => {
