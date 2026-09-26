@@ -19,7 +19,23 @@ import { readFile, stat, mkdir, writeFile, rm, rename } from 'node:fs/promises';
 import { dirname, extname, isAbsolute, join, normalize, relative, resolve, sep } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { execFile, spawn } from 'node:child_process';
-import { parsePartReelIndex, searchPartReel } from './partreel-search.mjs';
+
+// Модуль каталога подгружается по требованию (как cloud.mjs), а не при старте.
+// Так неполная установка — например, если старый установщик скопировал только
+// server.mjs без partreel-search.mjs — не превращается в ERR_MODULE_NOT_FOUND
+// при запуске: программа работает, а каталог отвечает понятной ошибкой.
+let partReelModule = null;
+async function partReel() {
+  if (!partReelModule) {
+    try {
+      partReelModule = await import('./partreel-search.mjs');
+    } catch (e) {
+      throw new Error('Модуль каталога (partreel-search.mjs) не установлен — запустите '
+        + 'установку заново: bash install-ubuntu.sh. Подробность: ' + (e?.message || e));
+    }
+  }
+  return partReelModule;
+}
 
 const here = fileURLToPath(new URL('.', import.meta.url));
 const DEFAULT_REPO = 'https://github.com/danilka-revin/linux_pcb_app.git';
@@ -248,6 +264,7 @@ async function getPartReelIndex() {
   if (parsedPartReelIndex && parsedPartReelUntil > Date.now()) return parsedPartReelIndex;
   if (parsedPartReelFlight) return parsedPartReelFlight;
   parsedPartReelFlight = (async () => {
+    const { parsePartReelIndex } = await partReel();
     const data = await cachedPartReel('index', `${PARTREEL_ORIGIN}/api/v1/parts.json`, PARTREEL_MAX_JSON);
     let raw;
     try { raw = JSON.parse(data.toString('utf8')); }
@@ -890,6 +907,7 @@ export async function startServer(opts = {}) {
             const category = ['all', 'smd', 'modules'].includes(requestedCategory) ? requestedCategory : 'all';
             const verifiedOnly = url.searchParams.get('verified') === 'true';
             const index = await getPartReelIndex();
+            const { searchPartReel } = await partReel(); // сам запрос уже проверен выше — модуль каталога нужен только здесь
             const result = searchPartReel(index, { query, category, verifiedOnly, limit: 40 });
             res.writeHead(200, { ...cacheHeaders, 'cache-control': 'no-store', 'content-type': 'application/json; charset=utf-8' });
             res.end(JSON.stringify(result));

@@ -62,7 +62,8 @@
     },
     "files": [
       "electron/**/*",
-      "scripts/server.mjs",
+      "scripts/*.mjs",
+      "scripts/icon.svg",
       "dist/**/*",
       "build/icon.png",
       "build/icon.ico"

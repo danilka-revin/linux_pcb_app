@@ -5,6 +5,8 @@ release/
 .DS_Store
 dist.old/
 dist.new/
+.install.tmp/
+.runtime.new/
 .update-cache/
 /psbees-data/
 *.sqlite
