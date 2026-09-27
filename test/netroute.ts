@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import * as M from '../src/pcb/model';
 import { expandDoc } from '../src/pcb/expand';
-import { copperShapes, shapeDist, type RouteOpts } from '../src/pcb/autoroute';
+import { copperShapes, shapeDist, shapeShapeDist, type RouteOpts } from '../src/pcb/autoroute';
 import { copperComponents, netConflicts, netMissing, routeNets } from '../src/pcb/netroute';
 
 const O: RouteOpts = { trackW: 0.4, clearance: 0.3, holeClear: 0.6, viaSize: 1.4, viaDrill: 0.6, step: 0.5, viaCost: 5, topMul: 1.5, allowTop: true, angle: '45' };
@@ -187,4 +187,64 @@ console.log('NETROUTE OK');
     assert.equal(v.vias, 2);
   }
   console.log('NET VARIANTS OK: three strategies, real alternatives, duplicate marking, same snapshot, restrictions, partial results');
+}
+
+// Каждой группе — своя толщина дорожки; зазор группы может только увеличить общий,
+// поэтому чужая медь рядом с «широкой» группой держится по самому строгому правилу.
+{
+  const d = M.newBoard(60, 40);
+  d.entities.push(pad('a', 6, 10), pad('b', 54, 10), pad('c', 6, 15), pad('e', 54, 15));
+  d.nets = [
+    { ...net('power', ['a', 'b']), rules: { w: 1.5, clear: 1 } },
+    { ...net('thin', ['c', 'e']), rules: { w: 0.25 } },
+  ];
+  const r = routeNets(d, O);
+  assert.deepEqual(r.errors, []);
+  assert.equal(r.missing, 0);
+  const comp = copperComponents(applied(d, r.ents).entities);
+  const powerRoot = comp.get('a')!, thinRoot = comp.get('c')!;
+  assert.notEqual(powerRoot, thinRoot, 'groups must stay independent');
+  const tracks = r.ents.filter((e): e is M.Track => e.kind === 'track');
+  const power = tracks.filter((t) => comp.get(t.id) === powerRoot);
+  const thin = tracks.filter((t) => comp.get(t.id) === thinRoot);
+  assert(power.length > 0 && thin.length > 0, 'both groups routed');
+  assert(power.every((t) => t.w === 1.5), 'широкая группа: своя ширина 1.5 мм');
+  assert(thin.every((t) => t.w === 0.25), 'тонкая группа: своя ширина 0.25 мм');
+  assert(thin.every((t) => t.layer === 'k2'), 'тонкая группа идёт по низу');
+  check(d, r.ents);
+  let minGap = Infinity;
+  for (const x of power.flatMap(copperShapes)) for (const y of thin.flatMap(copperShapes))
+    minGap = Math.min(minGap, shapeShapeDist(x, y));
+  assert(minGap >= 1 - 1e-3, 'строгий зазор группы power соблюдён: ' + minGap.toFixed(3));
+  // Общие настройки остаются значением по умолчанию для групп без правил.
+  const plain = M.newBoard(60, 40);
+  plain.entities.push(pad('a', 6, 10), pad('b', 54, 10));
+  plain.nets = [net('one', ['a', 'b'])];
+  const rr = routeNets(plain, O);
+  assert(rr.ents.every((e) => e.kind !== 'track' || e.w === O.trackW), 'без правил — общая ширина');
+  console.log('NETS: per-group widths 1.5/0.25 mm, strictest clearance kept');
+}
+
+// Умная разводка: группа, которой запрещён верхний слой, снимает медь ЭТОГО ЖЕ
+// прогона, разворачивает её и проходит щель; «задетой» группе остаётся обход сверху.
+{
+  const d = M.newBoard(60, 30);
+  d.entities.push(pad('a', 10, 15), pad('b', 50, 15), pad('c', 25, 15), pad('e', 35, 15),
+    // просвет 1.1 мм: проходит одна дорожка строго по оси, наискось уже не влезть
+    { id: 'wall1', kind: 'track', w: 0.4, layer: 'k2', pts: [{ x: 30, y: 0 }, { x: 30, y: 14.25 }] },
+    { id: 'wall2', kind: 'track', w: 0.4, layer: 'k2', pts: [{ x: 30, y: 15.75 }, { x: 30, y: 30 }] });
+  d.nets = [{ ...net('sig', ['a', 'b']), rules: { allowTop: false } }, net('other', ['c', 'e'])];
+  const t0 = Date.now();
+  // один и тот же порядок групп: разница только в перекладке меди
+  const blind = routeNets(d, O, () => {}, 'few-vias', { rips: false });
+  assert(blind.missing > 0, 'без перекладки узкий проход не пройти');
+  const r = routeNets(d, O, () => {}, 'few-vias');
+  assert.deepEqual(r.errors, []);
+  assert.equal(r.missing, 0, 'с перекладкой всё должно связаться: ' + JSON.stringify(r.unresolved));
+  assert(r.rips >= 1, 'ожидалась перекладка меди прогона, получено ' + r.rips);
+  assert(r.vias >= 2, 'задетой группе нужен обход сверху: ' + r.vias);
+  check(d, r.ents);
+  const anyOrder = routeNets(d, O);
+  assert(anyOrder.missing === 0, 'любой порядок тоже должен сходиться');
+  console.log('NETS: rip-up frees the narrow gap, ripped group goes over the top', `(${Date.now() - t0} мс)`);
 }

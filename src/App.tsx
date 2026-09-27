@@ -1456,7 +1456,8 @@ export default function App({ cloudUser, onLogout }: { cloudUser?: CloudUser; on
     if (r.ents.length) commit({ ...snapshot, entities: [...snapshot.entities, ...r.ents] });
     setSel(new Set());
     const details = r.unresolved.map((n) => `«${n.name}»: ${n.missing}`).join('; ');
-    setRouteMsg({ msg: `«${r.title}». ${r.missing ? `Осталось связей: ${r.missing}.` : 'Все группы соединены.'} Добавлено: ${r.length.toFixed(1)} мм, переходов: ${r.vias}.` + (details ? `\nНе разведены: ${details}.` : ''), ok: r.missing === 0 });
+    const rip = r.rips ? ` Переложено дорожек: ${r.rips}.` : '';
+    setRouteMsg({ msg: `«${r.title}». ${r.missing ? `Осталось связей: ${r.missing}.` : 'Все группы соединены.'} Добавлено: ${r.length.toFixed(1)} мм, переходов: ${r.vias}.${rip}` + (details ? `\nНе разведены: ${details}.` : ''), ok: r.missing === 0 });
   };
   const routeClick = useCallback((w: M.Pt, sp: M.Pt) => {
     const tol = defs.snapPx / Math.max(view.s, 0.01);
@@ -1978,7 +1979,7 @@ export default function App({ cloudUser, onLogout }: { cloudUser?: CloudUser; on
           for (const p of points) {
             const q = toPx(p.x, p.y), r = Math.max(6, p.r * view.s + 3);
             ctx.beginPath(); ctx.arc(q.px, q.py, r, 0, Math.PI * 2); ctx.stroke();
-            ctx.fillText(net.name, q.px + r + 3, q.py - r);
+            ctx.fillText(net.rules?.w !== undefined ? `${net.name} · ${M.fmt(net.rules.w)} мм` : net.name, q.px + r + 3, q.py - r);
           }
         });
         ctx.restore();
@@ -2636,6 +2637,7 @@ export default function App({ cloudUser, onLogout }: { cloudUser?: CloudUser; on
           </div>
           {routeMode === 'nets' && <NetsPanel nets={doc.nets ?? []} active={activeNet} setActive={setActiveNet}
             ends={netGeometry.ends} comp={netGeometry.comp} info={routeMsg} onChange={changeNets} onRoute={routeAll}
+            defaults={{ w: defs.rtW, clear: defs.rtClear, viaSize: defs.viaSize, viaDrill: defs.viaDrill, allowTop: defs.rtAllowTop }}
             onNew={() => {
               const id = M.uid();
               const used = new Set((doc.nets ?? []).map((n) => n.name));

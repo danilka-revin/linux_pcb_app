@@ -227,3 +227,26 @@ console.log('AUTOROUTE ENTRY OK');
   const tiny = autoroute(lands, 10, 10, a, b, { ...O, step: 0.02 });
   assert(!tiny.msg.includes('шаг сетки'), 'advertised 0.02 mm step is accepted on a small board');
 }
+
+// 8) грубый шаг сетки: щель проходит только при сдвиге сетки на полшага
+{
+  const doc = M.newBoard(30, 4);
+  doc.entities.push(
+    { id: 'a', kind: 'pad', x: 5, y: 1.6, shape: 'round', size: 1.9, drill: 0.9 },
+    { id: 'b', kind: 'pad', x: 25, y: 1.6, shape: 'round', size: 1.9, drill: 0.9 },
+    // стена с просветом y = 1.0..2.2: центр дорожки может быть только 1.5..1.7,
+    // а узлы сетки с шагом 1 мм ложатся в 1.0 и 2.0
+    { id: 'wall1', kind: 'track', pts: [{ x: 15, y: 0 }, { x: 15, y: 0.8 }], w: 0.4, layer: 'k2' },
+    { id: 'wall2', kind: 'track', pts: [{ x: 15, y: 2.4 }, { x: 15, y: 4 }], w: 0.4, layer: 'k2' },
+  );
+  const A = pickEndpoint(doc.entities, { x: 5, y: 1.6 }, 0.3)!;
+  const B = pickEndpoint(doc.entities, { x: 25, y: 1.6 }, 0.3)!;
+  const o: RouteOpts = { ...O, trackW: 0.4, clearance: 0.3, step: 1, allowTop: false };
+  const blind = autoroute(doc.entities, doc.w, doc.h, A, B, { ...o, shiftRetry: false });
+  assert(!blind.ok, 'без сдвига сетки грубый шаг не проходит щель: ' + blind.msg);
+  const smart = autoroute(doc.entities, doc.w, doc.h, A, B, o);
+  assert(smart.ok && smart.drc === 0, 'со сдвигом сетки путь должен найтись: ' + smart.msg);
+  assert(smart.vias === 0, 'щель проходится по K2 без переходов');
+  console.log('8:', smart.msg, '(сдвиг сетки)');
+}
+console.log('AUTOROUTE SHIFT OK');

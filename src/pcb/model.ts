@@ -119,11 +119,24 @@ export interface Comp extends Base {
 export type Entity =
   | Pad | Smd | Track | Via | Hole | LineE | Circ | RectE | TextE | Poly | Comp;
 
+/**
+ * Личные правила трассировки группы соединений. Любое поле можно не задавать —
+ * тогда берётся общая настройка автотрассировки (см. netRouteOpts).
+ */
+export interface NetRules {
+  w?: number;         // ширина дорожки группы, мм
+  clear?: number;     // зазор до чужой меди, мм
+  viaSize?: number;   // площадка перехода, мм
+  viaDrill?: number;  // сверло перехода, мм
+  allowTop?: boolean; // false — группа прокладывается только по K2, без переходов
+}
+
 /** Группа электрически связанных площадок; ссылки на ID развёрнутых примитивов. */
 export interface Net {
   id: string;
   name: string;
   pads: string[];
+  rules?: NetRules;   // личная ширина/зазор группы (в .lay6 не переносится)
 }
 
 /**

@@ -103,6 +103,55 @@ export function TIC({
   );
 }
 
+/**
+ * Числовое поле с необязательным значением: пустая строка — «как в общих
+ * настройках» (undefined), в подсказке видно, чему это равно.
+ */
+export function NIO({
+  label, value, fallback, on, step = 0.05, min, max, title,
+}: {
+  label: string;
+  value: number | undefined;
+  fallback: number;
+  on: (v: number | undefined) => void;
+  step?: number;
+  min?: number;
+  max?: number;
+  title?: string;
+}) {
+  const show = (v: number | undefined): string => (v === undefined ? '' : fmt(v));
+  const [s, setS] = useState(show(value));
+  useEffect(() => setS(show(value)), [value]);
+  const commit = () => {
+    const t = s.trim().replace(',', '.');
+    if (!t) { if (value !== undefined) on(undefined); setS(''); return; }
+    const v = parseFloat(t);
+    if (!isFinite(v)) { setS(show(value)); return; }
+    let r = v;
+    if (min !== undefined) r = Math.max(min, r);
+    if (max !== undefined) r = Math.min(max, r);
+    on(r);
+    setS(fmt(r));
+  };
+  return (
+    <div className="field">
+      <label>{label}</label>
+      <input
+        className="txt"
+        value={s}
+        placeholder={fmt(fallback)}
+        step={step}
+        title={title ?? `Пусто — как в общих настройках: ${fmt(fallback)}`}
+        onChange={(e) => setS(e.target.value)}
+        onBlur={commit}
+        onKeyDown={(e) => {
+          if (e.key === 'Enter') { commit(); (e.target as HTMLInputElement).blur(); }
+        }}
+      />
+    </div>
+  );
+}
+
 /** Выпадающий список */
 export function SI({
   label, value, options, on,
