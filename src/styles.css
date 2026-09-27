@@ -1241,6 +1241,8 @@ canvas { display: block; }
 .route-variant dd { margin: 0; font-weight: 600; }
 .route-variant .route-msg { margin: 0; }
 .route-choice-modal .layout-preview { max-height: 24vh; }
+/* демонстрация под каждым вариантом компоновки — компактнее общего предпросмотра */
+.route-variant .layout-preview { margin: 2px 0 0; max-height: 30vh; }
 .auto-layout-modal .foot { flex-wrap: wrap; position: sticky; bottom: -20px; background: var(--surface); padding: 12px 0 4px; }
 @media (max-width: 720px) {
   .route-variants { grid-template-columns: 1fr; }

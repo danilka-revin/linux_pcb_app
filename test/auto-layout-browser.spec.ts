@@ -43,7 +43,7 @@ test('placement: preview is non-destructive, cancel, parameter invalidation, app
   await button.click();
   const dialog = page.getByRole('dialog', { name: 'Автокомпоновка компонентов', exact: true });
   await dialog.getByRole('button', { name: 'Рассчитать компоновку', exact: true }).click();
-  await expect(dialog.getByRole('button', { name: 'Применить компоновку' })).toBeEnabled();
+  await expect(dialog.getByRole('button', { name: 'Применить вариант 1' })).toBeEnabled();
   await expect(dialog.getByRole('status')).toContainText('Перемещается: 4');
   expect(await saved(page)).toEqual(doc);
   await page.keyboard.press('Escape');
@@ -51,12 +51,12 @@ test('placement: preview is non-destructive, cancel, parameter invalidation, app
   expect(await saved(page)).toEqual(doc);
   await button.click();
   await dialog.getByRole('button', { name: 'Рассчитать компоновку', exact: true }).click();
-  await expect(dialog.getByRole('button', { name: 'Применить компоновку' })).toBeEnabled();
+  await expect(dialog.getByRole('button', { name: 'Применить вариант 1' })).toBeEnabled();
   await dialog.getByLabel('Зазор между корпусами, мм').fill('1');
-  await expect(dialog.getByRole('button', { name: 'Применить компоновку' })).toBeDisabled();
+  await expect(dialog.getByRole('button', { name: 'Применить вариант 1' })).toBeDisabled();
   await dialog.getByRole('button', { name: 'Рассчитать компоновку', exact: true }).click();
-  await expect(dialog.getByRole('button', { name: 'Применить компоновку' })).toBeEnabled();
-  await dialog.getByRole('button', { name: 'Применить компоновку' }).click();
+  await expect(dialog.getByRole('button', { name: 'Применить вариант 1' })).toBeEnabled();
+  await dialog.getByRole('button', { name: 'Применить вариант 1' }).click();
   await expect.poll(async () => JSON.stringify((await saved(page)).entities)).not.toEqual(JSON.stringify(doc.entities));
   expect((await saved(page)).nets).toEqual(doc.nets);
   await page.keyboard.press('Control+z');

@@ -10,6 +10,7 @@ import { generate } from '../src/pcb/gen';
 import { LibPreviewDialog } from '../src/ui/libpreview';
 import { PropsPanel, type Defs } from '../src/ui/panels';
 import { GroupsPanel } from '../src/ui/groups';
+import { AutoPlaceDialog, RouteVariantsDialog } from '../src/ui/auto-layout';
 import { NetsPanel } from '../src/ui/nets';
 import type { Doc, Entity } from '../src/pcb/model';
 
@@ -274,6 +275,33 @@ for (const m of ['lib-preview', 'DIP-8', '0;0']) {
   for (const m of ['.net-w', '.net-rules']) {
     if (!css.includes(m)) throw new Error(`нет стилей правил групп: ${m}`);
   }
+}
+
+// автокомпоновка: диалог стартует с параметрами и исходным размещением,
+// после расчёта — три варианта с демонстрацией под каждым (как у трассировки)
+{
+  const doc = { name: 't', w: 60, h: 40, entities: [] };
+  const dlg = renderToString(createElement(AutoPlaceDialog, {
+    doc, selected: new Set<string>(), clearance: 0.4, onApply: () => {}, onClose: () => {},
+  }));
+  for (const m of ['Автокомпоновка компонентов', 'Рассчитать компоновку', 'Применить вариант',
+    'Исходное размещение', 'Зазор между корпусами, мм', 'Отступ от края, мм']) {
+    if (!dlg.includes(m)) throw new Error(`компоновка: не найдено «${m}»`);
+  }
+  const variants = (['compact', 'wide', 'tall'] as const).map((strategy, i) => ({
+    ents: [], unresolved: [], missing: 0, length: 0, vias: 0, rips: 0, errors: [],
+    strategy, title: `В${i + 1}`, description: 'd',
+  }));
+  const plc = renderToString(createElement(RouteVariantsDialog, {
+    doc, variants: variants.map((v) => ({ ...v, strategy: 'few-vias' as const })), onApply: () => {}, onClose: () => {},
+  }));
+  for (const m of ['Выберите вариант трассировки групп', 'Предпросмотр варианта', 'Применить вариант',
+    'name="route-variant"', 'Новых переходов']) {
+    if (!plc.includes(m)) throw new Error(`варианты: не найдено «${m}»`);
+  }
+  if ((plc.match(/type="radio"/g) ?? []).length !== 3) throw new Error('вариантов должно быть три');
+  const css = readFileSync('src/styles.css', 'utf8');
+  if (!css.includes('.route-variant .layout-preview')) throw new Error('нет стилей демонстрации под вариантом');
 }
 
 console.log('SSR OK');
