@@ -27,8 +27,8 @@ import {
 import { productionFiles } from './pcb/gerber';
 import { autoroute, clearanceAt, pickEndpoint, endpointOf, type RouteEnd } from './pcb/autoroute';
 import {
-  deleteNode, insertNode, joinTrackPts, nearestOnPts, pickSolderPair,
-  splitTrackAt, trackEndsNear,
+  deleteNode, insertNode, joinTrackPts, nearestOnPts, nodeAction, nodeUnder,
+  pickSolderPair, splitTrackAt, trackEndsNear,
 } from './pcb/trackedit';
 import { copperComponents, type NetRouteVariants, type NetRouteVariant } from './pcb/netroute';
 import { AutoPlaceDialog, RouteVariantsDialog } from './ui/auto-layout';
@@ -131,7 +131,25 @@ type Drag =
   | { mode: 'pan'; startPx: { x: number; y: number }; view0: View }
   | { mode: 'move'; startWorld: M.Pt; doc0: M.Doc; moved: boolean }
   | { mode: 'marquee'; startWorld: M.Pt; curWorld: M.Pt }
-  | { mode: 'node'; entId: string; idx: number; doc0: M.Doc; moved: boolean; inserted: boolean; startWorld: M.Pt };
+  | {
+      mode: 'node'; entId: string; idx: number; doc0: M.Doc; moved: boolean;
+      inserted: boolean; startWorld: M.Pt;
+      /** состояние платы, от которого считается перетаскивание (совпадает с doc0,
+       *  кроме случая «клик по звену поставил узел» — там doc0 ещё без узла) */
+      base?: M.Doc;
+    };
+
+/**
+ * Сколько миллисекунд после вставки узла кликом второй клик считается
+ * продолжением того же двойного щелчка (и не удаляет свежий узел).
+ */
+const DBL_GRACE_MS = 600;
+
+/** Что писать справа после того, как узел поставлен двойным кликом. */
+const NODE_HINT: Record<string, string> = {
+  edit: 'Узел поставлен: тяните его мышью или задайте X/Y справа.',
+  select: 'Узел поставлен — тяните его мышью. Точная правка узлов: инструмент «Узлы» (E).',
+};
 
 const AUTOSAVE_KEY = 'lauaut.autosave';
 const QUERY_KEY = 'lauaut.genQuery';
@@ -753,14 +771,46 @@ export default function App({ cloudUser, onLogout }: { cloudUser?: CloudUser; on
   /** индекс узла под курсором (квадратики ~7 px) — null, если рядом узлов нет */
   const findNode = useCallback((ent: M.Entity, p: M.Pt): number | null => {
     if (ent.kind !== 'track' && ent.kind !== 'poly') return null;
-    const tol = 7 / view.s;
-    let best: number | null = null, bd = tol;
-    ent.pts.forEach((q, i) => {
-      const d = Math.hypot(q.x - p.x, q.y - p.y);
-      if (d <= bd) { bd = d; best = i; }
-    });
-    return best;
+    return nodeUnder(ent.pts, p, 7 / view.s);
   }, [view.s]);
+
+  /** допуск попадания в дорожку/полигон: половина ширины меди + несколько пикселей */
+  const segTol = useCallback((ent: M.Track | M.Poly): number =>
+    (ent.kind === 'track' ? ent.w / 2 : 0.15) + 3.5 / view.s + 0.05, [view.s]);
+
+  /**
+   * Поставить новый узел на звено: точка клика привязывается к сетке (Alt — без неё)
+   * и проецируется на ломаную, поэтому узел всегда лежит ровно на дорожке.
+   * Возвращает индекс узла и документ до/после — чтобы в истории это был один шаг.
+   */
+  const insertNodeAtEnt = useCallback((ent: M.Track | M.Poly, raw: M.Pt, alt: boolean) => {
+    const closed = ent.kind === 'poly';
+    const near = nearestOnPts(ent.pts, raw, closed);
+    if (!near || near.dist > segTol(ent)) return null;
+    // сам узел ставим в проекции привязанной точки — попадание проверяем по raw,
+    // иначе при крупной сетке клик по дорожке перестал бы работать
+    const sp = snapPt(raw, alt);
+    const spot = nearestOnPts(ent.pts, sp, closed) ?? near;
+    // дрогнувший двойной клик не должен плодить два узла рядом: если первый клик
+    // только что поставил узел этой дорожки ближе полшага сетки — берём его же
+    const freshIdx = lastInsert.current && lastInsert.current.entId === ent.id
+      && Date.now() - lastInsert.current.at < DBL_GRACE_MS
+      ? lastInsert.current.idx
+      : null;
+    const prev = freshIdx != null ? ent.pts[freshIdx] : undefined;
+    if (prev && Math.hypot(prev.x - spot.pt.x, prev.y - spot.pt.y) <= Math.max(defs.grid, 0.1) / 2)
+      return { idx: freshIdx!, before: doc, next: doc, added: false as boolean };
+    const before = M.cloneDoc(doc);
+    const ins = insertNode(ent.pts, spot.seg, spot.pt);
+    const next = M.cloneDoc(doc);
+    const t = next.entities.find((x) => x.id === ent.id);
+    if (!t || (t.kind !== 'track' && t.kind !== 'poly')) return null;
+    t.pts = ins.pts;
+    return { idx: ins.idx, before, next, added: ins.pts.length !== ent.pts.length };
+  }, [doc, snapPt, segTol, defs.grid]);
+
+  /** узел, поставленный кликом: второй клик того же двойного щелчка не должен его стирать */
+  const lastInsert = useRef<{ entId: string; idx: number; at: number } | null>(null);
 
   /** удалить узел (двойной клик / ПКМ / Del / кнопка справа) — одним действием в истории */
   const deleteEditNode = useCallback((entId: string, idx: number) => {
@@ -1771,24 +1821,19 @@ export default function App({ cloudUser, onLogout }: { cloudUser?: CloudUser; on
         const hitId = hitAt(w);
         const hit = hitId ? doc.entities.find((x) => x.id === hitId) : undefined;
         if (hit && (hit.kind === 'track' || hit.kind === 'poly')) {
-          const closed = hit.kind === 'poly';
-          const near = nearestOnPts(hit.pts, w, closed);
-          const tol = (hit.kind === 'track' ? hit.w / 2 : 0.15) + 3.5 / view.s + 0.05;
-          if (near && near.dist <= tol) {
+          const ins = insertNodeAtEnt(hit, w, e.altKey);
+          if (ins) {
             // клик по звену: новый узел в точке клика — и сразу тянуть его
-            const nearS = nearestOnPts(hit.pts, sp, closed) ?? near;
-            const before = hit.pts.length;
-            const ins = insertNode(hit.pts, nearS.seg, nearS.pt);
-            const doc0 = M.cloneDoc(doc);
-            const nd = M.cloneDoc(doc);
-            const t = nd.entities.find((x) => x.id === hit.id);
-            if (t && (t.kind === 'track' || t.kind === 'poly')) t.pts = ins.pts;
-            setDoc(nd);
+            lastInsert.current = { entId: hit.id, idx: ins.idx, at: Date.now() };
+            setDoc(ins.next);
             setTrackEditId(hit.id);
             setSel(new Set([hit.id]));
             setEditNode(ins.idx);
             setTrackMsg({ msg: '', ok: null });
-            drag.current = { mode: 'node', entId: hit.id, idx: ins.idx, doc0, moved: false, inserted: ins.pts.length !== before, startWorld: w };
+            drag.current = {
+              mode: 'node', entId: hit.id, idx: ins.idx, doc0: ins.before, base: ins.next,
+              moved: false, inserted: ins.added, startWorld: w,
+            };
           } else {
             setTrackEditId(hit.id);
             setSel(new Set([hit.id]));
@@ -1944,11 +1989,11 @@ export default function App({ cloudUser, onLogout }: { cloudUser?: CloudUser; on
       d.moved = true;
       let target = snapPt({ x: m.rx, y: m.ry }, m.alt);
       if (m.sh) {
-        const origin = d.doc0.entities.find((x) => x.id === d.entId);
+        const origin = (d.base ?? d.doc0).entities.find((x) => x.id === d.entId);
         const start = origin && (origin.kind === 'track' || origin.kind === 'poly') ? origin.pts[d.idx] : null;
         if (start) target = Math.abs(mdx) >= Math.abs(mdy) ? { x: target.x, y: start.y } : { x: start.x, y: target.y };
       }
-      const nd = M.cloneDoc(d.doc0);
+      const nd = M.cloneDoc(d.base ?? d.doc0);
       const t = nd.entities.find((x) => x.id === d.entId);
       if (t && (t.kind === 'track' || t.kind === 'poly') && t.pts[d.idx]) {
         t.pts[d.idx] = target;
@@ -2005,21 +2050,64 @@ export default function App({ cloudUser, onLogout }: { cloudUser?: CloudUser; on
     }
   };
 
-  const onDblClick = () => {
-    if (draft?.t === 'track') commitTrack();
-    else if (draft?.t === 'poly') commitPoly();
-    else {
-      // двойной клик по узлу удаляет его (в «Узлах» и в «Выборе» одиночной дорожки)
-      const target: M.Entity | null | undefined = tool === 'edit'
-        ? editEnt
-        : tool === 'select' && sel.size === 1
-          ? doc.entities.find((x) => sel.has(x.id)) ?? null
-          : null;
-      if (target && (target.kind === 'track' || target.kind === 'poly')) {
-        const ni = findNode(target, { x: mouse.rx, y: mouse.ry });
-        if (ni != null) deleteEditNode(target.id, ni);
-      }
+  /**
+   * Двойной клик по дорожке/полигону ставит узел в этом месте (привязка к сетке,
+   * Alt — без неё), а по уже существующему узлу — удаляет его.
+   * Первый клик двойного щелчка в «Узлах» узел уже ставит и начинает тянуть,
+   * поэтому свежепоставленный узел второй клик не трогает.
+   */
+  const onDblClick = (e: React.MouseEvent<HTMLCanvasElement>) => {
+    if (draft?.t === 'track') { commitTrack(); return; }
+    if (draft?.t === 'poly') { commitPoly(); return; }
+    // узлы ставим только там, где они и правятся: «Узлы» (E) и «Выбор» (1)
+    if (tool !== 'edit' && tool !== 'select') return;
+
+    const { px, py } = getPos(e);
+    const p = toWorld(view, px, py);
+    const isSeg = (en?: M.Entity | null): en is M.Track | M.Poly =>
+      !!en && (en.kind === 'track' || en.kind === 'poly');
+    const hitId = hitAt(p);
+    const hit = hitId ? doc.entities.find((x) => x.id === hitId) : undefined;
+    // сначала то, что прямо под курсором; иначе — правимая («Узлы») или
+    // одиночная выбранная («Выбор») дорожка: узел ставится и под деталями на плате
+    let target: M.Track | M.Poly | null = isSeg(hit) ? hit : null;
+    if (!target && tool === 'edit') target = editEnt;
+    if (!target && tool === 'select' && sel.size === 1) {
+      const only = doc.entities.find((x) => sel.has(x.id));
+      if (isSeg(only)) target = only;
     }
+    if (!target) return;
+
+    const fresh = lastInsert.current && lastInsert.current.entId === target.id
+      && Date.now() - lastInsert.current.at < DBL_GRACE_MS
+      ? lastInsert.current.idx
+      : null;
+    const act = nodeAction(target.pts, p, {
+      closed: target.kind === 'poly',
+      hitTol: segTol(target),
+      nodeTol: 7 / view.s,
+      justInserted: fresh,
+    });
+    if (!act) return;
+
+    if (act.kind === 'delete') { deleteEditNode(target.id, act.idx); return; }
+    if (act.kind === 'keep') {
+      // узел поставил первый клик — просто оставляем его выбранным
+      setEditNode(act.idx);
+      setTrackMsg({ msg: NODE_HINT[tool], ok: true });
+      return;
+    }
+
+    const ins = insertNodeAtEnt(target, p, e.altKey);
+    if (!ins) return;
+    lastInsert.current = { entId: target.id, idx: ins.idx, at: Date.now() };
+    if (tool === 'edit') setTrackEditId(target.id);
+    // в «Выборе» не сужаем выделение: первый клик мог выбрать всю группу
+    if (tool === 'edit' || !sel.has(target.id)) setSel(new Set([target.id]));
+    setEditNode(ins.idx);
+    // узел в этой точке уже стоял — историю лишним шагом не мусорим
+    if (ins.added) commit(ins.next);
+    setTrackMsg({ msg: NODE_HINT[tool], ok: true });
   };
 
   const onWheel = (e: React.WheelEvent<HTMLCanvasElement>) => {
@@ -2466,8 +2554,8 @@ export default function App({ cloudUser, onLogout }: { cloudUser?: CloudUser; on
             : null;
         if (nodeEnt && (nodeEnt.kind === 'track' || nodeEnt.kind === 'poly')) {
           const closed = nodeEnt.kind === 'poly';
-          // в «Узлах»: кружок в месте будущего узла, когда курсор над звеном
-          if (tool === 'edit' && mouse.px >= 0 && mouse.py >= 0 && !drag.current) {
+          // кружок-перекрестие в месте будущего узла, когда курсор над звеном
+          if ((tool === 'edit' || tool === 'select') && mouse.px >= 0 && mouse.py >= 0 && !drag.current) {
             const cur = { x: mouse.rx, y: mouse.ry };
             const overNode = nodeEnt.pts.some((q) => Math.hypot(q.x - cur.x, q.y - cur.y) <= 7 / view.s);
             if (!overNode) {
