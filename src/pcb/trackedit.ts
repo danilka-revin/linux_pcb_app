@@ -34,6 +34,44 @@ export function nearestOnPts(pts: Pt[], p: Pt, closed = false): NearPt | null {
   return best;
 }
 
+/** Индекс узла под точкой p в радиусе tol (мм) — null, если рядом узлов нет. */
+export function nodeUnder(pts: Pt[], p: Pt, tol: number): number | null {
+  let best: number | null = null, bd = tol;
+  pts.forEach((q, i) => {
+    const d = Math.hypot(q.x - p.x, q.y - p.y);
+    if (d <= bd) { bd = d; best = i; }
+  });
+  return best;
+}
+
+/**
+ * Что делает двойной клик по дорожке/полигону:
+ *  • по существующему узлу — удалить его;
+ *  • по звену (мимо узлов) — поставить новый узел в проекции точки клика;
+ *  • мимо ломаной — ничего.
+ * `justInserted` — узел, который поставил первый клик этого же двойного щелчка:
+ * его второй клик не должен удалять (иначе узел появится и тут же исчезнет).
+ */
+export type NodeAction =
+  | { kind: 'insert'; seg: number; pt: Pt }
+  | { kind: 'delete'; idx: number }
+  | { kind: 'keep'; idx: number };
+
+export function nodeAction(
+  pts: Pt[],
+  p: Pt,
+  o: { closed?: boolean; hitTol: number; nodeTol: number; justInserted?: number | null },
+): NodeAction | null {
+  const ni = nodeUnder(pts, p, o.nodeTol);
+  if (ni != null) {
+    if (o.justInserted != null && o.justInserted === ni) return { kind: 'keep', idx: ni };
+    return { kind: 'delete', idx: ni };
+  }
+  const near = nearestOnPts(pts, p, o.closed ?? false);
+  if (!near || !(near.dist <= o.hitTol)) return null;
+  return { kind: 'insert', seg: near.seg, pt: near.pt };
+}
+
 /** Вставить узел в звено seg (после точки seg). Рядом с существующим узлом — не плодить. */
 export function insertNode(pts: Pt[], seg: number, pt: Pt): { pts: Pt[]; idx: number } {
   const nx = pts.map((q) => ({ ...q }));

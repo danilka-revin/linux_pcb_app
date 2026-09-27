@@ -2,8 +2,8 @@
 import assert from 'node:assert/strict';
 import type { Entity, Track } from '../src/pcb/model';
 import {
-  deleteNode, insertNode, joinTrackPts, nearestOnPts, pickSolderPair,
-  splitTrackAt, trackEndsNear,
+  deleteNode, insertNode, joinTrackPts, nearestOnPts, nodeAction, nodeUnder,
+  pickSolderPair, splitTrackAt, trackEndsNear,
 } from '../src/pcb/trackedit';
 
 const tr = (pts: [number, number][], layer: 'k1' | 'k2' = 'k1', w = 0.6): Track => ({
@@ -137,6 +137,45 @@ const xy = (pts: { x: number; y: number }[]): [number, number][] =>
   const len = (pts: { x: number; y: number }[]) =>
     pts.slice(1).reduce((s, p, i) => s + Math.hypot(p.x - pts[i].x, p.y - pts[i].y), 0);
   assert.ok(Math.abs(len(back) - len(src.pts)) < 1e-6);
+}
+
+// --- nodeUnder: попадание в узел по радиусу ---
+{
+  const pts = [{ x: 0, y: 0 }, { x: 5, y: 0 }, { x: 10, y: 0 }];
+  assert.equal(nodeUnder(pts, { x: 0.1, y: 0.1 }, 0.5), 0);
+  assert.equal(nodeUnder(pts, { x: 5, y: 0 }, 0.5), 1);
+  assert.equal(nodeUnder(pts, { x: 10, y: 0.3 }, 0.5), 2);
+  assert.equal(nodeUnder(pts, { x: 7.5, y: 0 }, 0.5), null); // между узлами
+  assert.equal(nodeUnder(pts, { x: 5, y: 2 }, 0.5), null);   // далеко от ломаной
+  assert.equal(nodeUnder([{ x: 0, y: 0 }], { x: 0, y: 0 }, 0), 0);
+}
+
+// --- nodeAction: что делает двойной клик ---
+{
+  const pts = [{ x: 0, y: 0 }, { x: 10, y: 0 }];
+  const o = { hitTol: 0.5, nodeTol: 0.5 };
+  // мимо узла, но на звене — ставим новый узел в проекции точки клика
+  const ins = nodeAction(pts, { x: 4, y: 0.1 }, o);
+  assert.deepEqual(ins, { kind: 'insert', seg: 0, pt: { x: 4, y: 0 } });
+  // по существующему узлу — удаляем
+  assert.deepEqual(nodeAction(pts, { x: 10, y: 0 }, o), { kind: 'delete', idx: 1 });
+  assert.deepEqual(nodeAction(pts, { x: 0, y: 0 }, o), { kind: 'delete', idx: 0 });
+  // мимо ломаной дальше допуска — ничего
+  assert.equal(nodeAction(pts, { x: 4, y: 3 }, o), null);
+  // узел, только что поставленный первым кликом, второй клик не удаляет
+  assert.deepEqual(nodeAction(pts, { x: 10, y: 0 }, { ...o, justInserted: 1 }), { kind: 'keep', idx: 1 });
+  // чужой индекс — удаление остаётся в силе
+  assert.deepEqual(nodeAction(pts, { x: 10, y: 0 }, { ...o, justInserted: 0 }), { kind: 'delete', idx: 1 });
+
+  // замкнутый полигон: звено «последняя → первая» тоже годится для вставки
+  const sq = [{ x: 0, y: 0 }, { x: 10, y: 0 }, { x: 10, y: 10 }, { x: 0, y: 10 }];
+  const edge = nodeAction(sq, { x: -0.2, y: 5 }, { hitTol: 0.5, nodeTol: 0.5, closed: true });
+  assert.deepEqual(edge, { kind: 'insert', seg: 3, pt: { x: 0, y: 5 } });
+  assert.equal(nodeAction(sq, { x: -0.2, y: 5 }, { hitTol: 0.5, nodeTol: 0.5, closed: false }), null);
+
+  // вставка + удаление тем же узлом обратимы (двойной клик дважды подряд)
+  const a = insertNode(pts, (ins as { seg: number }).seg, (ins as { pt: { x: number; y: number } }).pt);
+  assert.deepEqual(xy(deleteNode(a.pts, a.idx, false)!), [[0, 0], [10, 0]]);
 }
 
 console.log('Track edit: nodes, cut gap and solder OK');
