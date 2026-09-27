@@ -1,5 +1,6 @@
+import { boardShape } from '../pcb/board-shape';
 // 3D предпросмотр платы — Three.js и типизированные OrbitControls.
-import { useEffect, useRef, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import type { OrbitControls } from 'three/addons/controls/OrbitControls.js';
 import * as THREE from 'three';
 import type { Comp, Doc } from '../pcb/model';
@@ -14,17 +15,19 @@ import { download } from '../pcb/zip';
 /** Без полей и растяжения: вся текстура соответствует поверхности платы. */
 export function createBoardTexture(doc: Doc, themeId: Board2DThemeId, side: 'top' | 'bottom'): THREE.CanvasTexture {
   const theme = BOARD_2D_THEMES.find(t => t.id === themeId) || BOARD_2D_THEMES[0];
-  const scale = 2048 / Math.max(doc.w, doc.h);
+  const [x0, y0, x1, y1] = boardShape(doc).bounds;
+  const w = x1 - x0, h = y1 - y0;
+  const scale = 2048 / Math.max(w, h);
   const canvas = document.createElement('canvas');
-  canvas.width = Math.max(1, Math.round(doc.w * scale));
-  canvas.height = Math.max(1, Math.round(doc.h * scale));
+  canvas.width = Math.max(1, Math.round(w * scale));
+  canvas.height = Math.max(1, Math.round(h * scale));
   const ctx = canvas.getContext('2d');
   if (!ctx) throw new Error('Не удалось создать текстуру платы.');
   // Компенсация округления размера canvas; геометрия остаётся в миллиметрах.
-  ctx.setTransform(canvas.width / doc.w, 0, 0, canvas.height / doc.h, 0, 0);
+  ctx.setTransform(canvas.width / w, 0, 0, canvas.height / h, 0, 0);
   drawBoard2D(ctx, doc, zOrdered(doc), theme, {
     side, hidden: new Set(['outline']), showHoles: true, showMask: true, showGrid: false,
-    scale: 1, offsetX: 0, offsetY: 0, width: doc.w, height: doc.h,
+    scale: 1, offsetX: side === 'bottom' ? x1 - doc.w : -x0, offsetY: y1 - doc.h, width: w, height: h,
   });
   const texture = new THREE.CanvasTexture(canvas);
   texture.colorSpace = THREE.SRGBColorSpace;
@@ -61,6 +64,8 @@ export function disposePreviewScene(scene: THREE.Scene): void {
 }
 
 export function BoardPreview3D({ doc, height = 520 }: { doc: Doc; width?: number; height?: number }) {
+  const shapeInfo = useMemo(() => boardShape(doc), [doc]);
+  const [bx0, by0, bx1, by1] = shapeInfo.bounds;
   const mountRef = useRef<HTMLDivElement>(null);
   const controlsRef = useRef<OrbitControls | null>(null);
   const sceneRef = useRef<THREE.Scene | null>(null);
@@ -143,7 +148,9 @@ export function BoardPreview3D({ doc, height = 520 }: { doc: Doc; width?: number
         scene = new THREE.Scene();
         scene.background = new THREE.Color(theme.bg);
         sceneRef.current = scene;
-        const extent = Math.max(doc.w, doc.h, thickness, 1);
+        const shape = boardShape(doc);
+        const [x0, y0, x1, y1] = shape.bounds;
+        const extent = Math.max(x1 - x0, y1 - y0, thickness, 1);
         const camera = new THREE.PerspectiveCamera(45, 1, Math.max(0.01, extent / 1000), extent * 100);
         camera.up.set(0, 0, 1);
         // Конструктор принимает только камеру и DOM-элемент, не свой класс.
@@ -155,7 +162,7 @@ export function BoardPreview3D({ doc, height = 520 }: { doc: Doc; width?: number
         controls.autoRotateSpeed = 1.2;
         controls.minDistance = extent * 0.15;
         controls.maxDistance = extent * 12;
-        const assemblyBounds = new THREE.Box3(new THREE.Vector3(0, 0, -thickness / 2), new THREE.Vector3(doc.w, doc.h, thickness / 2));
+        const assemblyBounds = new THREE.Box3(new THREE.Vector3(x0, y0, -thickness / 2), new THREE.Vector3(x1, y1, thickness / 2));
         const fit = () => {
           if (!controls) return;
           const fov = THREE.MathUtils.degToRad(camera.fov);
@@ -182,7 +189,7 @@ export function BoardPreview3D({ doc, height = 520 }: { doc: Doc; width?: number
         // Металлизация стенок отверстий: лужёная медь, видна насквозь.
         const platedMat = new THREE.MeshStandardMaterial({ name: 'pcb_plating', color: '#c9a35a', metalness: 0.8, roughness: 0.35 });
         // Порядок материалов совпадает с BOARD_GROUP: верх, низ, торец/голые стенки, металлизация.
-        const { geometry: boardGeometry, holes } = createBoardGeometry(doc.w, doc.h, thickness, collectBoardHoles(doc));
+        const { geometry: boardGeometry, holes } = createBoardGeometry(doc.w, doc.h, thickness, collectBoardHoles(doc), shape);
         const board = new THREE.Mesh(boardGeometry, [topMat, bottomMat, edgeMat, platedMat]);
         board.name = 'board';
         board.userData.holes = holes.length;
@@ -304,7 +311,8 @@ export function BoardPreview3D({ doc, height = 520 }: { doc: Doc; width?: number
         <span className="bp3d-export-note">{showComponents ? 'Плата и детали' : 'Только плата (детали скрыты)'}</span>
         {exportError && <span className="bp3d-export-error" role="alert">{exportError}</span>}
       </div>
-      <div className="bp3d-hints">ЛКМ — вращение, ПКМ — панорама, колесо — масштаб. Плата {doc.w} × {doc.h} мм.</div>
+      {shapeInfo.openChains > 0 && <div className="bp2d-warning" role="status">Контур не замкнут: незавершённые линии не задают форму платы.{shapeInfo.fallback ? ' Пока показан прямоугольник рабочего поля.' : ''}</div>}
+      <div className="bp3d-hints">ЛКМ — вращение, ПКМ — панорама, колесо — масштаб. Плата {Number((bx1 - bx0).toFixed(3))} × {Number((by1 - by0).toFixed(3))} мм.</div>
     </div>
     <div className="bp3d-viewport" style={{ height: `min(${height}px, 50vh)` }}>
       <div ref={mountRef} className="bp3d-canvas-wrap" aria-busy={!ready && !error} />

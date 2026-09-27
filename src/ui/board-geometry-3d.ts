@@ -1,6 +1,7 @@
 // Геометрия подложки для 3D: сквозные отверстия сверловки с металлизированными стенками.
 import * as THREE from 'three';
-import type { Doc, Entity } from '../pcb/model';
+import { pointInPoly, type Doc, type Entity } from '../pcb/model';
+import { boardShape, insideBoard, type BoardShape } from '../pcb/board-shape';
 import { zOrdered } from '../pcb/render';
 
 /** Отверстие сверловки в мировых координатах платы, мм. */
@@ -26,6 +27,7 @@ const LEAF_HOLES = 24;
  * а сетка платы гарантированно корректна.
  */
 export function collectBoardHoles(doc: Doc, flat: Entity[] = zOrdered(doc)): BoardHole[] {
+  const shape = boardShape(doc, flat);
   const candidates: BoardHole[] = [];
   for (const e of flat) {
     let d = 0, plated = false;
@@ -43,7 +45,7 @@ export function collectBoardHoles(doc: Doc, flat: Entity[] = zOrdered(doc)): Boa
   const grid = new Map<string, BoardHole[]>();
   const accepted: BoardHole[] = [];
   for (const h of candidates) {
-    if (h.x - h.r < GAP || h.y - h.r < GAP || h.x + h.r > doc.w - GAP || h.y + h.r > doc.h - GAP) continue;
+    if (!insideBoard(shape, h, h.r / Math.cos(Math.PI / holeSegments(h.r)) + GAP)) continue;
     const gx = Math.floor(h.x / cell), gy = Math.floor(h.y / cell);
     let clash = false;
     for (let ix = gx - 1; ix <= gx + 1 && !clash; ix++) for (let iy = gy - 1; iy <= gy + 1 && !clash; iy++) {
@@ -161,7 +163,7 @@ export interface BoardGeometryResult {
  * Группы: верх (UV 0..1 как у текстуры), низ (UV зеркален по X), торец и голые стенки,
  * металлизированные стенки.
  */
-export function createBoardGeometry(w: number, h: number, t: number, input: BoardHole[]): BoardGeometryResult {
+export function createBoardGeometry(w: number, h: number, t: number, input: BoardHole[], shape?: BoardShape): BoardGeometryResult {
   const pos: number[] = [], nrm: number[] = [], uv: number[] = [];
   const idx: number[][] = [[], [], [], []];
   const vert = (x: number, y: number, z: number, nx: number, ny: number, nz: number, u: number, v: number) => {
@@ -170,27 +172,39 @@ export function createBoardGeometry(w: number, h: number, t: number, input: Boar
   };
   const zt = t / 2, zb = -t / 2;
 
+  const [x0, y0, x1, y1] = shape?.bounds ?? [0, 0, w, h];
+  const vector = (p: { x: number; y: number }) => new THREE.Vector2(p.x, p.y);
+  const oriented = (pts: THREE.Vector2[], ccw: boolean) => (area2(pts) > 0) === ccw ? pts : pts.slice().reverse();
+  // Сохраняем быстрое разбиение на листья для обычных прямоугольных плат.
+  const rectangular = !shape || (shape.loops.length === 1 && shape.loops[0].length === 4 &&
+    shape.loops[0].every(p => (p.x === x0 || p.x === x1) && (p.y === y0 || p.y === y1)));
   const leaves: Region[] = [];
-  partition({ x0: 0, y0: 0, x1: w, y1: h, holes: input.map(holePolygon) }, leaves);
+  const drillPolys = input.map(holePolygon);
+  if (rectangular) partition({ x0, y0, x1, y1, holes: drillPolys }, leaves);
   const corners = leaves.flatMap(r => [new THREE.Vector2(r.x0, r.y0), new THREE.Vector2(r.x1, r.y0), new THREE.Vector2(r.x1, r.y1), new THREE.Vector2(r.x0, r.y1)]);
+  const regions = rectangular
+    ? leaves.map(leaf => ({ contour: perimeter(leaf, corners), holes: leaf.holes, cutouts: [] as THREE.Vector2[][] }))
+    : shape!.regions.map(r => ({ contour: oriented(r.outer.map(vector), true),
+      holes: drillPolys.filter(p => pointInPoly(r.outer, p.hole.x, p.hole.y) && !r.holes.some(h => pointInPoly(h, p.hole.x, p.hole.y))),
+      cutouts: r.holes.map(h => oriented(h.map(vector), false)) }));
   const cut: HolePoly[] = [];
 
-  for (const leaf of leaves) {
-    const contour = perimeter(leaf, corners);
-    let holes = leaf.holes;
-    let faces = holes.length ? THREE.ShapeUtils.triangulateShape(contour, holes.map(p => p.pts)) : THREE.ShapeUtils.triangulateShape(contour, []);
-    let all = [...contour, ...holes.flatMap(p => p.pts)];
-    const expected = Math.abs(area2(contour)) - holes.reduce((s, p) => s + Math.abs(area2(p.pts)), 0);
+  for (const region of regions) {
+    const { contour, cutouts } = region;
+    let holes = region.holes;
+    let faces = THREE.ShapeUtils.triangulateShape(contour, [...cutouts, ...holes.map(p => p.pts)]);
+    let all = [...contour, ...cutouts.flat(), ...holes.flatMap(p => p.pts)];
+    const expected = Math.abs(area2(contour)) - cutouts.reduce((s, p) => s + Math.abs(area2(p)), 0) - holes.reduce((s, p) => s + Math.abs(area2(p.pts)), 0);
     const got = faces.reduce((s, [a, b, c]) => s + Math.abs(area2([all[a], all[b], all[c]])), 0);
     if (Math.abs(got - expected) > 1e-6 * Math.max(1, Math.abs(area2(contour)))) {
       // Вырожденный случай earcut: сплошной кусок лучше дыр в плате.
       holes = [];
-      faces = THREE.ShapeUtils.triangulateShape(contour, []);
-      all = contour;
+      faces = THREE.ShapeUtils.triangulateShape(contour, cutouts);
+      all = [...contour, ...cutouts.flat()];
     }
     cut.push(...holes);
-    const top = all.map(p => vert(p.x, p.y, zt, 0, 0, 1, p.x / w, p.y / h));
-    const bottom = all.map(p => vert(p.x, p.y, zb, 0, 0, -1, 1 - p.x / w, p.y / h));
+    const top = all.map(p => vert(p.x, p.y, zt, 0, 0, 1, (p.x - x0) / (x1 - x0), (p.y - y0) / (y1 - y0)));
+    const bottom = all.map(p => vert(p.x, p.y, zb, 0, 0, -1, 1 - (p.x - x0) / (x1 - x0), (p.y - y0) / (y1 - y0)));
     for (const [a, b, c] of faces) {
       const ccw = area2([all[a], all[b], all[c]]) > 0;
       const [p, q] = ccw ? [b, c] : [c, b];
@@ -200,17 +214,20 @@ export function createBoardGeometry(w: number, h: number, t: number, input: Boar
   }
 
   // Торец платы: по тем же точкам периметра, что и крышки, — без Т-стыков.
-  const outline = perimeter({ x0: 0, y0: 0, x1: w, y1: h }, corners);
-  let run = 0;
-  for (let i = 0; i < outline.length; i++) {
-    const a = outline[i], b = outline[(i + 1) % outline.length];
-    const len = a.distanceTo(b);
-    if (len === 0) continue;
-    const nx = (b.y - a.y) / len, ny = -(b.x - a.x) / len;
-    const a0 = vert(a.x, a.y, zb, nx, ny, 0, run, 0), b0 = vert(b.x, b.y, zb, nx, ny, 0, run + len, 0);
-    const b1 = vert(b.x, b.y, zt, nx, ny, 0, run + len, 1), a1 = vert(a.x, a.y, zt, nx, ny, 0, run, 1);
-    idx[BOARD_GROUP.edge].push(a0, b0, b1, a0, b1, a1);
-    run += len;
+  const outlines = rectangular ? [perimeter({ x0, y0, x1, y1 }, corners)]
+    : regions.flatMap(r => [r.contour, ...r.cutouts]);
+  for (const outline of outlines) {
+    let run = 0;
+    for (let i = 0; i < outline.length; i++) {
+      const a = outline[i], b = outline[(i + 1) % outline.length];
+      const len = a.distanceTo(b);
+      if (len === 0) continue;
+      const nx = (b.y - a.y) / len, ny = -(b.x - a.x) / len;
+      const a0 = vert(a.x, a.y, zb, nx, ny, 0, run, 0), b0 = vert(b.x, b.y, zb, nx, ny, 0, run + len, 0);
+      const b1 = vert(b.x, b.y, zt, nx, ny, 0, run + len, 1), a1 = vert(a.x, a.y, zt, nx, ny, 0, run, 1);
+      idx[BOARD_GROUP.edge].push(a0, b0, b1, a0, b1, a1);
+      run += len;
+    }
   }
 
   // Стенки отверстий: нормали внутрь, к оси сверла.

@@ -1,3 +1,4 @@
+import { boardShape, boardPath } from './pcb/board-shape';
 import { terminalPath } from './pcb/manual-route';
 // PSBees — редактор печатных плат для Linux и Windows (аналог Sprint-Layout;
 // фирменный стиль «пчелиный»: оса с молнией, золото на графите; тёмная и светлая темы).
@@ -2114,6 +2115,7 @@ export default function App({ cloudUser, onLogout }: { cloudUser?: CloudUser; on
   // Плоский список примитивов в порядке отрисовки (площадки/переходы поверх
   // заливок) — развёртка компонентов строится при изменении платы, а не в кадре.
   const zEnts = useMemo(() => zOrdered(doc), [doc]);
+  const substrate = useMemo(() => boardShape(doc, zEnts), [doc, zEnts]);
 
   // ---------------- отрисовка: базовый слой (сетка + плата) ----------------
   // Перерисовывается только когда меняются плата/вид/слои/выделение/тема —
@@ -2135,6 +2137,11 @@ export default function App({ cloudUser, onLogout }: { cloudUser?: CloudUser; on
       // фон
       ctx.fillStyle = COLORS.bg;
       ctx.fillRect(0, 0, size.w, size.h);
+
+      // Подложка следует контуру; объекты за краем не скрываем — их можно исправить.
+      boardPath(ctx, substrate, p => { const q = toPx(p.x, p.y); return { x: q.px, y: q.py }; });
+      ctx.fillStyle = COLORS.board;
+      ctx.fill('evenodd');
 
       // сетка (шаг, вид, подразбиение, «главные» линии и начало — из настроек)
       drawGrid(ctx, gridConf, view, size.w, size.h, {
@@ -2254,7 +2261,7 @@ export default function App({ cloudUser, onLogout }: { cloudUser?: CloudUser; on
       }
     });
   }, [
-    doc, zEnts, view, hidden, sel, gridConf, defs.showAxes,
+    doc, zEnts, substrate, view, hidden, sel, gridConf, defs.showAxes,
     defs.rtHoleClear, size, tool, routeMode, activeNet, netGeometry, theme, colors, toPx,
     selGroups,
   ]);
@@ -2875,7 +2882,8 @@ export default function App({ cloudUser, onLogout }: { cloudUser?: CloudUser; on
         />
         <div style={{ flex: 1 }} />
         <div className="hint" style={{ padding: '0 12px 10px' }}>
-          Плата: {M.fmt(doc.w)} × {M.fmt(doc.h)} мм<br />
+          Плата: {M.fmt(substrate.bounds[2] - substrate.bounds[0])} × {M.fmt(substrate.bounds[3] - substrate.bounds[1])} мм<br />
+          {substrate.openChains > 0 && <><span role="status">Контур не замкнут. Соедините концы линий.{substrate.fallback ? ' Пока используется размер рабочего поля.' : ''}</span><br /></>}
           Элементов: {doc.entities.length} · Выделено: {sel.size}
           {groupCount > 0 && <> · Групп: {groupCount}</>}
           <button type="button" className="btn inventory-open" onClick={() => setDialog('inventory')}>Площадки и отверстия…</button>
@@ -2990,7 +2998,7 @@ export default function App({ cloudUser, onLogout }: { cloudUser?: CloudUser; on
       </div>
     );
   }, [
-    sidesConf, leftTab, activeCu, hidden, counts, doc, sel, place, preview, gen, query, store, tree,
+    sidesConf, leftTab, activeCu, hidden, counts, doc, substrate, sel, place, preview, gen, query, store, tree,
     cloudUser, libTab, libFilter, collapsed, editId, toggleHidden, setQuery, setLeftTab,
     placeFromGen, placeFromCatalog, saveCatalogToLibrary, pickMacro, editMacro, saveGenToLibrary, updateGenMacro, exportLibJson, patchStore,
     // вкладка «Группы»

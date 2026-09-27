@@ -1,3 +1,4 @@
+import { boardShape, boardPath } from '../pcb/board-shape';
 // Предпросмотр без изменения геометрии документа.
 import { useCallback, useEffect, useRef, useState, useMemo } from 'react';
 import { entBBox, type Doc, type Entity, type LayerId } from '../pcb/model';
@@ -219,19 +220,24 @@ export function drawBoard2D(ctx: CanvasRenderingContext2D, doc: Doc, flat: Entit
   ctx.textAlign = 'left';
   ctx.fillStyle = theme.bg;
   ctx.fillRect(0, 0, width, height);
-  ctx.fillStyle = theme.board;
-  ctx.fillRect(x, y, bw, bh);
 
   ctx.save();
   // Зеркалим весь рисунок, а не только координаты центров площадок.
   if (side === 'bottom') { ctx.translate(2 * x + bw, 0); ctx.scale(-1, 1); }
+  const shape = boardShape(doc, flat);
+  const path = () => boardPath(ctx, shape, p => ({ x: x + p.x * s, y: y + bh - p.y * s }));
+  path();
+  ctx.fillStyle = theme.board;
+  ctx.fill('evenodd');
+  ctx.save();
+  ctx.clip('evenodd');
   if (opts.showGrid) {
     let step = 1;
     while (step * s < 12) step *= 5;
-    const x0 = Math.max(0, Math.ceil((side === 'bottom' ? x + bw - width : -x) / s / step));
-    const x1 = Math.min(Math.floor(doc.w / step), Math.ceil((side === 'bottom' ? x + bw : width - x) / s / step));
-    const y0 = Math.max(0, Math.ceil((y + bh - height) / s / step));
-    const y1 = Math.min(Math.floor(doc.h / step), Math.ceil((y + bh) / s / step));
+    const x0 = Math.max(Math.ceil(shape.bounds[0] / step), Math.ceil((side === 'bottom' ? x + bw - width : -x) / s / step));
+    const x1 = Math.min(Math.floor(shape.bounds[2] / step), Math.ceil((side === 'bottom' ? x + bw : width - x) / s / step));
+    const y0 = Math.max(Math.ceil(shape.bounds[1] / step), Math.ceil((y + bh - height) / s / step));
+    const y1 = Math.min(Math.floor(shape.bounds[3] / step), Math.ceil((y + bh) / s / step));
     ctx.fillStyle = theme.id === 'classic-dark' ? '#41484f' : theme.boardEdge;
     for (let ix = x0; ix <= x1; ix++) for (let iy = y0; iy <= y1; iy++) {
       ctx.fillRect(x + ix * step * s, y + bh - iy * step * s, 1, 1);
@@ -252,10 +258,11 @@ export function drawBoard2D(ctx: CanvasRenderingContext2D, doc: Doc, flat: Entit
   // Маска закрывает проводники, но не контактные площадки и сверловку.
   if (opts.showMask && !theme.id.startsWith('classic') && theme.id !== 'mono') {
     ctx.fillStyle = side === 'bottom' ? theme.maskBottom : theme.maskTop;
-    ctx.fillRect(x, y, bw, bh);
+    path();
+    ctx.fill('evenodd');
   }
   for (const e of visible) if (e.kind === 'pad' || e.kind === 'via' || e.kind === 'smd') draw(e);
-  for (const layer of ['s2', 's1', 'outline'] as const) {
+  for (const layer of ['s2', 's1'] as const) {
     for (const e of visible) if ('layer' in e && e.layer === layer) draw(e);
   }
   // Последний проход: дорожки и шелкография никогда не перекрывают отверстия.
@@ -274,18 +281,24 @@ export function drawBoard2D(ctx: CanvasRenderingContext2D, doc: Doc, flat: Entit
   if (!hidden.has('outline')) {
     ctx.strokeStyle = theme.boardEdge;
     ctx.lineWidth = 1;
-    ctx.strokeRect(x, y, bw, bh);
+    path();
+    ctx.stroke();
   }
+  ctx.restore();
   // Размеры остаются читаемыми при просмотре снизу.
+  const [bx0, by0, bx1, by1] = shape.bounds;
+  const left = x + (side === 'bottom' ? doc.w - bx1 : bx0) * s;
+  const bottom = y + bh - by0 * s;
+  const boardW = bx1 - bx0, boardH = by1 - by0;
   ctx.fillStyle = theme.id === 'mono' || theme.id === 'classic-light' || theme.id === 'white' || theme.id === 'yellow' ? '#53606d' : '#9aa7b4';
   ctx.font = '11px system-ui, sans-serif';
   ctx.textAlign = 'center';
-  if (y + bh + 22 < height) ctx.fillText(`${doc.w} мм`, x + bw / 2, y + bh + 22);
-  if (x > 28) {
+  if (bottom + 22 < height) ctx.fillText(`${Number(boardW.toFixed(3))} мм`, left + boardW * s / 2, bottom + 22);
+  if (left > 28) {
     ctx.save();
-    ctx.translate(x - 18, y + bh / 2);
+    ctx.translate(left - 18, bottom - boardH * s / 2);
     ctx.rotate(-Math.PI / 2);
-    ctx.fillText(`${doc.h} мм`, 0, 0);
+    ctx.fillText(`${Number(boardH.toFixed(3))} мм`, 0, 0);
     ctx.restore();
   }
   ctx.restore();
@@ -293,7 +306,7 @@ export function drawBoard2D(ctx: CanvasRenderingContext2D, doc: Doc, flat: Entit
 
 /** Include imported objects outside the nominal board without changing the document. */
 export function previewBounds(doc: Doc, flat: Entity[]): [number, number, number, number] {
-  const bounds: [number, number, number, number] = [0, 0, doc.w, doc.h];
+  const bounds = boardShape(doc).bounds;
   for (const e of flat) {
     const b = entBBox(e);
     bounds[0] = Math.min(bounds[0], b[0]); bounds[1] = Math.min(bounds[1], b[1]);
@@ -319,7 +332,8 @@ export function BoardPreview2D({ doc, width = 960, height = 520 }: { doc: Doc; w
   const theme = BOARD_2D_THEMES.find(t => t.id === themeId)!;
   const bounds = useMemo(() => previewBounds(doc, flat), [doc, flat]);
   const [x1, y1, x2, y2] = bounds;
-  const outside = x1 < -0.5 || y1 < -0.5 || x2 > doc.w + 0.5 || y2 > doc.h + 0.5;
+  const shape = useMemo(() => boardShape(doc, flat), [doc, flat]);
+  const outside = x1 < shape.bounds[0] - 0.5 || y1 < shape.bounds[1] - 0.5 || x2 > shape.bounds[2] + 0.5 || y2 > shape.bounds[3] + 0.5;
   const fitScale = Math.max(0.001, Math.min((size.width - 80) / Math.max(x2 - x1, 0.1), (size.height - 80) / Math.max(y2 - y1, 0.1)));
   const fit = useCallback(() => {
     const cx = (x1 + x2) / 2, cy = (y1 + y2) / 2;
@@ -430,7 +444,8 @@ export function BoardPreview2D({ doc, width = 960, height = 520 }: { doc: Doc; w
         <button className="btn" onClick={fit} title="Вписать плату (Home или двойной щелчок)">Вписать</button>
       </div>
     </div>
-    {outside && <div className="bp2d-warning" role="status">Есть элементы за границами платы {doc.w} × {doc.h} мм. Показан весь чертёж; размеры платы не изменены.</div>}
+    {shape.openChains > 0 && <div className="bp2d-warning" role="status">Контур не замкнут: незавершённые линии не задают форму платы.{shape.fallback ? ' Пока показан прямоугольник рабочего поля.' : ''}</div>}
+    {outside && <div className="bp2d-warning" role="status">Есть элементы за габаритами контура. В предпросмотре они обрезаны по форме платы; в редакторе остаются доступны.</div>}
     <div className="bp2d-status">
       <label className="chk"><input type="checkbox" checked={showGrid} onChange={e => setShowGrid(e.target.checked)} />Сетка</label>
       <label className="chk"><input type="checkbox" checked={showHoles} onChange={e => setShowHoles(e.target.checked)} />Сверловка</label>

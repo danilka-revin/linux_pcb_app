@@ -18,6 +18,7 @@ export type ThemeId = 'dark' | 'light';
  *  на месте, поэтому все импортировавшие его получают новые значения. */
 export const COLORS = {
   bg: '#0f1115',
+  board: '#191e25',
   k1: '#2f80ed',
   k2: '#35c46a',
   s1: '#e5484d',
@@ -45,7 +46,7 @@ export const CANVAS_UI = {
 const CANVAS_THEMES: Record<ThemeId, { colors: typeof COLORS; ui: typeof CANVAS_UI }> = {
   dark: {
     colors: {
-      bg: '#0f1115', k1: '#2f80ed', k2: '#35c46a', s1: '#e5484d', s2: '#e8c93e',
+      bg: '#0f1115', board: '#191e25', k1: '#2f80ed', k2: '#35c46a', s1: '#e5484d', s2: '#e8c93e',
       outline: '#e9ecf1', both: '#f0a63c', holeFill: '#0f1115',
       holeRing: 'rgba(233,236,241,.35)', sel: '#ffc233', probe: '#c45cff',
       grid: '#232830', gridMajor: '#333c49', gridOrigin: '#4a5563', axes: '#3a414d',
@@ -54,7 +55,7 @@ const CANVAS_THEMES: Record<ThemeId, { colors: typeof COLORS; ui: typeof CANVAS_
   },
   light: {
     colors: {
-      bg: '#eef1f4', k1: '#2f80ed', k2: '#2aa35c', s1: '#d93a3f', s2: '#c9930a',
+      bg: '#eef1f4', board: '#ffffff', k1: '#2f80ed', k2: '#2aa35c', s1: '#d93a3f', s2: '#c9930a',
       outline: '#232a34', both: '#e08e00', holeFill: '#eef1f4',
       holeRing: 'rgba(35,42,52,.45)', sel: '#e08e00', probe: '#9333ea',
       grid: '#d7dce3', gridMajor: '#bcc3cc', gridOrigin: '#9aa3ad', axes: '#c2c9d2',

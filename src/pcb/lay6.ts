@@ -780,7 +780,11 @@ export function docToLay6(doc: M.Doc, expanded: M.Entity[]): Uint8Array {
     e.kind === 'rect' && e.layer === 'outline' &&
     Math.abs(e.x) < 0.01 && Math.abs(e.y) < 0.01 &&
     Math.abs(e.w - doc.w) < 0.01 && Math.abs(e.h - doc.h) < 0.01;
-  const emits = entitiesToLay(expanded.filter((e) => !isDefaultOutline(e)));
+  // При наличии вырезов рамку обязательно сохраняем: иначе при импорте
+  // единственный оставшийся внутренний контур станет внешним краем платы.
+  const hasCustomOutline = expanded.some(e => 'layer' in e && e.layer === 'outline' &&
+    (e.kind === 'line' || e.kind === 'circle' || e.kind === 'rect') && !isDefaultOutline(e));
+  const emits = entitiesToLay(expanded.filter((e) => hasCustomOutline || !isDefaultOutline(e)));
 
   // BoardHeader (534 байта)
   w.fixstr(doc.name.slice(0, 30), 30);

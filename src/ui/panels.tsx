@@ -554,6 +554,7 @@ export function PropsPanel({
           <h3>Линия</h3>
           <NI label="Толщина, мм" value={defs.lineW} min={0.05} on={(v) => setDefs({ lineW: v })} />
           <SI label="Слой" value={defs.lineLayer} options={lineOpts} on={(v) => setDefs({ lineLayer: v as Defs['lineLayer'] })} />
+          {defs.lineLayer === 'outline' && <p className="hint">Замкнутый контур задаёт форму платы. Для новой формы удалите старую рамку; контур внутри другого контура создаёт вырез.</p>}
         </div>
       );
     case 'rect':
@@ -561,6 +562,7 @@ export function PropsPanel({
         <div className="props">
           <h3>Прямоугольник</h3>
           <SI label="Слой" value={defs.rectLayer} options={rectOpts} on={(v) => setDefs({ rectLayer: v as LayerId })} />
+          {defs.rectLayer === 'outline' && <p className="hint">Замкнутый контур задаёт форму платы. Для новой формы удалите старую рамку; контур внутри другого контура создаёт вырез.</p>}
           <label className="chk">
             <input type="checkbox" checked={defs.rectFilled} onChange={(e) => setDefs({ rectFilled: e.target.checked })} />
             Залитый (сплошная медь)
@@ -574,6 +576,7 @@ export function PropsPanel({
           <h3>Окружность</h3>
           <NI label="Толщина, мм" value={defs.circleW} min={0.05} on={(v) => setDefs({ circleW: v })} />
           <SI label="Слой" value={defs.circleLayer} options={lineOpts} on={(v) => setDefs({ circleLayer: v as Defs['circleLayer'] })} />
+          {defs.circleLayer === 'outline' && <p className="hint">Замкнутый контур задаёт форму платы. Для новой формы удалите старую рамку; контур внутри другого контура создаёт вырез.</p>}
         </div>
       );
     case 'fill':
