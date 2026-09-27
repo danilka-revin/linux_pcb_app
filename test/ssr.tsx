@@ -10,6 +10,7 @@ import { generate } from '../src/pcb/gen';
 import { LibPreviewDialog } from '../src/ui/libpreview';
 import { PropsPanel, type Defs } from '../src/ui/panels';
 import { GroupsPanel } from '../src/ui/groups';
+import { NetsPanel } from '../src/ui/nets';
 import type { Doc, Entity } from '../src/pcb/model';
 
 const html = renderToString(createElement(App));
@@ -248,6 +249,31 @@ for (const m of ['lib-preview', 'DIP-8', '0;0']) {
   }));
   if (!empty.includes('Групп пока нет')) throw new Error('вкладка «Группы»: нет подсказки пустого списка');
   if (!empty.includes('disabled')) throw new Error('вкладка «Группы»: кнопки не блокируются без выделения');
+}
+
+// Группы соединений: у каждой группы своё поле ширины дорожки и правила трассировки
+{
+  const nets = [{ id: 'n1', name: 'Питание', pads: ['p1', 'p2'], rules: { w: 1.5 } }, { id: 'n2', name: 'Сигнал', pads: ['p1'] }];
+  const ends = new Map();
+  const pane = renderToString(createElement(NetsPanel, {
+    nets, active: 'n1', setActive: () => {}, onChange: () => {}, onNew: () => {}, onRoute: () => {},
+    ends, comp: new Map(), info: { msg: '', ok: null },
+    defaults: { w: 0.8, clear: 0.4, viaSize: 1.8, viaDrill: 0.8, allowTop: true },
+  }));
+  for (const m of ['Ширина дорожки группы Питание', 'Правила группы', 'Ширина дорожки', 'Зазор до меди',
+    'Переход: Ø, мм', 'Переход: сверло', 'Слои группы', 'Как у всех', 'net-w', 'net-rules', '1.5']) {
+    if (!pane.includes(m)) throw new Error(`группы соединений: не найдено «${m}»`);
+  }
+  const src = readFileSync('src/pcb/netroute.ts', 'utf8');
+  for (const m of ['export function netRouteOpts', 'tryRipUp', 'trunkEnds', 'Сначала самые широкие дорожки']) {
+    if (!src.includes(m)) throw new Error(`netroute.ts: нет «${m}»`);
+  }
+  const model = readFileSync('src/pcb/model.ts', 'utf8');
+  if (!model.includes('export interface NetRules')) throw new Error('model.ts: нет NetRules');
+  const css = readFileSync('src/styles.css', 'utf8');
+  for (const m of ['.net-w', '.net-rules']) {
+    if (!css.includes(m)) throw new Error(`нет стилей правил групп: ${m}`);
+  }
 }
 
 console.log('SSR OK');

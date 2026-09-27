@@ -30,6 +30,8 @@ export interface RouteOpts {
   allowTop: boolean;   // разрешить верхний слой и переходы
   angle: '45' | '90';  // допустимые направления
   edge?: number;       // отступ от края платы, мм (по умолчанию = зазор)
+  crowd?: number;      // «цена тесноты»: 0 — идти вплотную к чужой меди (по умолчанию 0.35)
+  shiftRetry?: boolean; // перебор со сдвигом сетки на полшага, если путь не найден (по умолчанию да)
 }
 
 /** Конечная точка связи */
@@ -55,7 +57,7 @@ export interface RouteResult {
 // ---------------------------------------------------------------------------
 // Геометрия меди: «скелет» (отрезки с радиусом) или полигон.
 
-interface Shape {
+export interface Shape {
   id: string;
   layers: Cu[];
   segs: [number, number, number, number][]; // отрезки скелета
@@ -120,7 +122,7 @@ export function shapeDist(s: Shape, x: number, y: number): number {
 }
 
 /** Расстояние между двумя фигурами (0 — касаются/перекрываются) */
-function shapeShapeDist(a: Shape, b: Shape): number {
+export function shapeShapeDist(a: Shape, b: Shape): number {
   if (a.poly && b.segs.length && inPoly(a.poly, b.segs[0][0], b.segs[0][1])) return 0;
   if (b.poly && a.segs.length && inPoly(b.poly, a.segs[0][0], a.segs[0][1])) return 0;
   let m = Infinity;
@@ -339,17 +341,21 @@ interface Attempt {
 
 function search(
   o: RouteOpts, A: RouteEnd, B: RouteEnd,
-  obst: Shape[], netShapes: Shape[], bounds: [number, number, number, number], margin: number,
+  obst: Shape[], netShapes: Shape[], board: [number, number, number, number], margin: number,
+  off: [number, number] = [0, 0],
 ): Attempt | 'blockA' | 'blockB' | null {
   const st = o.step;
   const edge = o.edge ?? o.clearance;
-  const ix0 = Math.ceil(bounds[0] / st), iy0 = Math.ceil(bounds[1] / st);
-  const ix1 = Math.floor(bounds[2] / st), iy1 = Math.floor(bounds[3] / st);
+  // Сетка может быть сдвинута на долю шага (off) относительно края платы (board):
+  // при грубом шаге узел иногда «не попадает» в свободный промежуток.
+  const ox = off[0] * st, oy = off[1] * st;
+  const ix0 = Math.ceil((board[0] - ox) / st), iy0 = Math.ceil((board[1] - oy) / st);
+  const ix1 = Math.floor((board[2] - ox) / st), iy1 = Math.floor((board[3] - oy) / st);
   const W = ix1 - ix0 + 1, H = iy1 - iy0 + 1;
   if (W < 2 || H < 2) return null;
   const N = W * H;
-  const X = (i: number): number => (ix0 + i) * st;
-  const Y = (j: number): number => (iy0 + j) * st;
+  const X = (i: number): number => (ix0 + i) * st + ox;
+  const Y = (j: number): number => (iy0 + j) * st + oy;
 
   // поле расстояний до чужой меди на каждом слое + до отверстий
   // dist — до дорожек/прочей меди, distH — до объектов с отверстиями
@@ -393,8 +399,9 @@ function search(
   const viaOk = (c: number): boolean => !viaBlock[c] &&
     dist[0][c] >= viaNeed && dist[1][c] >= viaNeed && distH[0][c] >= viaNeedH && distH[1][c] >= viaNeedH;
   const inEdge = (i: number, j: number, need: number): boolean => {
+    // край платы — фактический (board), а не сдвинутая сетка
     const x = X(i), y = Y(j);
-    return x - bounds[0] >= need && bounds[2] - x >= need && y - bounds[1] >= need && bounds[3] - y >= need;
+    return x - board[0] >= need && board[2] - x >= need && y - board[1] >= need && board[3] - y >= need;
   };
 
   // Слои входа: у площадки это всегда K2 (сторона пайки), у SMD — её слой,
@@ -419,6 +426,17 @@ function search(
     return Math.max(0, oct - B.r - st * 1.5);
   };
   const key = (li: number, c: number, d: number): number => (li * N + c) * ND + d;
+  // «Воздух»: движение вплотную к чужой меди мягко штрафуется, чтобы дорожка
+  // шла по свободному месту и оставляла проход следующим связям. Штраф
+  // пропорционален длине шага и ограничен, поэтому кратчайший путь всё ещё
+  // выигрывает, когда обходить далеко.
+  const comfort = trackNeed + Math.max(st * 2, 0.5);
+  const crowdK = o.crowd ?? 0.35;
+  const crowdAt = (li: number, c: number): number => {
+    if (crowdK <= 0) return 0;
+    const d = Math.min(dist[li][c], distH[li][c]);
+    return d >= comfort ? 0 : ((comfort - d) / comfort) * crowdK;
+  };
 
   // стартовые узлы: внутри собственной площадки A (или ближайшие)
   const nodesNear = (P: RouteEnd): number[] => {
@@ -437,7 +455,7 @@ function search(
     for (let j = j1; j <= j2; j++) for (let i = i1; i <= i2; i++)
       if (terminal.length ? terminal.some(s => shapeDist(s, X(i), Y(j)) <= reach + 1e-6) : Math.hypot(X(i) - P.x, Y(j) - P.y) <= rr + 1e-6) out.push(j * W + i);
     if (!out.length) {
-      const i = Math.round(P.x / st) - ix0, j = Math.round(P.y / st) - iy0;
+      const i = Math.round((P.x - ox) / st) - ix0, j = Math.round((P.y - oy) / st) - iy0;
       if (i >= 0 && i < W && j >= 0 && j < H) out.push(j * W + i);
     }
     return out;
@@ -525,7 +543,7 @@ function search(
       const len = (nd & 1 ? Math.SQRT2 : 1) * st;
       const nk = key(li, nc, nd);
       if (closed[nk]) continue;
-      const ng = gk + len * mul[li] + tc;
+      const ng = gk + len * (mul[li] + crowdAt(li, nc)) + tc;
       if (ng < g[nk]) {
         g[nk] = ng; prev[nk] = k;
         heap.push(nk, ng + hr(X(ni), Y(nj)));
@@ -665,29 +683,46 @@ export function autoroute(
   const cells = ((bounds[2] - bounds[0]) / o.step) * ((bounds[3] - bounds[1]) / o.step);
   if (cells > 400_000) return fail('Слишком большая плата для такого мелкого шага — увеличьте шаг сетки трассировки');
 
-  let firstFound: { ents: Entity[]; length: number; vias: number; drc: number } | null = null;
+  interface Found { ents: Entity[]; length: number; vias: number; drc: number }
+  const best: { found: Found | null } = { found: null };
+  let blocked: 'blockA' | 'blockB' | null = null;
+  const consider = (at: Attempt | 'blockA' | 'blockB' | null): boolean => {
+    if (!at || at === 'blockA' || at === 'blockB') return false;
+    const built = buildEnts(o, A, B, at.nodes);
+    const drc = drcCount(o, built.ents, obst);
+    if (!best.found || drc < best.found.drc) best.found = { ...built, drc };
+    return drc === 0;
+  };
   for (const margin of [0, o.step * 0.3, o.step * 0.6]) {
     const at = search(o, A, B, obst, netShapes, bounds, margin);
     if (at === 'blockA' || at === 'blockB') {
-      if (margin === 0) return fail(`${at === 'blockA' ? 'Первая' : 'Вторая'} точка слишком близко к чужой дорожке или отверстию — нельзя подвести дорожку с заданным зазором`);
+      if (margin === 0) { blocked = at; break; }
       continue;
     }
     if (!at) {
       if (margin === 0) break; // без запаса не нашлось — дальше тем более
       continue;
     }
-    const built = buildEnts(o, A, B, at.nodes);
-    const drc = drcCount(o, built.ents, obst);
-    if (!firstFound || drc < firstFound.drc) firstFound = { ...built, drc };
-    if (drc === 0) break;
+    if (consider(at)) break;
   }
-  if (!firstFound) {
+  // Сетка, сдвинутая на полшага: узлы попадают в промежутки, которые при
+  // выравнивании по краю платы остаются «между строк» — особенно заметно на
+  // грубом шаге. Платим за это только при неудаче и на умеренных сетках.
+  if ((!best.found || best.found.drc > 0) && o.shiftRetry !== false && cells <= 200_000 && o.step >= 0.15) {
+    const shifts: [number, number][] = [[0.5, 0.5], [0.5, 0], [0, 0.5]];
+    for (const off of shifts) {
+      if (consider(search(o, A, B, obst, netShapes, bounds, 0, off))) break;
+      if (consider(search(o, A, B, obst, netShapes, bounds, o.step * 0.3, off))) break;
+    }
+  }
+  if (!best.found) {
+    if (blocked) return fail(`${blocked === 'blockA' ? 'Первая' : 'Вторая'} точка слишком близко к чужой дорожке или отверстию — нельзя подвести дорожку с заданным зазором`);
     const why = !o.allowTop
       ? 'Путь только по нижнему слою не найден — разрешите верхний слой и переходы'
       : 'Путь не найден: мешают другие элементы. Уменьшите зазор/ширину или шаг сетки';
     return fail(why);
   }
-  const { ents, length, vias, drc } = firstFound;
+  const { ents, length, vias, drc } = best.found;
   let msg = `Готово: ${length.toFixed(1)} мм, переходов: ${vias}`;
   if (drc) msg += ` · внимание: ${drc} нарушений зазора, проверьте`;
   return { ok: true, ents, length, vias, msg, drc };

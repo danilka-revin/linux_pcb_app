@@ -592,6 +592,11 @@ canvas { display: block; }
 .net-members > div { display: flex; align-items: center; justify-content: space-between; gap: 5px; padding: 3px 0; font-size: 11px; }
 .net-members span { overflow-wrap: anywhere; }
 .net-run { width: 100%; margin-top: 12px; }
+.net-w { display: flex; align-items: center; gap: 3px; color: var(--muted); font-size: 11px; }
+.net-w .txt { width: 54px; padding: 3px 4px; text-align: right; }
+.net-rules { border: 1px dashed var(--line); border-radius: 6px; padding: 2px 8px 8px; margin-top: 10px; }
+.net-rules h4 { margin: 10px 0 0; font-size: 12px; color: var(--text); }
+.net-rules .row { margin-top: 6px; }
 .route-msg { white-space: pre-line; }
 
 /* Перечень типоразмеров площадок и сверловки */

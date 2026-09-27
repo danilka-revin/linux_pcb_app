@@ -384,6 +384,11 @@ export function PropsPanel({
           <NI label="Ширина дорожки, мм" value={defs.rtW} min={0.1} on={(v) => setDefs({ rtW: v })} />
           <NI label="Зазор до дорожек, мм" value={defs.rtClear} min={0.1} on={(v) => setDefs({ rtClear: v })} />
           <NI label="Зазор до отверстий, мм" value={defs.rtHoleClear} min={0.1} on={(v) => setDefs({ rtHoleClear: v })} />
+          <div className="hint" style={{ padding: '4px 2px' }}>
+            Это значения по умолчанию. У каждой группы соединений можно задать свою ширину
+            дорожки и свой зазор: пустое поле правила — общая настройка. Зазор при разводке
+            групп берётся по самому строгому правилу, а широкие дорожки прокладываются первыми.
+          </div>
           <SI label="Шаг сетки трассировки" value={String(defs.rtStep)}
             options={isPresetStep(defs.rtStep)
               ? RT_STEP_OPTIONS
