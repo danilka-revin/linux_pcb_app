@@ -8,12 +8,11 @@ import { NI, SI, TI, TIC } from './widgets';
 import { Ic } from './icons';
 
 export type ToolId =
-  | 'select' | 'edit' | 'cut' | 'solder' | 'track' | 'pad' | 'smd' | 'via' | 'hole' | 'line' | 'rect'
+  | 'select' | 'cut' | 'solder' | 'track' | 'pad' | 'smd' | 'via' | 'hole' | 'line' | 'rect'
   | 'circle' | 'fill' | 'text' | 'ruler' | 'comp' | 'route' | 'probe';
 
 export const TOOLS: { id: ToolId; name: string; icon: string; hint: string }[] = [
-  { id: 'select', name: 'Выбор', icon: 'select', hint: 'ЛКМ — выбрать/двигать · рамка — выделить · Del — удалить · R — повернуть · M — другая сторона · узлы одиночной дорожки можно тянуть прямо здесь, двойной клик по ней — поставить новый узел' },
-  { id: 'edit', name: 'Узлы', icon: 'edit', hint: 'Правка дорожек звеньями: тяни узел — форма меняется · клик или двойной клик по звену — новый узел в этом месте (Alt — без сетки) · двойной клик/ПКМ/Del по узлу — удалить · Esc — снять выбор' },
+  { id: 'select', name: 'Выбор', icon: 'select', hint: 'ЛКМ — выбрать/двигать · рамка — выделить · двойной клик по звену — добавить узел · тяните узел для изменения формы · двойной клик/ПКМ/Del по узлу — удалить · Esc — снять выбор узла' },
   { id: 'cut', name: 'Разрыв', icon: 'cut', hint: 'ЛКМ по дорожке — вырезать зазор под амперметр (ширина задаётся справа) · запаять обратно — инструмент «Пайка»' },
   { id: 'solder', name: 'Пайка', icon: 'solder', hint: 'ЛКМ рядом с двумя концами дорожек на одном слое — соединить их прямой перемычкой' },
   { id: 'route', name: 'Автотрассировка', icon: 'route', hint: 'Две точки или группы соединений — выберите режим справа · вход в площадки по низу (K2), к SMD — по слою площадки' },
@@ -174,7 +173,7 @@ function entityEditor(
       return (<>
         <NI label="Ширина, мм" value={e.w} min={0.05} on={(v) => patch({ w: v })} />
         <SI label="Слой" value={e.layer} options={[['k1', 'Медь верх (K1)'], ['k2', 'Медь низ (K2)']]} on={(v) => patch({ layer: v })} />
-        <div className="sub">Узлов: {e.pts.length}. Форму меняют узлами: тяните квадратные точки прямо здесь или инструментом «Узлы» (E) — там же добавление (клик по звену) и удаление (двойной клик/ПКМ/Del) узлов.</div>
+        <div className="sub">Узлов: {e.pts.length}. В «Выборе» тяните квадратный узел, двойной клик по звену добавляет узел, двойной клик или ПКМ по узлу удаляет его. Выбранный узел также удаляется клавишей Del.</div>
       </>);
     case 'via':
       return (<>
@@ -236,7 +235,7 @@ function entityEditor(
     case 'poly':
       return (<>
         <SI label="Слой" value={e.layer} options={[['k1', 'Медь верх (K1)'], ['k2', 'Медь низ (K2)']]} on={(v) => patch({ layer: v })} />
-        <div className="sub">Вершин: {e.pts.length}. Вершины тяните мышью прямо здесь или инструментом «Узлы» (E).</div>
+        <div className="sub">Вершин: {e.pts.length}. В «Выборе» тяните вершины мышью; двойной клик по стороне добавляет вершину, двойной клик или ПКМ по вершине удаляет её.</div>
       </>);
     case 'comp':
       return (<>
@@ -291,13 +290,12 @@ export function PropsPanel({
   onEditNode?: (x: number, y: number) => void;
   /** удалить выбранный узел */
   onDeleteEditNode?: () => void;
-  /** сообщение инструментов «Узлы» / «Разрыв» / «Пайка» */
+  /** сообщение правки узлов / инструментов «Разрыв» и «Пайка» */
   toolMsg?: { msg: string; ok: boolean | null } | null;
 }) {
   void fmt;
   // --- выделенные элементы ---
-  // (в «Узлах» своя панель даже при выделенной дорожке — там координаты узла)
-  if (selEnts.length > 0 && tool !== 'route' && tool !== 'edit') {
+  if (selEnts.length > 0 && tool !== 'route') {
     const one = selEnts.length === 1 ? selEnts[0] : null;
     return (
       <div className="props">
@@ -305,13 +303,24 @@ export function PropsPanel({
         {one ? entityEditor(one, (p) => patchEnt(one.id, p)) : (
           <div className="sub">Несколько элементов. Общие операции ниже.</div>
         )}
+        {editInfo && <>
+          {editInfo.node != null && onEditNode && <div className="group-box">
+            <h3>Узел {editInfo.node + 1} из {editInfo.pts}</h3>
+            <NI label="X узла, мм" value={editInfo.x} on={(v) => onEditNode(v, editInfo.y)} />
+            <NI label="Y узла, мм" value={editInfo.y} on={(v) => onEditNode(editInfo.x, v)} />
+            {onDeleteEditNode && <div className="row">
+              <button className="btn danger" onClick={onDeleteEditNode} title="Del">Удалить узел</button>
+            </div>}
+          </div>}
+          {toolMsg?.msg && <div className={'route-msg ' + (toolMsg.ok === false ? 'bad' : toolMsg.ok ? 'ok' : '')}>{toolMsg.msg}</div>}
+        </>}
         <div className="row">
           <button className="btn" onClick={doRotate} title="R">Повернуть 90°</button>
           <button className="btn" onClick={doMirror} title="M">На другую сторону</button>
         </div>
         <div className="row">
           <button className="btn" onClick={doDuplicate} title="Ctrl+D">Дублировать</button>
-          <button className="btn danger" onClick={doDelete} title="Del">Удалить</button>
+          <button className="btn danger" onClick={doDelete} title="Удалить выделенные элементы">Удалить элемент</button>
         </div>
         {selGroup ? (
           <div className="group-box">
@@ -451,47 +460,6 @@ export function PropsPanel({
             (считается от края медного пятачка / края отверстия). Оранжевый пунктир на плате —
             граница зоны вокруг отверстий, ближе которой дорожка не пройдёт.
             <span className="kbd">Esc</span>/ПКМ — {routeGroups ? 'закончить набор группы' : 'сбросить первую точку'}, <span className="kbd">Ctrl+Z</span> — отменить {routeGroups ? 'всю разводку' : 'дорожку'}.
-          </div>
-        </div>
-      );
-    case 'edit':
-      return (
-        <div className="props">
-          <h3>Узлы дорожки</h3>
-          {editInfo ? (
-            <>
-              <div className="sub">
-                Узлов: {editInfo.pts}. {editInfo.node !== null && editInfo.node !== undefined
-                  ? `Выбран узел ${editInfo.node + 1}.`
-                  : 'Кликните квадратный узел, чтобы выбрать его.'}
-              </div>
-              {editInfo.node !== null && editInfo.node !== undefined && onEditNode && (
-                <>
-                  <NI label="X узла, мм" value={editInfo.x} on={(v) => onEditNode(v, editInfo.y)} />
-                  <NI label="Y узла, мм" value={editInfo.y} on={(v) => onEditNode(editInfo.x, v)} />
-                  {onDeleteEditNode && (
-                    <div className="row">
-                      <button className="btn danger" onClick={onDeleteEditNode} title="Del">
-                        Удалить узел
-                      </button>
-                    </div>
-                  )}
-                </>
-              )}
-            </>
-          ) : (
-            <div className="sub">Кликните дорожку или полигон — появятся квадратные узлы.</div>
-          )}
-          {toolMsg?.msg && (
-            <div className={'route-msg ' + (toolMsg.ok === false ? 'bad' : toolMsg.ok ? 'ok' : '')}>{toolMsg.msg}</div>
-          )}
-          <div className="hint">
-            Тяните узел мышью — звенья перестроятся (привязка к сетке, <span className="kbd">Alt</span> —
-            без неё, <span className="kbd">Shift</span> — строго по горизонтали/вертикали).
-            Узел ставится в любом месте звена: клик — и сразу тянуть, двойной клик —
-            поставить на месте (с <span className="kbd">Alt</span> — без сетки).
-            Удалить узел: двойной клик, правая кнопка или
-            <span className="kbd"> Del</span>. <span className="kbd">Esc</span> — снять выбор.
           </div>
         </div>
       );

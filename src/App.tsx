@@ -131,25 +131,10 @@ type Drag =
   | { mode: 'pan'; startPx: { x: number; y: number }; view0: View }
   | { mode: 'move'; startWorld: M.Pt; doc0: M.Doc; moved: boolean }
   | { mode: 'marquee'; startWorld: M.Pt; curWorld: M.Pt }
-  | {
-      mode: 'node'; entId: string; idx: number; doc0: M.Doc; moved: boolean;
-      inserted: boolean; startWorld: M.Pt;
-      /** состояние платы, от которого считается перетаскивание (совпадает с doc0,
-       *  кроме случая «клик по звену поставил узел» — там doc0 ещё без узла) */
-      base?: M.Doc;
-    };
-
-/**
- * Сколько миллисекунд после вставки узла кликом второй клик считается
- * продолжением того же двойного щелчка (и не удаляет свежий узел).
- */
-const DBL_GRACE_MS = 600;
+  | { mode: 'node'; entId: string; idx: number; doc0: M.Doc; moved: boolean; startWorld: M.Pt };
 
 /** Что писать справа после того, как узел поставлен двойным кликом. */
-const NODE_HINT: Record<string, string> = {
-  edit: 'Узел поставлен: тяните его мышью или задайте X/Y справа.',
-  select: 'Узел поставлен — тяните его мышью. Точная правка узлов: инструмент «Узлы» (E).',
-};
+const NODE_HINT = 'Узел поставлен — тяните его мышью или задайте X/Y справа.';
 
 const AUTOSAVE_KEY = 'lauaut.autosave';
 const QUERY_KEY = 'lauaut.genQuery';
@@ -213,7 +198,7 @@ const PINNED_GROUPS: string[] = ['undo'];
  * Группы дока разделены тонкими линиями: выбор и анализ → медь → графика → прочее.
  */
 const TOOL_GROUPS: ToolId2[][] = [
-  ['select', 'edit'],
+  ['select'],
   ['route', 'probe'],
   ['track', 'cut', 'solder', 'pad', 'smd', 'via', 'hole'],
   ['line', 'rect', 'circle', 'fill', 'text'],
@@ -223,7 +208,7 @@ const TOOL_GROUPS: ToolId2[][] = [
 const TOOL_KEYS: Partial<Record<ToolId2, string>> = {
   select: '1', track: '2', pad: '3', via: '4', hole: '5',
   line: '6', text: '7', ruler: '8', route: '9', probe: '0',
-  edit: 'E', cut: 'X', solder: 'S',
+  cut: 'X', solder: 'S',
 };
 
 /** Вкладки левой колонки: «Слои», «Детали» (генератор + личная библиотека) и «Группы». */
@@ -391,10 +376,9 @@ export default function App({ cloudUser, onLogout }: { cloudUser?: CloudUser; on
   const [cloudMessage, setCloudMessage] = useState('');
   const [sel, setSel] = useState<Set<string>>(new Set());
   const [tool, setToolRaw] = useState<ToolId2>('select');
-  // правка дорожек звеньями: какая дорожка/полигон правится и какой узел выбран
-  const [trackEditId, setTrackEditId] = useState<string | null>(null);
+  // Выбранный узел одиночной дорожки/полигона в инструменте «Выбор».
   const [editNode, setEditNode] = useState<number | null>(null);
-  // сообщения инструментов «Узлы» / «Разрыв» / «Пайка» (показываются справа)
+  // сообщения правки узлов / инструментов «Разрыв» и «Пайка» (показываются справа)
   const [trackMsg, setTrackMsg] = useState<{ msg: string; ok: boolean | null }>({ msg: '', ok: null });
   const [draft, setDraft] = useState<Draft | null>(null);
   const [view, setView] = useState<View>({ s: 8, ox: 80, oy: 500, mir: false });
@@ -586,9 +570,8 @@ export default function App({ cloudUser, onLogout }: { cloudUser?: CloudUser; on
     pruneSel(prev);
     setDraft(null);
     setRouteA(null); setRouteMsg({ msg: '', ok: null });
-    // правка узлов привязана к геометрии: узел сбрасываем, дорожку проверяем
+    // Индекс узла после отмены может указывать на другую геометрию.
     setEditNode(null);
-    setTrackEditId((id) => (id && prev.entities.some((e) => e.id === id) ? id : null));
     setTrackMsg({ msg: '', ok: null });
   }, [doc, pruneSel]);
 
@@ -601,7 +584,6 @@ export default function App({ cloudUser, onLogout }: { cloudUser?: CloudUser; on
     setDraft(null);
     setRouteA(null); setRouteMsg({ msg: '', ok: null });
     setEditNode(null);
-    setTrackEditId((id) => (id && next.entities.some((e) => e.id === id) ? id : null));
     setTrackMsg({ msg: '', ok: null });
   }, [doc, pruneSel]);
 
@@ -761,12 +743,15 @@ export default function App({ cloudUser, onLogout }: { cloudUser?: CloudUser; on
   }, [doc, entVisible, view.s]);
 
   // ---------------- правка дорожек звеньями (как в Sprint-Layout) ----------------
-  /** дорожка/полигон, чьи узлы сейчас правятся (инструмент «Узлы») */
+  /** Узлы видны только у одиночной выбранной дорожки/полигона. */
   const editEnt = useMemo(() => {
-    if (!trackEditId) return null;
-    const e = doc.entities.find((x) => x.id === trackEditId);
+    if (tool !== 'select' || sel.size !== 1) return null;
+    const e = doc.entities.find((x) => sel.has(x.id));
     return e && (e.kind === 'track' || e.kind === 'poly') ? e : null;
-  }, [doc, trackEditId]);
+  }, [doc, sel, tool]);
+  const selectedNodeOwner = editEnt?.id ?? null;
+  // Смена выделенной дорожки/полигона не должна оставлять индекс узла от предыдущего.
+  useEffect(() => { setEditNode(null); }, [selectedNodeOwner]);
 
   /** индекс узла под курсором (квадратики ~7 px) — null, если рядом узлов нет */
   const findNode = useCallback((ent: M.Entity, p: M.Pt): number | null => {
@@ -791,26 +776,13 @@ export default function App({ cloudUser, onLogout }: { cloudUser?: CloudUser; on
     // иначе при крупной сетке клик по дорожке перестал бы работать
     const sp = snapPt(raw, alt);
     const spot = nearestOnPts(ent.pts, sp, closed) ?? near;
-    // дрогнувший двойной клик не должен плодить два узла рядом: если первый клик
-    // только что поставил узел этой дорожки ближе полшага сетки — берём его же
-    const freshIdx = lastInsert.current && lastInsert.current.entId === ent.id
-      && Date.now() - lastInsert.current.at < DBL_GRACE_MS
-      ? lastInsert.current.idx
-      : null;
-    const prev = freshIdx != null ? ent.pts[freshIdx] : undefined;
-    if (prev && Math.hypot(prev.x - spot.pt.x, prev.y - spot.pt.y) <= Math.max(defs.grid, 0.1) / 2)
-      return { idx: freshIdx!, before: doc, next: doc, added: false as boolean };
-    const before = M.cloneDoc(doc);
     const ins = insertNode(ent.pts, spot.seg, spot.pt);
     const next = M.cloneDoc(doc);
     const t = next.entities.find((x) => x.id === ent.id);
     if (!t || (t.kind !== 'track' && t.kind !== 'poly')) return null;
     t.pts = ins.pts;
-    return { idx: ins.idx, before, next, added: ins.pts.length !== ent.pts.length };
-  }, [doc, snapPt, segTol, defs.grid]);
-
-  /** узел, поставленный кликом: второй клик того же двойного щелчка не должен его стирать */
-  const lastInsert = useRef<{ entId: string; idx: number; at: number } | null>(null);
+    return { idx: ins.idx, next, added: ins.pts.length !== ent.pts.length };
+  }, [doc, snapPt, segTol]);
 
   /** удалить узел (двойной клик / ПКМ / Del / кнопка справа) — одним действием в истории */
   const deleteEditNode = useCallback((entId: string, idx: number) => {
@@ -821,7 +793,7 @@ export default function App({ cloudUser, onLogout }: { cloudUser?: CloudUser; on
       setTrackMsg({
         msg: ent.kind === 'poly'
           ? 'У полигона минимум 3 вершины — дальше только удалять целиком.'
-          : 'У дорожки минимум 2 узла — удалите её целиком (Del в «Выборе»).',
+          : 'У дорожки минимум 2 узла — снимите выбор узла (Esc) и удалите дорожку (Del).',
         ok: false,
       });
       return;
@@ -836,13 +808,13 @@ export default function App({ cloudUser, onLogout }: { cloudUser?: CloudUser; on
 
   /** двигать выбранный узел числами (поля справа) */
   const patchEditNode = useCallback((x: number, y: number) => {
-    if (!trackEditId || editNode == null) return;
+    if (!editEnt || editNode == null) return;
     const nd = M.cloneDoc(doc);
-    const t = nd.entities.find((e) => e.id === trackEditId);
+    const t = nd.entities.find((e) => e.id === editEnt.id);
     if (!t || (t.kind !== 'track' && t.kind !== 'poly') || !t.pts[editNode]) return;
     t.pts[editNode] = { x, y };
     commit(nd);
-  }, [doc, commit, trackEditId, editNode]);
+  }, [doc, commit, editEnt, editNode]);
 
   /** «Разрыв»: вырезать зазор под амперметр в точке клика */
   const cutAt = (w: M.Pt) => {
@@ -994,12 +966,7 @@ export default function App({ cloudUser, onLogout }: { cloudUser?: CloudUser; on
   }, [draft, addEnts, activeCu]);
 
   const finishOrCancel = useCallback(() => {
-    // в «Узлах» Esc/ПКМ сначала снимает узел, потом — дорожку (оставаясь в инструменте)
-    if (editNode != null) { setEditNode(null); return; }
-    if (trackEditId) {
-      setTrackEditId(null); setEditNode(null);
-      if (tool === 'edit') { setSel(new Set()); setTrackMsg({ msg: '', ok: null }); return; }
-    }
+    if (editNode != null && tool === 'select') { setEditNode(null); setTrackMsg({ msg: '', ok: null }); return; }
     if (tool === 'route' && routeMode === 'nets' && activeNet) { setActiveNet(null); return; }
     if (routeA) { setRouteA(null); setRouteMsg({ msg: '', ok: null }); return; }
     if (draft?.t === 'track') { commitTrack(); return; }
@@ -1010,21 +977,11 @@ export default function App({ cloudUser, onLogout }: { cloudUser?: CloudUser; on
     if (probe) { setProbe(null); return; }
     if (sel.size) { setSel(new Set()); }
     setTrackMsg({ msg: '', ok: null });
-  }, [draft, commitTrack, commitPoly, pasteTpl, place, probe, sel.size, routeA, activeNet, routeMode, tool, trackEditId, editNode]);
+  }, [draft, commitTrack, commitPoly, pasteTpl, place, probe, sel.size, routeA, activeNet, routeMode, tool, editNode]);
 
   const setTool = useCallback((t: ToolId2) => {
     if (t !== tool) { finishOrCancel(); setToolRaw(t); }
-    if (t === 'edit') {
-      // зашли в «Узлы» с выбранной дорожкой — сразу править её
-      if (selRef.current.size === 1) {
-        const id = [...selRef.current][0];
-        const e = docRef.current.entities.find((x) => x.id === id);
-        if (e && (e.kind === 'track' || e.kind === 'poly')) { setTrackEditId(id); setEditNode(null); }
-      }
-    } else {
-      // finishOrCancel мог снять только узел — при уходе из инструмента чистим всё
-      setTrackEditId(null); setEditNode(null);
-    }
+    setEditNode(null);
     setTrackMsg({ msg: '', ok: null });
     if (t === 'route') setSel(new Set());
   }, [tool, finishOrCancel]);
@@ -1061,7 +1018,7 @@ export default function App({ cloudUser, onLogout }: { cloudUser?: CloudUser; on
     nd.groups = pruneGroups(nd.groups, new Set(nd.entities.map((e) => e.id)));
     commit(nd);
     setSel(new Set());
-    setTrackEditId(null); setEditNode(null);
+    setEditNode(null);
   }, [doc, commit]);
 
   const duplicateSel = useCallback(() => {
@@ -1759,12 +1716,10 @@ export default function App({ cloudUser, onLogout }: { cloudUser?: CloudUser; on
     const sp = terminal ? { x: terminal.x, y: terminal.y } : snapPt(w, e.altKey);
 
     if (e.button === 2) {
-      // в «Узлах» правая кнопка по узлу удаляет его, мимо — снимает правку
-      if (tool === 'edit' && editEnt) {
+      // ПКМ по узлу выбранной дорожки удаляет узел; в остальных местах — отмена.
+      if (editEnt) {
         const ni = findNode(editEnt, w);
-        if (ni != null) deleteEditNode(editEnt.id, ni);
-        else { setTrackEditId(null); setEditNode(null); setSel(new Set()); }
-        return;
+        if (ni != null) { deleteEditNode(editEnt.id, ni); return; }
       }
       finishOrCancel(); return;
     }
@@ -1775,17 +1730,17 @@ export default function App({ cloudUser, onLogout }: { cloudUser?: CloudUser; on
 
     switch (tool) {
       case 'select': {
-        // узел одиночной дорожки/полигона тянется прямо в «Выборе», как в Sprint-Layout
-        if (sel.size === 1 && !e.shiftKey) {
-          const only = doc.entities.find((x) => sel.has(x.id));
-          if (only && (only.kind === 'track' || only.kind === 'poly')) {
-            const ni = findNode(only, w);
-            if (ni != null) {
-              drag.current = { mode: 'node', entId: only.id, idx: ni, doc0: M.cloneDoc(doc), moved: false, inserted: false, startWorld: w };
-              break;
-            }
+        // Узел одиночной дорожки/полигона выбирается и тянется прямо здесь.
+        if (editEnt && !e.shiftKey) {
+          const ni = findNode(editEnt, w);
+          if (ni != null) {
+            setEditNode(ni);
+            drag.current = { mode: 'node', entId: editEnt.id, idx: ni, doc0: M.cloneDoc(doc), moved: false, startWorld: w };
+            break;
           }
         }
+        setEditNode(null);
+        setTrackMsg({ msg: '', ok: null });
         const hitId = hitAt(w);
         if (hitId) {
           // клик по элементу группы выбирает (и двигает) всю группу
@@ -1805,45 +1760,6 @@ export default function App({ cloudUser, onLogout }: { cloudUser?: CloudUser; on
         } else {
           if (!e.shiftKey) setSel(new Set());
           drag.current = { mode: 'marquee', startWorld: w, curWorld: w };
-        }
-        break;
-      }
-      case 'edit': {
-        // узел правимой дорожки — тянуть
-        if (editEnt) {
-          const ni = findNode(editEnt, w);
-          if (ni != null) {
-            setEditNode(ni);
-            drag.current = { mode: 'node', entId: editEnt.id, idx: ni, doc0: M.cloneDoc(doc), moved: false, inserted: false, startWorld: w };
-            break;
-          }
-        }
-        const hitId = hitAt(w);
-        const hit = hitId ? doc.entities.find((x) => x.id === hitId) : undefined;
-        if (hit && (hit.kind === 'track' || hit.kind === 'poly')) {
-          const ins = insertNodeAtEnt(hit, w, e.altKey);
-          if (ins) {
-            // клик по звену: новый узел в точке клика — и сразу тянуть его
-            lastInsert.current = { entId: hit.id, idx: ins.idx, at: Date.now() };
-            setDoc(ins.next);
-            setTrackEditId(hit.id);
-            setSel(new Set([hit.id]));
-            setEditNode(ins.idx);
-            setTrackMsg({ msg: '', ok: null });
-            drag.current = {
-              mode: 'node', entId: hit.id, idx: ins.idx, doc0: ins.before, base: ins.next,
-              moved: false, inserted: ins.added, startWorld: w,
-            };
-          } else {
-            setTrackEditId(hit.id);
-            setSel(new Set([hit.id]));
-            setEditNode(null);
-          }
-        } else {
-          // мимо или по другому элементу: выйти из правки, выбрать как обычно
-          setTrackEditId(null);
-          setEditNode(null);
-          setSel(hitId ? expandSelection(doc.groups, [hitId]) : new Set());
         }
         break;
       }
@@ -1989,11 +1905,11 @@ export default function App({ cloudUser, onLogout }: { cloudUser?: CloudUser; on
       d.moved = true;
       let target = snapPt({ x: m.rx, y: m.ry }, m.alt);
       if (m.sh) {
-        const origin = (d.base ?? d.doc0).entities.find((x) => x.id === d.entId);
+        const origin = d.doc0.entities.find((x) => x.id === d.entId);
         const start = origin && (origin.kind === 'track' || origin.kind === 'poly') ? origin.pts[d.idx] : null;
         if (start) target = Math.abs(mdx) >= Math.abs(mdy) ? { x: target.x, y: start.y } : { x: start.x, y: target.y };
       }
-      const nd = M.cloneDoc(d.base ?? d.doc0);
+      const nd = M.cloneDoc(d.doc0);
       const t = nd.entities.find((x) => x.id === d.entId);
       if (t && (t.kind === 'track' || t.kind === 'poly') && t.pts[d.idx]) {
         t.pts[d.idx] = target;
@@ -2026,8 +1942,7 @@ export default function App({ cloudUser, onLogout }: { cloudUser?: CloudUser; on
       future.current = [];
       setDoc((cur) => cur);
     } else if (d.mode === 'node') {
-      // вставка узла и его перетаскивание — одно действие в истории
-      if (d.moved || d.inserted) {
+      if (d.moved) {
         past.current.push(d.doc0);
         if (past.current.length > 100) past.current.shift();
         future.current = [];
@@ -2050,17 +1965,11 @@ export default function App({ cloudUser, onLogout }: { cloudUser?: CloudUser; on
     }
   };
 
-  /**
-   * Двойной клик по дорожке/полигону ставит узел в этом месте (привязка к сетке,
-   * Alt — без неё), а по уже существующему узлу — удаляет его.
-   * Первый клик двойного щелчка в «Узлах» узел уже ставит и начинает тянуть,
-   * поэтому свежепоставленный узел второй клик не трогает.
-   */
+  /** Двойной клик по звену добавляет узел, по существующему узлу — удаляет. */
   const onDblClick = (e: React.MouseEvent<HTMLCanvasElement>) => {
     if (draft?.t === 'track') { commitTrack(); return; }
     if (draft?.t === 'poly') { commitPoly(); return; }
-    // узлы ставим только там, где они и правятся: «Узлы» (E) и «Выбор» (1)
-    if (tool !== 'edit' && tool !== 'select') return;
+    if (tool !== 'select') return;
 
     const { px, py } = getPos(e);
     const p = toWorld(view, px, py);
@@ -2068,46 +1977,24 @@ export default function App({ cloudUser, onLogout }: { cloudUser?: CloudUser; on
       !!en && (en.kind === 'track' || en.kind === 'poly');
     const hitId = hitAt(p);
     const hit = hitId ? doc.entities.find((x) => x.id === hitId) : undefined;
-    // сначала то, что прямо под курсором; иначе — правимая («Узлы») или
-    // одиночная выбранная («Выбор») дорожка: узел ставится и под деталями на плате
-    let target: M.Track | M.Poly | null = isSeg(hit) ? hit : null;
-    if (!target && tool === 'edit') target = editEnt;
-    if (!target && tool === 'select' && sel.size === 1) {
-      const only = doc.entities.find((x) => sel.has(x.id));
-      if (isSeg(only)) target = only;
-    }
-    if (!target) return;
+    // Выбранная дорожка остаётся доступной даже под деталями на плате.
+    const target: M.Track | M.Poly | null = isSeg(hit) ? hit : editEnt;
+    if (!target || sel.size !== 1 || !sel.has(target.id)) return;
 
-    const fresh = lastInsert.current && lastInsert.current.entId === target.id
-      && Date.now() - lastInsert.current.at < DBL_GRACE_MS
-      ? lastInsert.current.idx
-      : null;
     const act = nodeAction(target.pts, p, {
       closed: target.kind === 'poly',
       hitTol: segTol(target),
       nodeTol: 7 / view.s,
-      justInserted: fresh,
     });
     if (!act) return;
 
     if (act.kind === 'delete') { deleteEditNode(target.id, act.idx); return; }
-    if (act.kind === 'keep') {
-      // узел поставил первый клик — просто оставляем его выбранным
-      setEditNode(act.idx);
-      setTrackMsg({ msg: NODE_HINT[tool], ok: true });
-      return;
-    }
-
+    if (act.kind !== 'insert') return;
     const ins = insertNodeAtEnt(target, p, e.altKey);
     if (!ins) return;
-    lastInsert.current = { entId: target.id, idx: ins.idx, at: Date.now() };
-    if (tool === 'edit') setTrackEditId(target.id);
-    // в «Выборе» не сужаем выделение: первый клик мог выбрать всю группу
-    if (tool === 'edit' || !sel.has(target.id)) setSel(new Set([target.id]));
     setEditNode(ins.idx);
-    // узел в этой точке уже стоял — историю лишним шагом не мусорим
     if (ins.added) commit(ins.next);
-    setTrackMsg({ msg: NODE_HINT[tool], ok: true });
+    setTrackMsg({ msg: NODE_HINT, ok: true });
   };
 
   const onWheel = (e: React.WheelEvent<HTMLCanvasElement>) => {
@@ -2148,8 +2035,8 @@ export default function App({ cloudUser, onLogout }: { cloudUser?: CloudUser; on
     switch (e.code) {
       case 'Escape': finishOrCancel(); break;
       case 'Delete': case 'Backspace':
-        // в «Узлах» Del стирает выбранный узел, а не всю дорожку
-        if (tool === 'edit' && editNode != null && trackEditId) deleteEditNode(trackEditId, editNode);
+        // В «Выборе» Del удаляет узел, если он выбран, иначе — элементы.
+        if (tool === 'select' && editNode != null && editEnt) deleteEditNode(editEnt.id, editNode);
         else deleteSel();
         break;
       case 'KeyR':
@@ -2192,7 +2079,6 @@ export default function App({ cloudUser, onLogout }: { cloudUser?: CloudUser; on
       case 'Digit8': setTool('ruler'); break;
       case 'Digit9': setTool('route'); break;
       case 'Digit0': setTool('probe'); break;
-      case 'KeyE': setTool('edit'); break;
       case 'KeyX': setTool('cut'); break;
       case 'KeyS': setTool('solder'); break;
       case 'ArrowLeft': nudge(-stepNudge, 0); e.preventDefault(); break;
@@ -2213,7 +2099,7 @@ export default function App({ cloudUser, onLogout }: { cloudUser?: CloudUser; on
     dialog, routeVariants, doc, undo, redo, savePrimary, copySel, startPaste, duplicateSel, finishOrCancel,
     deleteSel, place, preview, rotateSel, mirrorSel, draft, activeCu, mouse.wx, mouse.wy, fit,
     zoomAt, size, nudge, defs.grid, defs.gridUnit, defs.snapOn, setDefs, setTool, groupSel, ungroupSel,
-    tool, trackEditId, editNode, deleteEditNode,
+    tool, editEnt, editNode, deleteEditNode,
   ]);
 
   const keyRef = useRef(keyHandler);
@@ -2545,17 +2431,13 @@ export default function App({ cloudUser, onLogout }: { cloudUser?: CloudUser; on
         ctx.setLineDash([]);
       }
 
-      // узлы дорожек-звеньев: в «Узлах» — редактируемая, в «Выборе» — одиночная выбранная
+      // Узлы видны у одиночной выбранной дорожки/полигона в «Выборе».
       {
-        const nodeEnt: M.Entity | null | undefined = tool === 'edit'
-          ? editEnt
-          : tool === 'select' && sel.size === 1
-            ? doc.entities.find((e) => sel.has(e.id))
-            : null;
-        if (nodeEnt && (nodeEnt.kind === 'track' || nodeEnt.kind === 'poly')) {
+        const nodeEnt = editEnt;
+        if (nodeEnt) {
           const closed = nodeEnt.kind === 'poly';
           // кружок-перекрестие в месте будущего узла, когда курсор над звеном
-          if ((tool === 'edit' || tool === 'select') && mouse.px >= 0 && mouse.py >= 0 && !drag.current) {
+          if (mouse.px >= 0 && mouse.py >= 0 && !drag.current) {
             const cur = { x: mouse.rx, y: mouse.ry };
             const overNode = nodeEnt.pts.some((q) => Math.hypot(q.x - cur.x, q.y - cur.y) <= 7 / view.s);
             if (!overNode) {
@@ -2577,7 +2459,7 @@ export default function App({ cloudUser, onLogout }: { cloudUser?: CloudUser; on
           }
           nodeEnt.pts.forEach((p, i) => {
             const q = toPx(p.x, p.y);
-            const isSel = tool === 'edit' && i === editNode;
+            const isSel = i === editNode;
             const r = isSel ? 5 : 4;
             ctx.fillStyle = isSel ? COLORS.sel : CANVAS_UI.labelBg;
             ctx.strokeStyle = COLORS.sel;
@@ -3150,14 +3032,14 @@ export default function App({ cloudUser, onLogout }: { cloudUser?: CloudUser; on
           textRot={defs.textRot} setTextRot={(r) => setDefs({ textRot: r })}
           routeGroups={routeMode === 'nets'}
           routeInfo={{ ...routeMsg, msg: routeMode === 'nets' ? '' : routeMsg.msg, picking: routeA ? 'b' : 'a' }}
-          editInfo={tool === 'edit' && editEnt ? {
+          editInfo={editEnt ? {
             pts: editEnt.pts.length,
             node: editNode,
             x: editNode != null ? editEnt.pts[editNode]?.x ?? 0 : 0,
             y: editNode != null ? editEnt.pts[editNode]?.y ?? 0 : 0,
           } : null}
           onEditNode={patchEditNode}
-          onDeleteEditNode={trackEditId && editNode != null ? () => deleteEditNode(trackEditId, editNode) : undefined}
+          onDeleteEditNode={editEnt && editNode != null ? () => deleteEditNode(editEnt.id, editNode) : undefined}
           toolMsg={trackMsg.msg ? trackMsg : null}
         />
         <GridQuickPanel
@@ -3171,7 +3053,7 @@ export default function App({ cloudUser, onLogout }: { cloudUser?: CloudUser; on
     selEnts, place, placeRot, placeSide, view.s, changeNets, routeAll, patchEnt, rotateSel,
     mirrorSel, duplicateSel, deleteSel, setDocSize, setDefs, saveSelFromProps,
     selGroup, canGroupSel, groupSel, ungroupSel, renameGroupCb,
-    editEnt, trackEditId, editNode, trackMsg, patchEditNode, deleteEditNode,
+    editEnt, editNode, trackMsg, patchEditNode, deleteEditNode,
   ]);
 
   // ---------------- разметка ----------------
