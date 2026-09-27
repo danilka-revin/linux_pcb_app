@@ -8,6 +8,9 @@ import { GenPanel, MacroTree, genSpecText } from '../src/ui/genpanel';
 import { addMacro, buildTree, createFolder, emptyStore, makeMacro } from '../src/pcb/userlib';
 import { generate } from '../src/pcb/gen';
 import { LibPreviewDialog } from '../src/ui/libpreview';
+import { PropsPanel, type Defs } from '../src/ui/panels';
+import { GroupsPanel } from '../src/ui/groups';
+import type { Doc, Entity } from '../src/pcb/model';
 
 const html = renderToString(createElement(App));
 console.log('SSR длина:', html.length);
@@ -170,4 +173,81 @@ const pv = renderToString(createElement(LibPreviewDialog, {
 for (const m of ['lib-preview', 'DIP-8', '0;0']) {
   if (!pv.includes(m)) throw new Error(`окно предпросмотра: не найдено «${m}»`);
 }
+// группировка элементов: кнопки в шапке, вкладка «Группы», горячие клавиши
+{
+  for (const m of ['Сгруппировать', 'Разгруппировать', 'Ctrl+Shift+G', 'Ctrl+Shift+U', 'Группы']) {
+    if (!html.includes(m)) throw new Error(`группировка: в шапке/колонках не найдено «${m}»`);
+  }
+  const app = readFileSync('src/App.tsx', 'utf8');
+  for (const m of [
+    "case 'KeyG': if (e.shiftKey) groupSel(); else setDialog('grid');",
+    "case 'KeyU': if (e.shiftKey) { ungroupSel(); e.preventDefault(); } return;",
+    'expandSelection(doc.groups, ns)',
+    'nd.groups = pruneGroups(nd.groups',
+  ]) {
+    if (!app.includes(m)) throw new Error(`группировка: в App.tsx нет «${m}»`);
+  }
+  const css = readFileSync('src/styles.css', 'utf8');
+  for (const m of ['.groups-pane', '.grp {', '.grp-name', '.group-box']) {
+    if (!css.includes(m)) throw new Error(`нет стилей группировки: ${m}`);
+  }
+}
+
+// панель свойств: блок группы у выделенной группы и кнопка группировки без группы
+{
+  const ents: Entity[] = [
+    { id: 'p1', kind: 'pad', x: 5, y: 5, shape: 'round', size: 1.9, drill: 0.9 },
+    { id: 'p2', kind: 'pad', x: 10, y: 5, shape: 'round', size: 1.9, drill: 0.9 },
+  ];
+  const doc: Doc = {
+    name: 'Тест', w: 40, h: 30, entities: ents,
+    groups: [{ id: 'g1', name: 'Узел А', ids: ['p1', 'p2'] }],
+  };
+  const base = {
+    tool: 'select' as const, defs: { grid: 1.27 } as Defs, setDefs: () => {},
+    activeCu: 'k1' as const, setActiveCu: () => {}, selEnts: ents, patchEnt: () => {},
+    doRotate: () => {}, doMirror: () => {}, doDuplicate: () => {}, doDelete: () => {},
+    doc, setDocSize: () => {}, placeRot: 0, placeSide: 'top' as const,
+    setPlaceRot: () => {}, setPlaceSide: () => {}, cancelPlace: () => {},
+    textRot: 0, setTextRot: () => {}, onRenameGroup: () => {},
+  };
+  const withGroup = renderToString(createElement(PropsPanel, {
+    ...base, selGroup: doc.groups![0], onUngroup: () => {},
+  }));
+  // «Выделено: 2 · Узел А» — React разделяет текстовые узлы комментариями, поэтому без числа
+  for (const m of ['Узел А', 'Разгруппировать', 'связаны в группу', 'Выделено: ']) {
+    if (!withGroup.includes(m)) throw new Error(`панель свойств с группой: не найдено «${m}»`);
+  }
+  if (!withGroup.includes('group-box')) throw new Error('панель свойств: нет блока группы');
+
+  const noGroup = renderToString(createElement(PropsPanel, { ...base, selGroup: null, onGroup: () => {} }));
+  if (!noGroup.includes('Сгруппировать')) throw new Error('панель свойств: нет кнопки «Сгруппировать»');
+  if (noGroup.includes('Разгруппировать')) throw new Error('панель свойств: разгруппировка без группы');
+
+  const oneEnt = renderToString(createElement(PropsPanel, { ...base, selEnts: ents.slice(0, 1), selGroup: null }));
+  if (oneEnt.includes('Сгруппировать')) throw new Error('панель свойств: группировка доступна для одного элемента');
+}
+
+// вкладка «Группы»: список с именами, числом элементов и разгруппировкой
+{
+  const groups = [
+    { id: 'g1', name: 'Узел А', ids: ['p1', 'p2'] },
+    { id: 'g2', name: 'Крепёж', ids: ['h1', 'h2', 'h3'] },
+  ];
+  const pane = renderToString(createElement(GroupsPanel, {
+    groups, selGroup: groups[0], canGroup: true, canUngroup: true,
+    onGroup: () => {}, onSelect: () => {}, onUngroup: () => {}, onUngroupAll: () => {}, onRename: () => {},
+  }));
+  for (const m of ['Узел А', 'Крепёж', '2 элемента', '3 элемента', '2 группы',
+    'Сгруппировать выделенное', 'Разгруппировать', 'grp-name']) {
+    if (!pane.includes(m)) throw new Error(`вкладка «Группы»: не найдено «${m}»`);
+  }
+  const empty = renderToString(createElement(GroupsPanel, {
+    groups: [], selGroup: null, canGroup: false, canUngroup: false,
+    onGroup: () => {}, onSelect: () => {}, onUngroup: () => {}, onUngroupAll: () => {}, onRename: () => {},
+  }));
+  if (!empty.includes('Групп пока нет')) throw new Error('вкладка «Группы»: нет подсказки пустого списка');
+  if (!empty.includes('disabled')) throw new Error('вкладка «Группы»: кнопки не блокируются без выделения');
+}
+
 console.log('SSR OK');

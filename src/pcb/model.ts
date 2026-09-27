@@ -126,12 +126,25 @@ export interface Net {
   pads: string[];
 }
 
+/**
+ * Группа элементов: выбранные примитивы связаны и дальше выбираются, двигаются,
+ * поворачиваются и удаляются вместе (см. src/pcb/group.ts).
+ * Группы не пересекаются: элемент входит не более чем в одну группу.
+ */
+export interface Group {
+  id: string;
+  name: string;
+  /** id элементов верхнего уровня документа */
+  ids: string[];
+}
+
 export interface Doc {
   name: string;
   w: number; // ширина платы, мм
   h: number; // высота платы, мм
   entities: Entity[];
   nets?: Net[]; // сохраняются в проекте JSON, не в Sprint-Layout
+  groups?: Group[]; // сохраняются в проекте JSON, не в Sprint-Layout
 }
 
 export const LAYERS: { id: LayerId; ru: string; short: string; color: string }[] = [

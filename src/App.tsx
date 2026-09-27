@@ -13,6 +13,10 @@ import {
 } from './pcb/userlib';
 import { generate } from './pcb/gen';
 import {
+  expandSelection, groupBBox, groupIndex, groupSelection,
+  pruneGroups, remapGroups, renameGroup, ungroupAll, ungroupSelection,
+} from './pcb/group';
+import {
   CANVAS_UI, COLORS, drawEnt, drawFlat, renderPrint, setCanvasTheme, toWorld, zOrdered,
   type ThemeId, type View,
 } from './pcb/render';
@@ -38,6 +42,7 @@ import {
   type Defs, type ToolId,
 } from './ui/panels';
 import { GenPanel, MacroTree, genSpecText } from './ui/genpanel';
+import { GroupsPanel } from './ui/groups';
 import { FootprintCatalog, type CatalogSelection } from './ui/catalog';
 import {
   AboutDialog, ColorsDialog, ExportDialog, NewBoardDialog, PanelizeDialog, type ExportPngOpts,
@@ -162,6 +167,7 @@ const GROUP_DEFS: { id: string; label: string }[] = [
   { id: 'gen', label: 'Генератор деталей' },
   { id: 'undo', label: 'Отмена / повтор' },
   { id: 'tools', label: 'Инструменты (вертикальный док у холста)' },
+  { id: 'group', label: 'Группировка элементов' },
   { id: 'grid', label: 'Сетка и углы' },
   { id: 'layer', label: 'Слой K1 / K2' },
   { id: 'view', label: 'Вид' },
@@ -195,12 +201,13 @@ const TOOL_KEYS: Partial<Record<ToolId2, string>> = {
   line: '6', text: '7', ruler: '8', route: '9', probe: '0',
 };
 
-/** Вкладки левой колонки: «Слои» и «Детали» (генератор + личная библиотека). */
+/** Вкладки левой колонки: «Слои», «Детали» (генератор + личная библиотека) и «Группы». */
 const LEFT_TABS: { id: LeftTabId; label: string }[] = [
   { id: 'layers', label: 'Слои' },
   { id: 'lib', label: 'Детали' },
+  { id: 'groups', label: 'Группы' },
 ];
-type LeftTabId = 'layers' | 'lib';
+type LeftTabId = 'layers' | 'lib' | 'groups';
 const LEFT_TAB_NAMES: Record<string, string> = Object.fromEntries(LEFT_TABS.map((t) => [t.id, t.label]));
 
 /** Настройки боковых колонок. */
@@ -225,7 +232,7 @@ interface UiState {
   sides?: SidesConf;
 }
 
-const DEFAULT_SIDES: SidesConf = { leftW: 250, rightW: 274, leftTabs: ['layers', 'lib'], showRight: true };
+const DEFAULT_SIDES: SidesConf = { leftW: 250, rightW: 274, leftTabs: ['layers', 'lib', 'groups'], showRight: true };
 const normalizeSides = (s?: Partial<SidesConf>): SidesConf => ({
   leftW: s?.leftW ?? DEFAULT_SIDES.leftW,
   rightW: s?.rightW ?? DEFAULT_SIDES.rightW,
@@ -324,7 +331,11 @@ function loadDoc(userId?: string): M.Doc {
     const raw = (userId ? sessionStorage : localStorage).getItem(draftKey(userId));
     if (raw) {
       const d = JSON.parse(raw);
-      if (d && Array.isArray(d.entities) && typeof d.w === 'number') return d as M.Doc;
+      if (d && Array.isArray(d.entities) && typeof d.w === 'number') {
+        const nd = d as M.Doc;
+        if (nd.groups?.length) nd.groups = pruneGroups(nd.groups, new Set(nd.entities.map((e) => e.id)));
+        return nd;
+      }
     }
   } catch { /* ignore */ }
   return M.newBoard(100, 80, 'Плата');
@@ -410,7 +421,7 @@ export default function App({ cloudUser, onLogout }: { cloudUser?: CloudUser; on
   const [placeRot, setPlaceRot] = useState(0);
   const [placeSide, setPlaceSide] = useState<'top' | 'bottom'>('top');
   const [pasteTpl, setPasteTpl] = useState<M.Entity[] | null>(null);
-  const [leftTab, setLeftTab] = useState<'layers' | 'lib'>('layers');
+  const [leftTab, setLeftTab] = useState<LeftTabId>('layers');
   // тема оформления: тёмная (по умолчанию) или светлая, переключается в шапке
   const [theme, setTheme] = useState<ThemeId>(loadTheme);
   // кастомные цвета интерфейса (акцент/фон/панели/текст), см. ui/palette
@@ -476,6 +487,10 @@ export default function App({ cloudUser, onLogout }: { cloudUser?: CloudUser; on
   const future = useRef<M.Doc[]>([]);
   const drag = useRef<Drag | null>(null);
   const clipboard = useRef<M.Entity[]>([]);
+  // группы, целиком попавшие в буфер обмена: вставляются вместе с элементами
+  const clipboardGroups = useRef<M.Group[]>([]);
+  // группы шаблона вставки (id совпадают с pasteTpl)
+  const pasteGroups = useRef<M.Group[]>([]);
   const wrapRef = useRef<HTMLDivElement>(null);
   // слои холста: базовый (сетка + плата + выделение), тест цепи и оверлей (черновики,
   // фантомы, перекрестие). Движение мыши перерисовывает только лёгкий оверлей —
@@ -498,6 +513,25 @@ export default function App({ cloudUser, onLogout }: { cloudUser?: CloudUser; on
   selRef.current = sel;
 
   const setDefs = useCallback((p: Partial<Defs>) => setDefsState((d) => ({ ...d, ...p })), []);
+
+  // ---------------- группы элементов (см. src/pcb/group.ts) ----------------
+  /** индекс «id элемента → группа»: клик по элементу выбирает всю его группу */
+  const groupIdx = useMemo(() => groupIndex(doc.groups), [doc]);
+  /** группы, которых касается текущее выделение */
+  const selGroups = useMemo((): M.Group[] => {
+    const out: M.Group[] = [];
+    for (const id of sel) {
+      const g = groupIdx.get(id);
+      if (g && !out.some((x) => x.id === g.id)) out.push(g);
+    }
+    return out;
+  }, [sel, groupIdx]);
+  /** группа текущего выделения, если всё выделенное лежит в одной группе */
+  const selGroup = selGroups.length === 1 ? selGroups[0] : null;
+  /** выделено два элемента и больше — их можно связать в группу */
+  const canGroupSel = sel.size >= 2;
+  /** сколько групп на плате (для подписи в колонке «Слои») */
+  const groupCount = (doc.groups ?? []).length;
 
   // ---------------- история ----------------
   const commit = useCallback((next: M.Doc) => {
@@ -791,6 +825,8 @@ export default function App({ cloudUser, onLogout }: { cloudUser?: CloudUser; on
     if (!selRef.current.size) return;
     const nd = M.cloneDoc(doc);
     nd.entities = nd.entities.filter((e) => !selRef.current.has(e.id));
+    // группы теряют удалённые элементы; в группе меньше двух элементов смысла нет
+    nd.groups = pruneGroups(nd.groups, new Set(nd.entities.map((e) => e.id)));
     commit(nd);
     setSel(new Set());
   }, [doc, commit]);
@@ -799,18 +835,64 @@ export default function App({ cloudUser, onLogout }: { cloudUser?: CloudUser; on
     if (!selRef.current.size) return;
     const nd = M.cloneDoc(doc);
     const clones: M.Entity[] = [];
+    const idMap = new Map<string, string>();
     for (const e of nd.entities) {
       if (selRef.current.has(e.id)) {
         const c = JSON.parse(JSON.stringify(e)) as M.Entity;
         c.id = M.uid();
         M.translateEnt(c, defs.grid * 2, defs.grid * 2);
         clones.push(c);
+        idMap.set(e.id, c.id);
       }
     }
     nd.entities.push(...clones);
+    // копия группы едет вместе с копией элементов
+    const extra = remapGroups(doc.groups, idMap, ' (копия)');
+    if (extra.length) nd.groups = [...(nd.groups ?? []), ...extra];
     commit(nd);
     setSel(new Set(clones.map((c) => c.id)));
   }, [doc, commit, defs.grid]);
+
+  // ---------------- операции с группами ----------------
+  /** Связать выделенное в группу (Ctrl+Shift+G). */
+  const groupSel = useCallback((): string | null => {
+    const r = groupSelection(doc, selRef.current);
+    if (!r) return null;
+    commit(r.doc);
+    setSel(new Set(r.group.ids));
+    return r.group.name;
+  }, [doc, commit]);
+
+  /** Распустить группу выделенного (Ctrl+Shift+U). */
+  const ungroupSel = useCallback((): string[] | null => {
+    const r = ungroupSelection(doc, selRef.current);
+    if (!r) return null;
+    commit(r.doc);
+    return r.names;
+  }, [doc, commit]);
+
+  /** Распустить одну группу из списка слева. */
+  const ungroupOne = useCallback((g: M.Group) => {
+    const r = ungroupSelection(doc, g.ids);
+    if (r) commit(r.doc);
+  }, [doc, commit]);
+
+  /** Распустить все группы на плате. */
+  const ungroupAllGroups = useCallback(() => {
+    const r = ungroupAll(doc);
+    if (r) commit(r.doc);
+  }, [doc, commit]);
+
+  const renameGroupCb = useCallback((groupId: string, name: string) => {
+    const nd = renameGroup(doc, groupId, name);
+    if (nd) commit(nd);
+  }, [doc, commit]);
+
+  /** Выделить группу целиком (клик по строке в списке групп). */
+  const selectGroup = useCallback((g: M.Group) => {
+    const alive = new Set(doc.entities.map((e) => e.id));
+    setSel(new Set(g.ids.filter((id) => alive.has(id))));
+  }, [doc]);
 
   const nudge = useCallback((dx: number, dy: number) => {
     if (!selRef.current.size) return;
@@ -842,15 +924,21 @@ export default function App({ cloudUser, onLogout }: { cloudUser?: CloudUser; on
     clipboard.current = doc.entities
       .filter((e) => selRef.current.has(e.id))
       .map((e) => JSON.parse(JSON.stringify(e)) as M.Entity);
+    // в буфер уходит и группа, если она попала в выделение целиком
+    const picked = new Set(clipboard.current.map((e) => e.id));
+    clipboardGroups.current = (doc.groups ?? []).filter((g) => g.ids.every((id) => picked.has(id)));
   }, [doc]);
 
   const startPaste = useCallback(() => {
     if (!clipboard.current.length) return;
+    const idMap = new Map<string, string>();
     const tpl = clipboard.current.map((e) => {
       const c = JSON.parse(JSON.stringify(e)) as M.Entity;
       c.id = M.uid();
+      idMap.set(e.id, c.id);
       return c;
     });
+    pasteGroups.current = remapGroups(clipboardGroups.current, idMap);
     setPasteTpl(tpl);
     setSel(new Set());
   }, []);
@@ -859,14 +947,19 @@ export default function App({ cloudUser, onLogout }: { cloudUser?: CloudUser; on
     if (!pasteTpl) return;
     const bb = M.unionBBox(pasteTpl.map(M.entBBox));
     const dx = at.x - bb[0], dy = at.y - bb[1];
-    const clones = pasteTpl.map((e) => {
+    const clones: M.Entity[] = [];
+    const idMap = new Map<string, string>();
+    for (const e of pasteTpl) {
       const c = JSON.parse(JSON.stringify(e)) as M.Entity;
       c.id = M.uid();
       M.translateEnt(c, dx, dy);
-      return c;
-    });
+      clones.push(c);
+      idMap.set(e.id, c.id);
+    }
     const nd = M.cloneDoc(doc);
     nd.entities.push(...clones);
+    const extra = remapGroups(pasteGroups.current, idMap, ' (копия)');
+    if (extra.length) nd.groups = [...(nd.groups ?? []), ...extra];
     commit(nd);
     setSel(new Set(clones.map((c) => c.id)));
     setPasteTpl(null);
@@ -1054,6 +1147,8 @@ export default function App({ cloudUser, onLogout }: { cloudUser?: CloudUser; on
           throw new Error('формат');
         const nd = d as M.Doc;
         nd.entities.forEach((e) => { if (!e.id) e.id = M.uid(); });
+        // группы из чужого файла могут ссылаться на отсутствующие элементы
+        if (nd.groups?.length) nd.groups = pruneGroups(nd.groups, new Set(nd.entities.map((e) => e.id)));
         if (!prepareReplace()) return;
         if (cloudUser) { past.current = []; future.current = []; setDoc(nd); rememberDraft(cloudUser.id, nd); }
         else commit(nd);
@@ -1147,18 +1242,24 @@ export default function App({ cloudUser, onLogout }: { cloudUser?: CloudUser; on
   const panelize = useCallback((cols: number, rows: number, gx: number, gy: number) => {
     const nd = M.cloneDoc(doc);
     const copies: M.Entity[] = [];
+    const copyGroups: M.Group[] = [];
     for (let r = 0; r < rows; r++) {
       for (let c = 0; c < cols; c++) {
         if (r === 0 && c === 0) continue;
+        const idMap = new Map<string, string>();
         for (const e of doc.entities) {
           const k = JSON.parse(JSON.stringify(e)) as M.Entity;
           k.id = M.uid();
           M.translateEnt(k, c * gx, r * gy);
           copies.push(k);
+          idMap.set(e.id, k.id);
         }
+        // группы размножаются вместе с платой: в каждой ячейке своя копия
+        copyGroups.push(...remapGroups(doc.groups, idMap, ` · ячейка ${r * cols + c + 1}`));
       }
     }
     nd.entities.push(...copies);
+    if (copyGroups.length) nd.groups = [...(nd.groups ?? []), ...copyGroups];
     nd.w = doc.w + (cols - 1) * gx;
     nd.h = doc.h + (rows - 1) * gy;
     commit(nd);
@@ -1433,12 +1534,16 @@ export default function App({ cloudUser, onLogout }: { cloudUser?: CloudUser; on
       case 'select': {
         const hitId = hitAt(w);
         if (hitId) {
+          // клик по элементу группы выбирает (и двигает) всю группу
+          const grp = groupIdx.get(hitId);
+          const members = grp ? grp.ids : [hitId];
           let ns: Set<string>;
           if (e.shiftKey) {
             ns = new Set(sel);
-            if (ns.has(hitId)) ns.delete(hitId); else ns.add(hitId);
+            const has = members.some((id) => ns.has(id));
+            for (const id of members) { if (has) ns.delete(id); else ns.add(id); }
           } else {
-            ns = sel.has(hitId) ? new Set(sel) : new Set([hitId]);
+            ns = sel.has(hitId) ? new Set(sel) : new Set(members);
           }
           setSel(ns);
           if (ns.has(hitId))
@@ -1617,8 +1722,10 @@ export default function App({ cloudUser, onLogout }: { cloudUser?: CloudUser; on
           const b = M.entBBox(ent);
           if (b[0] <= x2 && b[2] >= x1 && b[1] <= y2 && b[3] >= y1) ns.add(ent.id);
         }
-        if (e.shiftKey) setSel((s) => new Set([...s, ...ns]));
-        else setSel(ns);
+        // группа попадает в рамку целиком: достаточно задеть один её элемент
+        const full = expandSelection(doc.groups, ns);
+        if (e.shiftKey) setSel((s) => new Set([...s, ...full]));
+        else setSel(full);
       }
     }
   };
@@ -1655,7 +1762,9 @@ export default function App({ cloudUser, onLogout }: { cloudUser?: CloudUser; on
         case 'KeyV': startPaste(); e.preventDefault(); return;
         case 'KeyD': duplicateSel(); e.preventDefault(); return;
         case 'KeyE': setDialog('export'); e.preventDefault(); return;
-        case 'KeyG': setDialog('grid'); e.preventDefault(); return;
+        // Ctrl+G — настройки сетки, Ctrl+Shift+G — сгруппировать выделенное
+        case 'KeyG': if (e.shiftKey) groupSel(); else setDialog('grid'); e.preventDefault(); return;
+        case 'KeyU': if (e.shiftKey) { ungroupSel(); e.preventDefault(); } return;
         default: return;
       }
     }
@@ -1721,7 +1830,7 @@ export default function App({ cloudUser, onLogout }: { cloudUser?: CloudUser; on
   }, [
     dialog, routeVariants, doc, undo, redo, savePrimary, copySel, startPaste, duplicateSel, finishOrCancel,
     deleteSel, place, preview, rotateSel, mirrorSel, draft, activeCu, mouse.wx, mouse.wy, fit,
-    zoomAt, size, nudge, defs.grid, defs.gridUnit, defs.snapOn, setDefs, setTool,
+    zoomAt, size, nudge, defs.grid, defs.gridUnit, defs.snapOn, setDefs, setTool, groupSel, ungroupSel,
   ]);
 
   const keyRef = useRef(keyHandler);
@@ -1800,6 +1909,35 @@ export default function App({ cloudUser, onLogout }: { cloudUser?: CloudUser; on
         ctx.restore();
       }
 
+      // группы: рамка и подпись группы, которой касается выделение
+      if (selGroups.length) {
+        ctx.save();
+        ctx.font = '11px sans-serif';
+        for (const g of selGroups) {
+          const b = groupBBox(doc, g);
+          if (!b) continue;
+          const p1 = toPx(b[0], b[1]), p2 = toPx(b[2], b[3]);
+          const x = Math.min(p1.px, p2.px) - 7, y = Math.min(p1.py, p2.py) - 7;
+          const w = Math.abs(p2.px - p1.px) + 14, h = Math.abs(p2.py - p1.py) + 14;
+          ctx.strokeStyle = COLORS.sel;
+          ctx.globalAlpha = 0.9;
+          ctx.lineWidth = 1.2;
+          ctx.setLineDash([7, 4]);
+          ctx.strokeRect(x, y, w, h);
+          ctx.setLineDash([]);
+          // имя группы: над рамкой, а если там край холста — под ней
+          const label = `${g.name} · ${g.ids.length}`;
+          const tw = ctx.measureText(label).width;
+          const baseline = y - 6 > 12 ? y - 6 : y + h + 15;
+          ctx.globalAlpha = 1;
+          ctx.fillStyle = CANVAS_UI.labelBg;
+          ctx.fillRect(x, baseline - 11, tw + 10, 14);
+          ctx.fillStyle = COLORS.sel;
+          ctx.fillText(label, x + 5, baseline);
+        }
+        ctx.restore();
+      }
+
       // автотрассировка: зоны зазора вокруг отверстий (ближе дорожка не подойдёт)
       if (tool === 'route' && defs.rtHoleClear > 0) {
         ctx.save();
@@ -1849,6 +1987,7 @@ export default function App({ cloudUser, onLogout }: { cloudUser?: CloudUser; on
   }, [
     doc, zEnts, view, hidden, sel, gridConf, defs.showAxes,
     defs.rtHoleClear, size, tool, routeMode, activeNet, netGeometry, theme, colors, toPx,
+    selGroups,
   ]);
 
   // «Тест цепи»: отдельный слой мигает через CSS, не перерисовывая плату
@@ -2205,6 +2344,20 @@ export default function App({ cloudUser, onLogout }: { cloudUser?: CloudUser; on
           {tb('redo', 'Повторить (Ctrl+Y)', redo, { disabled: !future.current.length })}
         </div>
       ),
+      group: (
+        <div className="tb-group" key="group">
+          {tb('group',
+            canGroupSel
+              ? 'Сгруппировать выделенное (Ctrl+Shift+G): элементы будут выбираться и двигаться вместе'
+              : 'Сгруппировать (Ctrl+Shift+G) — выделите два элемента и больше',
+            groupSel, { disabled: !canGroupSel })}
+          {tb('ungroup',
+            selGroups.length
+              ? `Разгруппировать ${selGroups.length > 1 ? `выделенные группы (${selGroups.length})` : `«${selGroups[0].name}»`} (Ctrl+Shift+U)`
+              : 'Разгруппировать (Ctrl+Shift+U) — в выделении нет групп',
+            ungroupSel, { disabled: !selGroups.length })}
+        </div>
+      ),
       grid: (
         <div className="tb-group" key="grid">
           <GridToolbar
@@ -2305,7 +2458,9 @@ export default function App({ cloudUser, onLogout }: { cloudUser?: CloudUser; on
   }, [uiConf, uiOrder, defs, view.s, view.mir, activeCu, size, theme, updButton, saveFile, savePrimary,
     cloudUser, activeCloud, cloudStatus, cloudMessage, undo, redo, fit, zoomAt, setDefs, closeApplication,
     // подсказка единой кнопки предпросмотра показывает последний режим
-    boardPreviewTab]);
+    boardPreviewTab,
+    // группировка: доступность и подсказки кнопок зависят от выделения
+    sel.size, selGroups, groupSel, ungroupSel]);
 
   // ---------------- док инструментов у холста ----------------
   // Группа «Инструменты» конструктора интерфейса управляет видимостью дока.
@@ -2338,7 +2493,7 @@ export default function App({ cloudUser, onLogout }: { cloudUser?: CloudUser; on
   // ---------------- боковые колонки (конструктор интерфейса) ----------------
   // Мемоизированы: при движении мыши колонки не перерисовываются.
   const leftColumn = useMemo(() => {
-    const leftTabs: LeftTabId[] = sidesConf.leftTabs.length ? sidesConf.leftTabs : ['layers', 'lib'];
+    const leftTabs: LeftTabId[] = sidesConf.leftTabs.length ? sidesConf.leftTabs : DEFAULT_SIDES.leftTabs;
     // активная вкладка левой колонки: выбранная вручную, если она видна; иначе первая
     const activeLeft: LeftTabId = leftTabs.includes(leftTab) ? leftTab : leftTabs[0];
     const renderLayersPane = () => (
@@ -2351,6 +2506,7 @@ export default function App({ cloudUser, onLogout }: { cloudUser?: CloudUser; on
         <div className="hint" style={{ padding: '0 12px 10px' }}>
           Плата: {M.fmt(doc.w)} × {M.fmt(doc.h)} мм<br />
           Элементов: {doc.entities.length} · Выделено: {sel.size}
+          {groupCount > 0 && <> · Групп: {groupCount}</>}
           <button type="button" className="btn inventory-open" onClick={() => setDialog('inventory')}>Площадки и отверстия…</button>
         </div>
       </>
@@ -2431,6 +2587,19 @@ export default function App({ cloudUser, onLogout }: { cloudUser?: CloudUser; on
         </div>
       </>
     );
+    const renderGroupsPane = () => (
+      <GroupsPanel
+        groups={doc.groups ?? []}
+        selGroup={selGroup}
+        canGroup={canGroupSel}
+        canUngroup={selGroups.length > 0}
+        onGroup={() => groupSel()}
+        onSelect={selectGroup}
+        onUngroup={ungroupOne}
+        onUngroupAll={ungroupAllGroups}
+        onRename={renameGroupCb}
+      />
+    );
     return (
       <div className="side" style={{ width: clampW(sidesConf.leftW) }}>
         <div className="pane-full">
@@ -2438,12 +2607,14 @@ export default function App({ cloudUser, onLogout }: { cloudUser?: CloudUser; on
             <div className="tabs">
               {leftTabs.map((t) => (
                 <button key={t} type="button" className={activeLeft === t ? 'on' : ''} onClick={() => setLeftTab(t)}>
-                  {t === 'layers' ? 'Слои' : 'Детали'}
+                  {LEFT_TABS.find((x) => x.id === t)?.label ?? t}
                 </button>
               ))}
             </div>
           )}
-          {activeLeft === 'layers' ? renderLayersPane() : renderGenPane()}
+          {activeLeft === 'layers' ? renderLayersPane()
+            : activeLeft === 'lib' ? renderGenPane()
+            : renderGroupsPane()}
         </div>
       </div>
     );
@@ -2451,6 +2622,8 @@ export default function App({ cloudUser, onLogout }: { cloudUser?: CloudUser; on
     sidesConf, leftTab, activeCu, hidden, counts, doc, sel, place, preview, gen, query, store, tree,
     cloudUser, libTab, libFilter, collapsed, editId, toggleHidden, setQuery, setLeftTab,
     placeFromGen, placeFromCatalog, saveCatalogToLibrary, pickMacro, editMacro, saveGenToLibrary, updateGenMacro, exportLibJson, patchStore,
+    // вкладка «Группы»
+    groupCount, selGroup, selGroups, canGroupSel, groupSel, selectGroup, ungroupOne, ungroupAllGroups, renameGroupCb,
   ]);
 
   const rightColumn = useMemo(() => (
@@ -2480,6 +2653,10 @@ export default function App({ cloudUser, onLogout }: { cloudUser?: CloudUser; on
           placeName={place?.name ?? null} placeRot={placeRot} placeSide={placeSide}
           setPlaceRot={setPlaceRot} setPlaceSide={setPlaceSide} cancelPlace={() => setPlace(null)}
           onSaveSel={selEnts.length ? saveSelFromProps : undefined}
+          selGroup={selGroup}
+          onGroup={canGroupSel ? () => groupSel() : undefined}
+          onUngroup={selGroup ? () => ungroupSel() : undefined}
+          onRenameGroup={renameGroupCb}
           textRot={defs.textRot} setTextRot={(r) => setDefs({ textRot: r })}
           routeGroups={routeMode === 'nets'}
           routeInfo={{ ...routeMsg, msg: routeMode === 'nets' ? '' : routeMsg.msg, picking: routeA ? 'b' : 'a' }}
@@ -2494,6 +2671,7 @@ export default function App({ cloudUser, onLogout }: { cloudUser?: CloudUser; on
     sidesConf, tool, routeMode, activeNet, doc, netGeometry, routeMsg, routeA, defs, activeCu,
     selEnts, place, placeRot, placeSide, view.s, changeNets, routeAll, patchEnt, rotateSel,
     mirrorSel, duplicateSel, deleteSel, setDocSize, setDefs, saveSelFromProps,
+    selGroup, canGroupSel, groupSel, ungroupSel, renameGroupCb,
   ]);
 
   // ---------------- разметка ----------------
@@ -2581,7 +2759,7 @@ export default function App({ cloudUser, onLogout }: { cloudUser?: CloudUser; on
 
       {dialog === 'autoplace' && <AutoPlaceDialog doc={doc} selected={sel} clearance={defs.rtClear}
         onClose={() => setDialog(null)} onApply={(r) => {
-          commit({ ...doc, entities: r.entities });
+          commit({ ...doc, entities: r.entities, groups: pruneGroups(doc.groups, new Set(r.entities.map((e) => e.id))) });
           setDraft(null); setRouteA(null); setProbe(null); setRouteMsg({ msg: '', ok: null });
           setDialog(null); fit();
         }} />}
