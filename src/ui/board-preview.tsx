@@ -1,5 +1,6 @@
+import { boardShape } from '../pcb/board-shape';
 // Предпросмотр документа: классический послойный вид и отдельный 3D-режим.
-import { useState } from 'react';
+import { useMemo, useState } from 'react';
 import type { Doc } from '../pcb/model';
 import { Modal } from './widgets';
 import { BoardPreview2D } from './board-preview-2d';
@@ -10,6 +11,8 @@ export type PreviewTab = '2d' | '3d';
 export function BoardPreviewDialog({ doc, initialTab = '2d', onTab, onClose }: {
   doc: Doc; initialTab?: PreviewTab; onTab?: (tab: PreviewTab) => void; onClose: () => void;
 }) {
+  const shape = useMemo(() => boardShape(doc), [doc]);
+  const [x0, y0, x1, y1] = shape.bounds;
   const [tab, setTab] = useState<PreviewTab>(initialTab);
   // запоминаем выбранный режим: кнопка тулбара откроет окно сразу в нём
   const pick = (t: PreviewTab) => { setTab(t); onTab?.(t); };
@@ -20,7 +23,7 @@ export function BoardPreviewDialog({ doc, initialTab = '2d', onTab, onClose }: {
         <button className={'btn' + (tab === '2d' ? ' primary' : '')} aria-pressed={tab === '2d'} onClick={() => pick('2d')}>2D · Sprint Layout</button>
         <button className={'btn' + (tab === '3d' ? ' primary' : '')} aria-pressed={tab === '3d'} onClick={() => pick('3d')}>3D · Объёмный вид</button>
       </div>
-      <span className="preview-document"><strong>{doc.name}</strong><span>{doc.w} × {doc.h} мм · {doc.entities.length} эл.</span></span>
+      <span className="preview-document"><strong>{doc.name}</strong><span>{Number((x1 - x0).toFixed(3))} × {Number((y1 - y0).toFixed(3))} мм · {doc.entities.length} эл.</span></span>
     </div>
     {tab === '2d' ? <BoardPreview2D doc={doc} /> : <>
       <p className="hint">Вращение — ЛКМ, масштаб — колесо. Компоненты показаны условными корпусами.</p>

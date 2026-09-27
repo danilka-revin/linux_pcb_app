@@ -1,3 +1,4 @@
+import { boardShape } from '../pcb/board-shape';
 // Экспорт 3D-модели платы с текстурами: GLB (один файл) и OBJ+MTL+PNG (ZIP).
 import * as THREE from 'three';
 import type { Doc } from '../pcb/model';
@@ -23,7 +24,8 @@ export function buildExportRoot(doc: Doc, board: THREE.Object3D, components: THR
   root.scale.setScalar(unit);
   const inner = new THREE.Group();
   inner.name = 'pcb';
-  inner.position.set(-doc.w / 2, -doc.h / 2, 0);
+  const [x0, y0, x1, y1] = boardShape(doc).bounds;
+  inner.position.set(-(x0 + x1) / 2, -(y0 + y1) / 2, 0);
   root.add(inner);
   inner.add(board.clone());
   if (components && components.visible && components.children.length) inner.add(components.clone());

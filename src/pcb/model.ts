@@ -153,8 +153,8 @@ export interface Group {
 
 export interface Doc {
   name: string;
-  w: number; // ширина платы, мм
-  h: number; // высота платы, мм
+  w: number; // ширина рабочего поля / платы без замкнутого контура, мм
+  h: number; // высота рабочего поля / платы без замкнутого контура, мм
   entities: Entity[];
   nets?: Net[]; // сохраняются в проекте JSON, не в Sprint-Layout
   groups?: Group[]; // сохраняются в проекте JSON, не в Sprint-Layout
