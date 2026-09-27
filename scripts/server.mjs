@@ -483,7 +483,16 @@ export async function startServer(opts = {}) {
   };
 
   // ---------- проверка обновлений ----------
-  const checkUpdate = async (res) => {
+  // Ответ кэшируем ненадолго: браузер проверяет обновления сам (и вкладок может
+  // быть несколько), а каждый ответ — это запрос к GitHub. ?force=1 обходит кэш.
+  const CHECK_TTL_MS = 60_000;
+  let checkCache = null; // { at, body }
+  const dropCheckCache = () => { checkCache = null; };
+
+  const checkUpdate = async (res, force = false) => {
+    if (!force && checkCache && Date.now() - checkCache.at < CHECK_TTL_MS) {
+      return json(res, 200, { ...checkCache.body, cached: true });
+    }
     try {
       const branch = await appBranch();
       const [gitOk, npmOk, local, latest, clone] = await Promise.all([
@@ -501,7 +510,7 @@ export async function startServer(opts = {}) {
         }
       }
 
-      return json(res, 200, {
+      const body = {
         ok: true,
         repo: latest.repo,
         branch,
@@ -515,8 +524,12 @@ export async function startServer(opts = {}) {
         mode: clone ? 'clone' : 'install',
         // git нужен только клону; установленной программе хватает npm
         tooling: { git: clone ? gitOk : true, npm: npmOk },
-      });
+        cached: false,
+      };
+      checkCache = { at: Date.now(), body };
+      return json(res, 200, body);
     } catch (e) {
+      // ошибку не кэшируем: GitHub мог быть недоступен минуту
       return json(res, 502, { ok: false, error: e && e.message ? e.message : String(e) });
     }
   };
@@ -687,6 +700,7 @@ export async function startServer(opts = {}) {
   // ---------- выполнение обновления ----------
   const runUpdate = async (res) => {
     if (upd.state.status === 'busy') return json(res, 409, { ok: false, error: 'Обновление уже выполняется. Подождите.', ...upd.state });
+    dropCheckCache();
     const clone = await isGitClone();
     const mode = clone ? 'clone' : 'install';
     const local = await localVersion();
@@ -700,6 +714,7 @@ export async function startServer(opts = {}) {
     bump();
 
     const finish = (patch) => {
+      dropCheckCache(); // установленная версия изменилась — кэш проверки больше не про неё
       const st = upd.state;
       if (patch.status === 'error' || patch.status === 'cancelled') {
         for (const s of st.stages) if (s.state === 'run') s.state = patch.status === 'error' ? 'error' : 'wait';
@@ -964,7 +979,7 @@ export async function startServer(opts = {}) {
         if (cloud) return json(res, 403, { ok: false, error: 'Обновляйте общий сервер через терминал администратора.' });
         const cmd = url.pathname.slice('/update/'.length);
         if (cmd === 'status') return statusUpdate(req, res, url);
-        if (cmd === 'check') return await checkUpdate(res);
+        if (cmd === 'check') return await checkUpdate(res, url.searchParams.get('force') === '1');
         if (cmd === 'run') return await runUpdate(res);
         if (cmd === 'cancel') return cancelUpdate(res);
         return json(res, 404, { ok: false, error: 'неизвестная команда обновления' });
