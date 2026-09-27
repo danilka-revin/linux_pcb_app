@@ -1,9 +1,10 @@
 // Боковые панели: слои и свойства выделенного.
 import { type ReactNode } from 'react';
-import { LAYERS, fmt, type Doc, type Entity, type LayerId, type PadShape } from '../pcb/model';
+import { LAYERS, fmt, type Doc, type Entity, type Group, type LayerId, type PadShape } from '../pcb/model';
+import { groupCountLabel } from '../pcb/group';
 import type { GridStyle, GridUnit } from '../pcb/grid';
 import { fmtGridFull, GRID_STEPS_MM, gridPresets, isPresetStep, gridSummary } from '../pcb/grid';
-import { NI, SI, TI } from './widgets';
+import { NI, SI, TI, TIC } from './widgets';
 import { Ic } from './icons';
 
 export type ToolId =
@@ -249,6 +250,7 @@ export function PropsPanel({
   doc, setDocSize,
   placeName, placeRot, placeSide, setPlaceRot, setPlaceSide, cancelPlace,
   textRot, setTextRot, routeInfo, routeGroups, onSaveSel,
+  selGroup, onGroup, onUngroup, onRenameGroup,
 }: {
   tool: ToolId;
   defs: Defs;
@@ -270,6 +272,13 @@ export function PropsPanel({
   setTextRot: (r: number) => void;
   routeGroups?: boolean;
   routeInfo?: { msg: string; ok: boolean | null; picking: 'a' | 'b' };
+  /** группа, в которую входит выделенное (если всё выделение в одной группе) */
+  selGroup?: Group | null;
+  /** связать выделенное в группу (доступно при 2+ элементах) */
+  onGroup?: () => void;
+  /** распустить группу выделенного */
+  onUngroup?: () => void;
+  onRenameGroup?: (id: string, name: string) => void;
 }) {
   void fmt;
   // --- выделенные элементы ---
@@ -277,7 +286,7 @@ export function PropsPanel({
     const one = selEnts.length === 1 ? selEnts[0] : null;
     return (
       <div className="props">
-        <h3>Выделено: {selEnts.length}</h3>
+        <h3>Выделено: {selEnts.length}{selGroup ? ` · ${selGroup.name}` : ''}</h3>
         {one ? entityEditor(one, (p) => patchEnt(one.id, p)) : (
           <div className="sub">Несколько элементов. Общие операции ниже.</div>
         )}
@@ -289,6 +298,40 @@ export function PropsPanel({
           <button className="btn" onClick={doDuplicate} title="Ctrl+D">Дублировать</button>
           <button className="btn danger" onClick={doDelete} title="Del">Удалить</button>
         </div>
+        {selGroup ? (
+          <div className="group-box">
+            {onRenameGroup && (
+              <TIC label="Группа" value={selGroup.name} on={(v) => onRenameGroup(selGroup.id, v)} />
+            )}
+            <div className="sub">
+              {groupCountLabel(selGroup.ids.length)} связаны в группу: выбираются, двигаются,
+              поворачиваются и удаляются вместе.
+            </div>
+            {onUngroup && (
+              <div className="row">
+                <button className="btn" onClick={onUngroup} title="Ctrl+Shift+U">Разгруппировать</button>
+              </div>
+            )}
+          </div>
+        ) : (
+          <>
+            {onGroup && selEnts.length >= 2 && (
+              <div className="row">
+                <button className="btn" onClick={onGroup}
+                  title="Связать выделенное в группу: дальше оно выбирается и двигается целиком (Ctrl+Shift+G)">
+                  Сгруппировать
+                </button>
+              </div>
+            )}
+            {selEnts.length < 2 && (
+              <div className="hint">
+                Группы: выделите два элемента и больше (рамкой или с <span className="kbd">Shift</span>)
+                и нажмите <span className="kbd">Ctrl</span>+<span className="kbd">Shift</span>+<span className="kbd">G</span> —
+                они будут выбираться и двигаться вместе.
+              </div>
+            )}
+          </>
+        )}
         {onSaveSel && (
           <div className="row">
             <button

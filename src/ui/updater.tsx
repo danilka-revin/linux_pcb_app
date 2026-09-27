@@ -559,7 +559,10 @@ export function UiBuilder({
   );
 }
 
-/** Настройка боковых колонок: левая колонка (Слои/Библиотека) и правая («Свойства»). */
+/** Вкладки левой колонки, которые расставляет конструктор интерфейса. */
+export type SideTabId = 'layers' | 'lib' | 'groups';
+
+/** Настройка боковых колонок: левая колонка (Слои/Детали/Группы) и правая («Свойства»). */
 export function SideBuilder({
   sideTabs, sideNames, leftW, rightW, showRight, onChange,
 }: {
@@ -569,7 +572,7 @@ export function SideBuilder({
   rightW: number;
   showRight: boolean;
   onChange: (next: {
-    leftTabs: ('layers' | 'lib')[];
+    leftTabs: SideTabId[];
     leftW: number;
     rightW: number;
     showRight: boolean;
@@ -579,7 +582,7 @@ export function SideBuilder({
     const i = sideTabs.indexOf(id);
     const j = i + dir;
     if (i < 0 || j < 0 || j >= sideTabs.length) return;
-    const nx = [...sideTabs] as ('layers' | 'lib')[];
+    const nx = [...sideTabs] as SideTabId[];
     [nx[i], nx[j]] = [nx[j], nx[i]];
     onChange({ leftTabs: nx, leftW, rightW, showRight });
   };
@@ -587,7 +590,7 @@ export function SideBuilder({
     const has = sideTabs.includes(id);
     const nx = (has
       ? sideTabs.filter((x) => x !== id)
-      : [...sideTabs, id]) as ('layers' | 'lib')[];
+      : [...sideTabs, id]) as SideTabId[];
     onChange({ leftTabs: nx.length ? nx : ['layers', 'lib'], leftW, rightW, showRight });
   };
 
@@ -624,7 +627,7 @@ export function SideBuilder({
         <span className="uib-name">Ширина левой колонки</span>
         <input className="uib-w-input" type="number" min={160} max={650} step={5}
           value={Math.round(leftW)}
-          onChange={(e) => onChange({ leftTabs: sideTabs as ('layers' | 'lib')[], leftW: Number(e.target.value) || 250, rightW, showRight })} />
+          onChange={(e) => onChange({ leftTabs: sideTabs as SideTabId[], leftW: Number(e.target.value) || 250, rightW, showRight })} />
         <span className="uib-w-unit">пкс</span>
       </div>
 
@@ -634,7 +637,7 @@ export function SideBuilder({
         <span className="uib-name">Панель свойств и трассировки</span>
         <button
           className={'btn tiny' + (!showRight ? ' uib-hide-on' : '')}
-          onClick={() => onChange({ leftTabs: sideTabs as ('layers' | 'lib')[], leftW, rightW, showRight: !showRight })}
+          onClick={() => onChange({ leftTabs: sideTabs as SideTabId[], leftW, rightW, showRight: !showRight })}
         >
           {showRight ? 'Показана' : 'Скрыта'}
         </button>
@@ -644,7 +647,7 @@ export function SideBuilder({
           <span className="uib-name">Ширина правой колонки</span>
           <input className="uib-w-input" type="number" min={160} max={650} step={5}
             value={Math.round(rightW)}
-            onChange={(e) => onChange({ leftTabs: sideTabs as ('layers' | 'lib')[], leftW, rightW: Number(e.target.value) || 274, showRight })} />
+            onChange={(e) => onChange({ leftTabs: sideTabs as SideTabId[], leftW, rightW: Number(e.target.value) || 274, showRight })} />
           <span className="uib-w-unit">пкс</span>
         </div>
       )}
@@ -675,7 +678,7 @@ export function UiBuilderDialog({
   rightW?: number;
   showRight?: boolean;
   onSides?: (next: {
-    leftTabs: ('layers' | 'lib')[];
+    leftTabs: SideTabId[];
     leftW: number;
     rightW: number;
     showRight: boolean;

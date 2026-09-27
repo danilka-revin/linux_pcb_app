@@ -66,6 +66,43 @@ export function TI({
   );
 }
 
+/**
+ * Текстовое поле с фиксацией по Enter или потере фокуса.
+ * Для имён (например, название группы): каждый нажатый символ не должен
+ * создавать отдельную запись в истории отмены.
+ */
+export function TIC({
+  label, value, on, placeholder,
+}: {
+  label: string;
+  value: string;
+  on: (v: string) => void;
+  placeholder?: string;
+}) {
+  const [s, setS] = useState(value);
+  useEffect(() => setS(value), [value]);
+  const commit = () => {
+    const v = s.trim();
+    if (v && v !== value) on(v);
+    else setS(value);
+  };
+  return (
+    <div className="field">
+      <label>{label}</label>
+      <input
+        className="txt"
+        value={s}
+        placeholder={placeholder}
+        onChange={(e) => setS(e.target.value)}
+        onBlur={commit}
+        onKeyDown={(e) => {
+          if (e.key === 'Enter') { commit(); (e.target as HTMLInputElement).blur(); }
+        }}
+      />
+    </div>
+  );
+}
+
 /** Выпадающий список */
 export function SI({
   label, value, options, on,
