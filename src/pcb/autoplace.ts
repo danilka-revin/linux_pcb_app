@@ -50,7 +50,16 @@ function subtract(free: Box[], used: Box): Box[] {
   return out.filter((r, i) => !out.some((s, j) => j !== i && contains(s, r) && (!contains(r, s) || j < i)));
 }
 
-export function autoPlace(doc: Doc, selected: string[], opts: PlacementOpts): PlacementResult {
+export type PlaceStrategy = 'compact' | 'wide' | 'tall';
+export interface PlaceVariant extends PlacementResult {
+  strategy: PlaceStrategy;
+  title: string;
+  description: string;
+  sameAs?: number;
+}
+export interface PlaceVariants { variants: PlaceVariant[]; errors: string[] }
+
+export function autoPlace(doc: Doc, selected: string[], opts: PlacementOpts, strategy: PlaceStrategy = 'compact'): PlacementResult {
   const ids = new Set(selected);
   const comps = doc.entities.filter((e): e is Comp => e.kind === 'comp' && (!ids.size || ids.has(e.id)));
   const fail = (error: string): PlacementResult => ({ entities: doc.entities, count: comps.length, width: 0, height: 0, beforeWidth: 0, beforeHeight: 0, error });
@@ -86,10 +95,14 @@ export function autoPlace(doc: Doc, selected: string[], opts: PlacementOpts): Pl
   const score = (cs: Comp[]) => {
     const b = unionBBox(cs.map(placementBBox));
     const w = b[2] - b[0], h = b[3] - b[1];
-    return Math.max(w, h) + w * h / (doc.w * doc.h + 1) * 1e-3;
+    const area = w * h / (doc.w * doc.h + 1) * 1e-3;
+    // компакт — ближе к квадрату; вдоль — ниже и шире; поперёк — уже и выше
+    if (strategy === 'wide') return h + w * 0.01 + area;
+    if (strategy === 'tall') return w + h * 0.01 + area;
+    return Math.max(w, h) + area;
   };
-  function trySize(side: number): Comp[] | null {
-    const w = Math.min(side, bw), h = Math.min(side, bh);
+  function trySize(w0: number, h0: number): Comp[] | null {
+    const w = Math.min(w0, bw), h = Math.min(h0, bh);
     const clamp = (v: number, lo: number, hi: number) => Math.max(lo, Math.min(hi, v));
     const cx = clamp((before[0] + before[2] - w) / 2, opts.edge, doc.w - opts.edge - w);
     const cy = clamp((before[1] + before[3] - h) / 2, opts.edge, doc.h - opts.edge - h);
@@ -124,13 +137,16 @@ export function autoPlace(doc: Doc, selected: string[], opts: PlacementOpts): Pl
     }
     return best;
   }
-  let hi = Math.max(bw, bh), lo = 0;
-  let best = trySize(hi);
+  // компакт стягивает квадрат, вдоль — высоту при полной ширине, поперёк — ширину при полной высоте
+  const shrink = strategy === 'wide' ? 'h' : strategy === 'tall' ? 'w' : 'both';
+  let hi = shrink === 'h' ? bh : shrink === 'w' ? bw : Math.max(bw, bh), lo = 0;
+  const dims = (v: number): [number, number] => (shrink === 'h' ? [bw, v] : shrink === 'w' ? [v, bh] : [v, v]);
+  let best = trySize(...dims(hi));
   if (!best) return fail('Не удалось разместить компоненты без пересечений. Увеличьте плату, уменьшите зазор или освободите место.');
   // Bounded search keeps calculation predictable; every accepted result is collision-free.
   for (let i = 0; i < 14 && hi - lo > 0.02; i++) {
     const mid = (lo + hi) / 2;
-    const placed = trySize(mid);
+    const placed = trySize(...dims(mid));
     if (placed) { hi = mid; if (score(placed) < score(best) - EPS) best = placed; }
     else lo = mid;
   }
@@ -141,4 +157,39 @@ export function autoPlace(doc: Doc, selected: string[], opts: PlacementOpts): Pl
     width: bounds[2] - bounds[0], height: bounds[3] - bounds[1],
     beforeWidth: before[2] - before[0], beforeHeight: before[3] - before[1],
   };
+}
+
+/** Геометрия варианта: позиции всех корпусов (неподвижные одинаковы во всех вариантах). */
+function placeGeometryKey(entities: Entity[]): string {
+  return entities
+    .filter((e): e is Comp => e.kind === 'comp')
+    .map((c) => `${c.id}:${c.x.toFixed(3)},${c.y.toFixed(3)},${c.rot}`)
+    .sort()
+    .join('|');
+}
+
+/**
+ * Три стратегии на одной исходной плате — как варианты трассировки.
+ * Каждая стартует с нетронутой платы; применяется только выбранный вариант.
+ */
+export function autoPlaceVariants(
+  doc: Doc, selected: string[], opts: PlacementOpts, progress: (text: string) => void = () => {},
+): PlaceVariants {
+  const profiles: Pick<PlaceVariant, 'strategy' | 'title' | 'description'>[] = [
+    { strategy: 'compact', title: 'Компакт', description: 'Близко к квадрату — занимает минимум места на плате.' },
+    { strategy: 'wide', title: 'Вдоль платы', description: 'Низкая широкая полоса — удобно вытянуть вдоль края платы.' },
+    { strategy: 'tall', title: 'Поперёк платы', description: 'Высокий узкий столбец — удобно поставить сбоку.' },
+  ];
+  const variants: PlaceVariant[] = [];
+  const keys: string[] = [];
+  for (const [i, profile] of profiles.entries()) {
+    progress(`Вариант ${i + 1}/3 · ${profile.title}`);
+    const r = autoPlace(doc, selected, opts, profile.strategy);
+    if (r.error) return { variants: [], errors: [r.error] };
+    const key = placeGeometryKey(r.entities);
+    const sameAs = keys.indexOf(key);
+    variants.push({ ...r, ...profile, ...(sameAs >= 0 ? { sameAs } : {}) });
+    keys.push(key);
+  }
+  return { variants, errors: [] };
 }

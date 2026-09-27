@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict';
-import { autoPlace, placementBBox } from '../src/pcb/autoplace';
+import { autoPlace, autoPlaceVariants, placementBBox } from '../src/pcb/autoplace';
 import { expandDoc } from '../src/pcb/expand';
 import { entBBox, newBoard, type Comp, type Doc } from '../src/pcb/model';
 
@@ -86,4 +86,41 @@ function check(d: Doc, selected: string[] = [], o = opts) {
     check(d);
   }
 }
-console.log('AUTOPLACE OK: compact square, obstacles, rotation, bounds, IDs, immutability and wired-board protection');
+// Три стратегии: компакт, вдоль, поперёк. Все варианты корректны и детерминированы.
+{
+  const d = newBoard(100, 80);
+  d.entities = [component('a', 10, 10, 10, 10), component('b', 90, 10, 10, 10), component('c', 90, 70, 10, 10), component('d', 10, 70, 10, 10)];
+  const before = JSON.stringify(d);
+  const seen: string[] = [];
+  const v = autoPlaceVariants(d, [], opts, (t) => seen.push(t));
+  assert.deepEqual(v.errors, []);
+  assert.equal(v.variants.length, 3);
+  assert.deepEqual(v.variants.map((x) => x.strategy), ['compact', 'wide', 'tall']);
+  assert.deepEqual(seen, ['Вариант 1/3 · Компакт', 'Вариант 2/3 · Вдоль платы', 'Вариант 3/3 · Поперёк платы']);
+  assert.equal(JSON.stringify(d), before, 'input is immutable');
+  for (const r of v.variants) {
+    assert.equal(r.error, undefined);
+    assert.equal(r.count, 4);
+    assert.ok(r.width > 0 && r.height > 0);
+    assert.deepEqual(r.entities.map((e) => e.id), d.entities.map((e) => e.id), 'IDs/order preserved');
+    for (const c of r.entities.filter((e): e is Comp => e.kind === 'comp')) {
+      const a = placementBBox(c);
+      assert(a[0] >= opts.edge - 1e-6 && a[1] >= opts.edge - 1e-6 && a[2] <= d.w - opts.edge + 1e-6 && a[3] <= d.h - opts.edge + 1e-6, 'inside board');
+      for (const e of r.entities) {
+        if (e.id === c.id || ('layer' in e && e.layer === 'outline')) continue;
+        const b = e.kind === 'comp' ? placementBBox(e) : entBBox(e);
+        assert(a[2] + opts.gap <= b[0] + 1e-6 || b[2] + opts.gap <= a[0] + 1e-6 || a[3] + opts.gap <= b[1] + 1e-6 || b[3] + opts.gap <= a[1] + 1e-6, `${c.id} overlaps ${e.id}`);
+      }
+    }
+    if (r.sameAs !== undefined) {
+      assert.deepEqual(r.entities, v.variants[r.sameAs].entities, 'sameAs geometry matches');
+    }
+  }
+  // первая стратегия — прежний компакт, поведение не изменилось
+  assert.deepEqual(v.variants[0].entities, autoPlace(d, [], opts).entities, 'compact unchanged');
+  assert.deepEqual(autoPlaceVariants(d, [], opts), v, 'deterministic');
+  const bad = autoPlaceVariants({ ...d, w: 3, h: 3 }, [], opts);
+  assert.equal(bad.variants.length, 0);
+  assert.equal(bad.errors.length, 1);
+}
+console.log('AUTOPLACE OK: compact square, obstacles, rotation, bounds, IDs, immutability, wired-board protection and 3 strategies');
