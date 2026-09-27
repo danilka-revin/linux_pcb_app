@@ -210,6 +210,47 @@ button { font: inherit; color: inherit; background: none; border: none; }
   width: 7px; height: 7px; border-radius: 50%; background: var(--accent);
   box-shadow: 0 0 0 3px var(--accent-glow); flex: none;
 }
+/* на GitHub вышла новая версия: кнопка подсвечивается сама (фоновая проверка) */
+.tb-btn.upd-btn.upd-avail {
+  color: var(--accent-text); background: var(--accent-soft); border-color: var(--accent-line);
+}
+.tb-btn.upd-btn.upd-avail:hover { background: var(--accent-soft); border-color: var(--accent); }
+/* свежая, ещё не показанная версия — кнопка пульсирует, чтобы её заметили */
+.tb-btn.upd-btn.upd-fresh { animation: updGlow 2s ease-in-out infinite; }
+@keyframes updGlow {
+  0%, 100% { box-shadow: 0 0 0 0 var(--accent-glow); border-color: var(--accent-line); }
+  55% { box-shadow: 0 0 0 5px transparent, 0 0 14px 1px var(--accent-glow); border-color: var(--accent); }
+}
+.upd-dot.is-new { animation: updDot 1.6s ease-in-out infinite; }
+@keyframes updDot {
+  0%, 100% { transform: scale(1); box-shadow: 0 0 0 2px var(--accent-glow); }
+  50% { transform: scale(1.5); box-shadow: 0 0 0 6px transparent; }
+}
+/* сколько новых коммитов ждёт установки */
+.upd-n {
+  flex: none; padding: 0 4px; border-radius: 6px; font-size: 10px; font-weight: 700;
+  color: var(--accent-ink); background: var(--accent); font-variant-numeric: tabular-nums;
+}
+
+/* напоминание о новой версии (угол окна) */
+.upd-toast {
+  position: fixed; right: 14px; bottom: 42px; z-index: 95;
+  display: flex; align-items: center; gap: 10px;
+  max-width: min(430px, calc(100vw - 28px));
+  padding: 9px 11px;
+  background: var(--surface); border: 1px solid var(--accent-line); border-radius: 12px;
+  box-shadow: var(--shadow);
+  animation: updToastIn .22s ease-out;
+}
+@keyframes updToastIn { from { opacity: 0; transform: translateY(8px); } }
+.upd-toast-ico { display: flex; flex: none; color: var(--accent-text); }
+.upd-toast-body { display: flex; flex-direction: column; gap: 2px; min-width: 0; font-size: 11.5px; color: var(--muted); }
+.upd-toast-body b { color: var(--text); font-size: 12.5px; }
+.upd-toast-body span {
+  overflow: hidden; text-overflow: ellipsis; display: -webkit-box; -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2; line-height: 1.35;
+}
+.upd-toast .btn.tiny { flex: none; }
 
 /* ---------- диалог обновления ---------- */
 .modal.update-modal { width: 560px; max-width: calc(100vw - 32px); }
@@ -306,6 +347,9 @@ button { font: inherit; color: inherit; background: none; border: none; }
 @keyframes updIndet { 0% { left: -35%; } 100% { left: 100%; } }
 @media (prefers-reduced-motion: reduce) {
   .updp-track.live .updp-fill::after, .updp-spin, .tb-btn.upd-busy svg { animation: none; }
+  /* новую версию по-прежнему видно, только без пульсации */
+  .tb-btn.upd-btn.upd-fresh, .upd-dot.is-new, .upd-toast { animation: none; }
+  .tb-btn.upd-btn.upd-fresh { box-shadow: 0 0 0 3px var(--accent-glow); border-color: var(--accent); }
 }
 
 /* ---------- конструктор интерфейса ---------- */

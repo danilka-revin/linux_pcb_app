@@ -49,6 +49,8 @@ export interface UpdaterState {
   repo: string;
   branch: string;
   latestMsg: string;
+  /** полный SHA последнего коммита в ветке — по нему понимаем, что версия новая */
+  latestSha: string;
   behind: number;
   updateAvailable: boolean;
   tooling: { git: boolean; npm: boolean };
@@ -58,6 +60,15 @@ export interface UpdaterState {
 }
 
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
+
+// Фоновая проверка обновлений: интерфейс сам узнаёт, что на GitHub вышла новая
+// версия, и подсвечивает кнопку «Обновить» — пользователю не нужно ничего нажимать.
+const CHECK_START_MS = 4_000;             // первая проверка: не мешаем запуску программы
+const CHECK_EVERY_MS = 30 * 60_000;       // дальше — раз в полчаса
+const CHECK_STALE_MS = 5 * 60_000;        // вернулись к окну: проверить, если проверка была давно
+const CHECK_FRESH_MS = 60_000;            // пока ответ свежий, диалог не переспрашивает GitHub
+/** ключ localStorage: версия, про которую уже показали подсветку («Позже»/открыли диалог) */
+const SEEN_KEY = 'psbees.update.seen';
 
 async function getJson(url: string, init?: RequestInit, timeout = 30000): Promise<any> {
   const ctl = new AbortController();
@@ -89,14 +100,28 @@ export function fmtDur(ms: number | null | undefined): string {
 export function useUpdater(version: string | null, enabled = true) {
   const [st, setSt] = useState<UpdaterState>({
     phase: 'idle', msg: '', detail: [], from: version ?? '', to: '',
-    repo: '', branch: 'main', latestMsg: '', behind: 0,
+    repo: '', branch: 'main', latestMsg: '', latestSha: '', behind: 0,
     updateAvailable: false, tooling: { git: true, npm: true },
     progress: null, reload: 'none',
   });
   const [open, setOpen] = useState(false);
   const running = useRef(false);
   const alive = useRef(true);
+  // когда последний раз спрашивали GitHub и поддерживает ли сервер обновление вообще
+  const lastCheckAt = useRef(0);
+  const unsupported = useRef(false);
+  // версия, про которую пользователь уже в курсе (открывал диалог или нажал «Позже»)
+  const [seen, setSeen] = useState<string>(() => {
+    try { return globalThis.localStorage?.getItem(SEEN_KEY) || ''; } catch { return ''; }
+  });
   useEffect(() => () => { alive.current = false; }, []);
+
+  /** Запомнить версию как «уже показанную»: пульсация гаснет, точка остаётся. */
+  const markSeen = useCallback((sha: string) => {
+    if (!sha) return;
+    setSeen(sha);
+    try { globalThis.localStorage?.setItem(SEEN_KEY, sha); } catch { /* приватный режим — не страшно */ }
+  }, []);
 
   /** Применить ответ /update/status к состоянию интерфейса. */
   const applyStatus = useCallback((s: any) => {
@@ -188,31 +213,49 @@ export function useUpdater(version: string | null, enabled = true) {
     }
   }, [applyStatus, awaitRestart]);
 
-  const check = useCallback(async () => {
+  /**
+   * Сверить версию с GitHub. `silent` — фоновая проверка: не показывает спиннер
+   * и не затирает то, что уже лежит в открытом диалоге; если сервер вообще не
+   * умеет обновляться (например, `npm run dev`), молча помечаем это и не долбим
+   * сеть каждые полчаса.
+   */
+  const check = useCallback(async (opts: { silent?: boolean; force?: boolean } = {}) => {
+    const silent = !!opts.silent;
     if (running.current) return;
-    setSt((s) => ({ ...s, phase: 'checking', msg: 'Проверяем обновления на GitHub…' }));
+    if (!silent) setSt((s) => ({ ...s, phase: 'checking', msg: 'Проверяем обновления на GitHub…' }));
     try {
-      const r = await getJson('/update/check', undefined, 40000);
+      const r = await getJson('/update/check' + (opts.force ? '?force=1' : ''), undefined, 40000);
+      lastCheckAt.current = Date.now();
       if (r && r.ok) {
         setSt((s) => ({
           ...s,
-          phase: 'ready',
+          // тихая проверка не перебивает открытый диалог: фазу меняем, только когда он пустой
+          phase: silent && s.phase !== 'idle' ? s.phase : 'ready',
           repo: r.repo || s.repo, branch: r.branch || 'main',
           from: r.local || s.from, to: r.latest,
+          latestSha: r.latestSha || s.latestSha,
           latestMsg: r.latestMsg || '', behind: r.behind ?? 0,
           updateAvailable: !!r.updateAvailable,
           tooling: r.tooling || s.tooling,
         }));
-      } else if (r && !r.ok) {
-        setSt((s) => ({ ...s, phase: 'error', msg: r.error || 'Не удалось проверить обновления' }));
-      } else {
-        // сервер без поддержки /update (например, npm run dev)
+        return;
+      }
+      if (!r) {
+        // сервер без поддержки /update (например, npm run dev) — ответ не JSON
+        unsupported.current = true;
+        if (silent) return;
         setSt((s) => ({
           ...s, phase: 'error',
           msg: 'В этом режиме запуска нет встроенного обновления.\nЗапустите программу через bash run.sh (или установленную версию) — там кнопка работает.',
         }));
+        return;
       }
+      if (silent) return; // нет связи с GitHub — попробуем в следующий раз, не мешая пользователю
+      setSt((s) => ({ ...s, phase: 'error', msg: r.error || 'Не удалось проверить обновления' }));
     } catch {
+      lastCheckAt.current = Date.now();
+      // тихая проверка при обрыве сети просто ничего не меняет
+      if (silent) return;
       setSt((s) => ({ ...s, phase: 'error', msg: 'GitHub или сервер не ответили вовремя. Проверьте интернет и повторите.' }));
     }
   }, []);
@@ -258,6 +301,42 @@ export function useUpdater(version: string | null, enabled = true) {
     return () => { stop = true; };
   }, [follow, enabled]);
 
+  // Фоновая проверка: кнопка «Обновить» загорается сама, как только в ветке main
+  // появляется новый коммит. Первый раз — через несколько секунд после запуска
+  // (чтобы не мешать загрузке), дальше по таймеру и при возврате в окно.
+  useEffect(() => {
+    if (!enabled) return;
+    let start: ReturnType<typeof setTimeout> | undefined;
+    let timer: ReturnType<typeof setInterval> | undefined;
+    const stop = () => {
+      if (start) clearTimeout(start);
+      if (timer) clearInterval(timer);
+      start = timer = undefined;
+    };
+    const tick = async () => {
+      if (running.current) return;
+      await check({ silent: true });
+      if (unsupported.current) stop(); // сервер без /update — больше не спрашиваем
+    };
+    start = setTimeout(() => void tick(), CHECK_START_MS);
+    timer = setInterval(() => void tick(), CHECK_EVERY_MS);
+    // вернулись к программе (вкладка, окно, интернет) — проверить, если давно не проверяли
+    const wake = () => {
+      if (unsupported.current) { stop(); return; }
+      if (Date.now() - lastCheckAt.current >= CHECK_STALE_MS) void tick();
+    };
+    const onVisible = () => { if (!document.hidden) wake(); };
+    window.addEventListener('focus', wake);
+    window.addEventListener('online', wake);
+    document.addEventListener('visibilitychange', onVisible);
+    return () => {
+      stop();
+      window.removeEventListener('focus', wake);
+      window.removeEventListener('online', wake);
+      document.removeEventListener('visibilitychange', onVisible);
+    };
+  }, [check, enabled]);
+
   // процент в заголовке вкладки, пока диалог свёрнут
   const pct = st.phase === 'running' && st.progress ? Math.round(st.progress.pct * 100) : null;
   useEffect(() => {
@@ -269,34 +348,51 @@ export function useUpdater(version: string | null, enabled = true) {
 
   const openDialog = useCallback(() => {
     setOpen(true);
+    markSeen(st.latestSha); // подсветку погасим: пользователь уже увидел новость
     if (running.current || st.phase === 'running' || st.reload === 'waiting') return; // просто развернуть
+    // только что проверяли (в фоне) — не дёргаем GitHub и не показываем спиннер
+    if (st.phase === 'ready' && Date.now() - lastCheckAt.current < CHECK_FRESH_MS) return;
     setSt((s) => ({ ...s, phase: 'idle', msg: '' }));
-    void check();
-  }, [check, st.phase, st.reload]);
+    void check({ force: true });
+  }, [check, markSeen, st.latestSha, st.phase, st.reload]);
 
   const busy = st.phase === 'running';
+  // обновление есть — кнопка подсвечена; «fresh» — версию ещё не показывали,
+  // тогда кнопка пульсирует и всплывает подсказка
+  const avail = !busy && st.updateAvailable;
+  const fresh = avail && !!st.latestSha && st.latestSha !== seen;
   // мемоизируем кнопку: тулбар приложения не должен пересобираться на каждое
   // движение мыши из-за новой идентичности этого элемента
   const Button = useMemo(() => (
     <button
-      className={'tb-btn cu upd-btn' + (busy ? ' upd-busy' : '')}
-      title={busy ? `Идёт обновление: ${pct ?? 0}% — нажмите, чтобы развернуть` : 'Обновить программу из ветки main (GitHub)'}
+      className={'tb-btn cu upd-btn' + (busy ? ' upd-busy' : '') + (avail ? ' upd-avail' : '') + (fresh ? ' upd-fresh' : '')}
+      title={busy
+        ? `Идёт обновление: ${pct ?? 0}% — нажмите, чтобы развернуть`
+        : avail
+          ? `Доступна новая версия ${st.to}${st.behind > 1 ? ` — новых коммитов: ${st.behind}` : ''}. Нажмите, чтобы обновить${st.latestMsg ? `\n${st.latestMsg}` : ''}`
+          : 'Обновить программу из ветки main (GitHub)'}
       onClick={openDialog}
     >
       <Ic n="update" size={16} />
       {' '}{busy ? `${pct ?? 0}%` : 'Обновить'}
-      {!busy && st.updateAvailable && <span className="upd-dot" title="Доступна новая версия" />}
+      {avail && <span className={'upd-dot' + (fresh ? ' is-new' : '')} title="Доступна новая версия" />}
+      {avail && st.behind > 1 && <span className="upd-n">+{st.behind}</span>}
       {busy && <span className="upd-btn-bar" style={{ transform: `scaleX(${(pct ?? 0) / 100})` }} />}
     </button>
-  ), [busy, pct, st.updateAvailable, openDialog]);
+  ), [busy, pct, avail, fresh, st.to, st.behind, st.latestMsg, openDialog]);
 
   const Dialog = (
-    <UpdaterDialog
-      open={open}
-      onClose={() => setOpen(false)}
-      st={st} onCheck={check} onRun={run} onCancel={cancel}
-      onReload={() => window.location.reload()}
-    />
+    <>
+      <UpdaterDialog
+        open={open}
+        onClose={() => setOpen(false)}
+        st={st} onCheck={() => check({ force: true })} onRun={run} onCancel={cancel}
+        onReload={() => window.location.reload()}
+      />
+      {/* Новая версия найдена в фоне — напоминаем, пока пользователь не обновится
+          или не нажмёт «Позже» (после этого остаётся только светящаяся кнопка). */}
+      <UpdateToast st={st} show={fresh && !open} onUpdate={openDialog} onLater={() => markSeen(st.latestSha)} />
+    </>
   );
 
   return { Button, Dialog, state: st, open: openDialog };
@@ -377,6 +473,35 @@ export function UpdateProgressView({ p, phase, msg }: { p: UpdateProgress | null
           ))}
         </ol>
       )}
+    </div>
+  );
+}
+
+/**
+ * Напоминание о новой версии в углу окна. Появляется само, когда фоновая
+ * проверка нашла обновление; «Позже» убирает его до следующей версии.
+ */
+function UpdateToast({
+  st, show, onUpdate, onLater,
+}: {
+  st: UpdaterState;
+  show: boolean;
+  onUpdate: () => void;
+  onLater: () => void;
+}) {
+  if (!show) return null;
+  return (
+    <div className="upd-toast" role="status" aria-live="polite">
+      <span className="upd-toast-ico"><Ic n="update" size={18} /></span>
+      <div className="upd-toast-body">
+        <b>Вышла новая версия {st.to}</b>
+        <span>
+          {st.behind > 1 ? `Новых коммитов: ${st.behind}. ` : ''}
+          {st.latestMsg ? `«${st.latestMsg}»` : 'Обновление из ветки ' + (st.branch || 'main') + '.'}
+        </span>
+      </div>
+      <button className="btn tiny primary" onClick={onUpdate} title="Открыть окно обновления">Обновить</button>
+      <button className="btn tiny" onClick={onLater} title="Скрыть напоминание до следующей версии">Позже</button>
     </div>
   );
 }

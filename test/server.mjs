@@ -54,6 +54,22 @@ const us2 = await (await fetch(url + '/update/status?since=' + (us.rev + 1))).js
 if (Date.now() - t0 > 2000 || us2.rev !== us.rev) throw new Error('update/status long-poll не ответил сразу');
 const cr = await fetch(url + '/update/cancel', { method: 'POST' });
 if (cr.status !== 409) throw new Error('update/cancel без обновления должен вернуть 409, а вернул ' + cr.status);
+// Проверка версии: ответ кэшируется на минуту (фоновая проверка в браузере не
+// должна дёргать GitHub каждые несколько секунд), ?force=1 кэш обходит.
+// Без сети сервер отвечает 502 — тогда саму проверку кэша пропускаем.
+const c1 = await (await fetch(url + '/update/check')).json();
+if (!c1.ok) {
+  if (typeof c1.error !== 'string' || !c1.error) throw new Error('/update/check: ' + JSON.stringify(c1));
+} else {
+  if (c1.cached !== false) throw new Error('первая проверка не может быть из кэша');
+  const t1 = Date.now();
+  const c2 = await (await fetch(url + '/update/check')).json();
+  if (c2.cached !== true) throw new Error('повторная проверка должна отвечать из кэша: ' + JSON.stringify(c2));
+  if (Date.now() - t1 > 1500) throw new Error('повторная проверка ушла в GitHub вместо кэша');
+  if (c2.latestSha !== c1.latestSha || c2.updateAvailable !== c1.updateAvailable) throw new Error('кэш исказил ответ');
+  const c3 = await (await fetch(url + '/update/check?force=1')).json();
+  if (c3.cached !== false) throw new Error('?force=1 должен обходить кэш проверки');
+}
 // хэшированные ассеты кэшируются навсегда, index.html — нет
 if ((await fetch(url + '/')).headers.get('cache-control') !== 'no-cache') throw new Error('index.html не должен кэшироваться');
 
