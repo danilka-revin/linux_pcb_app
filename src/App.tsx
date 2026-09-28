@@ -1,3 +1,5 @@
+import { NI } from './ui/widgets';
+import { trackClearance } from './pcb/track-clearance';
 import { boardShape, boardPath } from './pcb/board-shape';
 import { terminalPath } from './pcb/manual-route';
 // PSBees — редактор печатных плат для Linux и Windows (аналог Sprint-Layout;
@@ -291,6 +293,8 @@ const DEFAULT_DEFS: Defs = {
   showAxes: true,
   angle: '45',
   trackW: 0.6,
+  drcClear: 0.2,
+  drcEnabled: true,
   cutGap: 2,
   cutPads: false,
   padShape: 'round',
@@ -2114,6 +2118,32 @@ export default function App({ cloudUser, onLogout }: { cloudUser?: CloudUser; on
   // ---------------- отрисовка ----------------
   // Плоский список примитивов в порядке отрисовки (площадки/переходы поверх
   // заливок) — развёртка компонентов строится при изменении платы, а не в кадре.
+  const boardClearance = useMemo(() => defs.drcEnabled
+    ? trackClearance(routePrimitives, defs.drcClear) : [],
+    [routePrimitives, defs.drcEnabled, defs.drcClear]);
+  const liveClearance = useMemo(() => {
+    if (!defs.drcEnabled || draft?.t !== 'track' || !draft.pts.length) return [];
+    const pts = draft.pts, last = pts[pts.length - 1];
+    const terminal = trackTerminal({ x: mouse.rx, y: mouse.ry }, mouse.alt);
+    const target = terminal ?? { x: mouse.wx, y: mouse.wy };
+    const next = terminal ? terminalPath(last, target, defs.angle) : [constrain(last, target)];
+    const tracks: M.Track[] = pts.slice(1).map((p, i) => ({
+      id: 'drc-draft', kind: 'track', pts: [pts[i], p], layer: pts[i].layer, w: defs.trackW,
+    }));
+    tracks.push({ id: 'drc-live', kind: 'track', pts: [last, ...next], layer: activeCu, w: defs.trackW });
+    return trackClearance(routePrimitives, defs.drcClear, tracks);
+  }, [routePrimitives, defs.drcEnabled, defs.drcClear, defs.trackW, defs.angle, draft,
+    mouse.rx, mouse.ry, mouse.wx, mouse.wy, mouse.alt, trackTerminal, constrain, activeCu]);
+  const clearanceMarks = useMemo(() => [...boardClearance, ...liveClearance]
+    .filter(v => !hidden.has(v.layer)), [boardClearance, liveClearance, hidden]);
+  const [clearanceBlink, setClearanceBlink] = useState(false);
+  const hasClearanceMarks = clearanceMarks.length > 0;
+  useEffect(() => {
+    if (!hasClearanceMarks) return;
+    const timer = window.setInterval(() => setClearanceBlink(v => !v), 500);
+    return () => window.clearInterval(timer);
+  }, [hasClearanceMarks]);
+
   const zEnts = useMemo(() => zOrdered(doc), [doc]);
   const substrate = useMemo(() => boardShape(doc, zEnts), [doc, zEnts]);
 
@@ -2580,6 +2610,19 @@ export default function App({ cloudUser, onLogout }: { cloudUser?: CloudUser; on
         ctx.strokeRect(Math.min(a.px, b.px) + 0.5, Math.min(a.py, b.py) + 0.5, Math.abs(b.px - a.px), Math.abs(b.py - a.py));
         ctx.setLineDash([]);
       }
+
+      // DRC is editor-only: never included in print, Gerber or CNC exports.
+      ctx.save();
+      ctx.globalAlpha = clearanceBlink ? 1 : 0.35;
+      ctx.strokeStyle = '#ff354f';
+      ctx.fillStyle = '#ff354f';
+      ctx.lineWidth = 3;
+      for (const mark of clearanceMarks) {
+        const a = toPx(mark.a.x, mark.a.y), b = toPx(mark.b.x, mark.b.y);
+        ctx.beginPath(); ctx.moveTo(a.px, a.py); ctx.lineTo(b.px, b.py); ctx.stroke();
+        ctx.beginPath(); ctx.arc((a.px + b.px) / 2, (a.py + b.py) / 2, 8, 0, Math.PI * 2); ctx.stroke();
+      }
+      ctx.restore();
 
       // перекрестие курсора
       if (mouse.px >= 0 && mouse.px <= size.w && mouse.py >= 0 && mouse.py <= size.h) {
@@ -3050,6 +3093,15 @@ export default function App({ cloudUser, onLogout }: { cloudUser?: CloudUser; on
           onDeleteEditNode={editEnt && editNode != null ? () => deleteEditNode(editEnt.id, editNode) : undefined}
           toolMsg={trackMsg.msg ? trackMsg : null}
         />
+        <div className="props">
+          <h3>Контроль зазора дорожек</h3>
+          <label><input type="checkbox" checked={defs.drcEnabled}
+            onChange={e => setDefs({ drcEnabled: e.target.checked })} /> Подсвечивать нарушения</label>
+          <NI label="Минимальный зазор, мм" value={defs.drcClear} min={0} step={0.05}
+            on={v => setDefs({ drcClear: v })} />
+          <div className="hint">Мигающий красный круг — зазор между краями дорожек меньше лимита.
+            Проверяются дорожки на одном слое; общие концы считаются соединением.</div>
+        </div>
         <GridQuickPanel
           defs={defs} setDefs={setDefs} scale={view.s}
           onOpen={() => setDialog('grid')}
