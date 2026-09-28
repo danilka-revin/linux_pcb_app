@@ -69,7 +69,8 @@ const header = () => q('.props h3')?.textContent ?? '';
 const body = () => win.document.body.textContent ?? '';
 /** сохранённая автосейвом плата (App пишет черновик через 400 мс) */
 const savedDoc = async () => {
-  await act(async () => { await wait(520); });
+  // Автосохранение в localStorage отложено на 600 мс — ждём дольше.
+  await act(async () => { await wait(750); });
   return JSON.parse(win.localStorage.getItem('lauaut.autosave')!) as typeof board & {
     groups?: { id: string; name: string; ids: string[] }[];
   };

@@ -88,7 +88,8 @@ const key = async (code: string, ctrlKey = false) => {
   });
 };
 const saved = async () => {
-  await act(async () => { await new Promise(r => setTimeout(r, 520)); });
+  // Автосохранение отложено на 600 мс — ждём дольше.
+  await act(async () => { await new Promise(r => setTimeout(r, 750)); });
   return JSON.parse(win.localStorage.getItem('lauaut.autosave')!) as Doc;
 };
 const tool = async (label: string) => {

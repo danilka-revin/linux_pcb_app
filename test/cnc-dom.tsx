@@ -119,6 +119,31 @@ assert.equal(scrub.value, '0');
 await click('▶ Демонстрация');
 assert(button('Пауза'));
 await click('Пауза');
+// Приближение и панорама демонстрации для проверки мелких участков.
+const preview = win.document.querySelector('.cnc-preview') as SVGElement;
+preview.getBoundingClientRect = () => ({ left: 0, top: 0, width: 300, height: 200,
+  right: 300, bottom: 200, x: 0, y: 0, toJSON: () => {} }) as DOMRect;
+const view = () => preview.getAttribute('viewBox');
+const fitView = view();
+assert(win.document.querySelector('.cnc-zoom'), 'zoom controls present');
+await act(async () => (win.document.querySelector('.cnc-zoom [aria-label="Приблизить"]') as HTMLButtonElement).click());
+assert.notEqual(view(), fitView, 'zoom in changes viewBox');
+assert.notEqual(win.document.querySelector('.cnc-zoom-level')?.textContent, '100%', 'zoom level updates');
+await act(async () => (win.document.querySelector('.cnc-zoom [aria-label="Отдалить"]') as HTMLButtonElement).click());
+const drag = (type: string, x: number, y: number) =>
+  act(async () => preview.dispatchEvent(new win.MouseEvent(type, { bubbles: true, button: 0, clientX: x, clientY: y })));
+await drag('pointerdown', 100, 100);
+await drag('pointermove', 170, 140);
+await drag('pointerup', 170, 140);
+assert.notEqual(view(), fitView, 'pointer drag pans the view');
+await act(async () => preview.dispatchEvent(new win.KeyboardEvent('keydown', { key: '0', bubbles: true, cancelable: true })));
+assert.equal(view(), fitView, 'key 0 refits the view');
+await drag('pointerdown', 100, 100);
+await drag('pointermove', 60, 90);
+await drag('pointerup', 60, 90);
+assert.notEqual(view(), fitView, 'panning persists');
+await act(async () => preview.dispatchEvent(new win.MouseEvent('dblclick', { bubbles: true })));
+assert.equal(view(), fitView, 'double click fits the view');
 await click('Медь');
 await changeInput(win.document.querySelector('#cnc-pass-count') as HTMLInputElement, '2');
 assert.equal(button('Скачать CNC ZIP').disabled, true, 'parameter change invalidates export');
@@ -133,6 +158,8 @@ win.localStorage.setItem('lauaut.autosave', JSON.stringify(board));
 win.localStorage.setItem('lauaut.defs', JSON.stringify({ drcEnabled: true, drcClear: .2 }));
 const App = (await import('../src/App')).default;
 await act(async () => root.render(React.createElement(App)));
+// DRC считается асинхронно с дебаунсом ~180 мс — дожидаемся первого расчёта.
+await act(async () => { await new Promise(r => setTimeout(r, 300)); });
 assert(button('Игнорировать'));
 await click('Игнорировать');
 assert.equal(buttons().filter(b => b.textContent === 'Игнорировать').length, 0);
@@ -149,6 +176,8 @@ const saved = JSON.parse(win.localStorage.getItem('lauaut.autosave')!);
 assert.equal(saved.ignoredClearance.length, 1);
 await act(async () => root.render(null));
 await act(async () => root.render(React.createElement(App)));
+// После перезагрузки DRC снова считается с дебаунсом — ждём панель исключений.
+await act(async () => { await new Promise(r => setTimeout(r, 300)); });
 assert.equal(buttons().filter(b => b.textContent === 'Игнорировать').length, 0, 'reload retains exception');
 await click('Вернуть');
 assert(button('Игнорировать'));
