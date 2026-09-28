@@ -1,10 +1,7 @@
 // Схемы к экспорту на станок: SVG-чертежи «что за что отвечает».
-// Чистый модуль без React — схемы рисуются строками и используются в двух местах:
-//   1) интерактивные схемы в диалоге ЧПУ (src/ui/cnc-schemes.tsx),
-//   2) файл 00b_SHEMY_PARAMETROV.svg внутри скачиваемого CNC ZIP.
-// У каждого узла есть data-part — на него завязана подсветка при наведении.
+// Печатные схемы для файла 00b_SHEMY_PARAMETROV.svg внутри CNC ZIP.
 import type { Doc } from './model';
-import type { CncSettings } from './cnc-settings';
+import { cncDepths, type CncSettings } from './cnc-settings';
 
 export interface SchemePart {
   id: string;
@@ -66,9 +63,6 @@ const dimV = (x: number, y1: number, y2: number, label: string, arr: string, par
     R(x - half - 7, mid - 6, half * 2, 12, 'sch-dim-bg', 3) +
     T(x - 7, mid + 3, label, 'sch-dim-text', 'middle'));
 };
-
-const stepDepths = (depth: number, step: number): string[] =>
-  Array.from({ length: Math.max(1, Math.ceil(depth / step)) }, (_, i) => num(Math.min(depth, (i + 1) * step)));
 
 // ─────────────────────────── 1. Рабочий ноль и отступы ───────────────────────────
 
@@ -174,7 +168,7 @@ export function isolationScheme(s: CncSettings): BuiltScheme {
 
 export function drillScheme(s: CncSettings): BuiltScheme {
   const arr = 'sch-arr-drill';
-  const depths = stepDepths(s.drillDepth, s.drillStep);
+  const depths = cncDepths(s.drillDepth, s.drillStep, s.drillPasses).map(num);
   const kv = Math.min(24, 80 / Math.max(s.drillDepth, 1));
   const ySurf = 122, depthSpan = s.drillDepth * kv;
   const svg = `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 320 224" class="scheme-svg-root" role="img" aria-label="Схема сверловки">${arrDefs(arr)}
@@ -187,7 +181,7 @@ export function drillScheme(s: CncSettings): BuiltScheme {
     ${G('drillstep', depths.slice(0, -1).map((d) =>
       L(92, ySurf + Number(d) * kv, 246, ySurf + Number(d) * kv, 'sch-cut-dash') + T(250, ySurf + Number(d) * kv + 3, `Z-${d}`, 'sch-text', 'start')).join('') +
       T(250, ySurf + depthSpan + 3, `Z-${num(s.drillDepth)}`, 'sch-cut-text', 'start') +
-      dimV(132, ySurf, ySurf + s.drillStep * kv, `шаг ${num(s.drillStep)}`, arr))}
+      dimV(132, ySurf, ySurf + (s.drillPasses ? s.drillDepth / s.drillPasses : s.drillStep) * kv, `шаг ${num(s.drillPasses ? s.drillDepth / s.drillPasses : s.drillStep)}`, arr))}
     ${G('drilldepth', dimV(80, ySurf, ySurf + depthSpan, `Z-${num(s.drillDepth)}`, arr))}
     ${G('drillfeed', T(160, ySurf + depthSpan + 28, `врез F${num(s.drillFeed)} · между шагами подъём на +${num(s.safeZ)} мм`, 'sch-text'))}
     ${G('rpm', T(160, ySurf + depthSpan + 44, `шпиндель S${num(s.drillRpm)} об/мин`, 'sch-text'))}
@@ -201,7 +195,7 @@ export function drillScheme(s: CncSettings): BuiltScheme {
     parts: [
       { id: 'drillside', label: 'сторона сверловки', hint: s.drillSide === 'top' ? 'Сверлим сверху до переворота: X не зеркалируется.' : 'Сверлим снизу после переворота: X зеркалируется, как у нижней меди.' },
       { id: 'drilldepth', label: 'глубина', hint: `Сверло идёт до Z-${num(s.drillDepth)} — с запасом прохода через плату на подложку. Проверьте толщину платы и длину сверла.` },
-      { id: 'drillstep', label: 'шаг по Z', hint: `Ступени по ${num(s.drillStep)} мм с подъёмом на безопасный Z между ними (протяжка стружки).` },
+      { id: 'drillstep', label: 'шаг по Z', hint: `Ступени по ${num(s.drillPasses ? s.drillDepth / s.drillPasses : s.drillStep)} мм с подъёмом на безопасный Z между ними (протяжка стружки).` },
       { id: 'drillfeed', label: 'подача Z', hint: `Скорость погружения сверла — ${num(s.drillFeed)} мм/мин.` },
       { id: 'rpm', label: 'обороты S', hint: `Шпиндель при сверловке — ${num(s.drillRpm)} об/мин; для разных свёрл задайте свой режим вручную.` },
     ],
@@ -247,7 +241,7 @@ export function outlineScheme(doc: Doc, s: CncSettings): BuiltScheme {
   const arr = 'sch-arr-out';
   const o = 7 + s.outlineDiameter * 3;
   const cutR = Math.max(3.5, s.outlineDiameter * 3.2);
-  const depths = stepDepths(s.outlineDepth, s.outlineStep);
+  const depths = cncDepths(s.outlineDepth, s.outlineStep, s.outlinePasses).map(num);
   const svg = `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 320 182" class="scheme-svg-root" role="img" aria-label="Схема вырезания контура">${arrDefs(arr)}
     ${T(130, 12, 'Сверху: фреза идёт снаружи платы')}
     ${G('board', R(70, 36, 120, 80, 'sch-board', 2) + T(130, 80, `плата ${num(doc.w)} × ${num(doc.h)}`, 'sch-copper-text'))}
@@ -255,7 +249,7 @@ export function outlineScheme(doc: Doc, s: CncSettings): BuiltScheme {
       L(130 + cutR, 36 - o, 156, 22, 'sch-dim') + T(158, 24, `Ø ${num(s.outlineDiameter)} мм`, 'sch-text', 'start'))}
     ${G('outlinestep', T(258, 44, 'проходы по Z:', 'sch-text') +
       depths.map((d, i) => T(258, 62 + i * 15, `Z-${d}${i === depths.length - 1 ? ' — полная' : ''}`, 'sch-text')).join('') +
-      T(258, 62 + depths.length * 15 + 2, `шаг ${num(s.outlineStep)} мм`, 'sch-text') +
+      T(258, 62 + depths.length * 15 + 2, `шаг ${num(s.outlinePasses ? s.outlineDepth / s.outlinePasses : s.outlineStep)} мм`, 'sch-text') +
       T(258, 62 + depths.length * 15 + 16, `подача F${num(s.outlineFeed)}`, 'sch-text'))}
     ${G('tabs', R(28, 142, 264, 30, 'sch-warn-box', 6) + T(160, 155, 'БЕЗ удерживающих перемычек!', 'sch-warn-text') + T(160, 168, 'Закрепите плату до конца последнего прохода.', 'sch-warn-text'))}
   </svg>`;
@@ -266,7 +260,7 @@ export function outlineScheme(doc: Doc, s: CncSettings): BuiltScheme {
     caption: 'Контур вырезается последним файлом, по ступеням Z, вокруг платы.',
     parts: [
       { id: 'outlined', label: 'диаметр фрезы', hint: `Фреза Ø${num(s.outlineDiameter)} мм идёт по контуру на полдиаметра СНАРУЖИ от платы — плата получается точно ${num(doc.w)} × ${num(doc.h)} мм.` },
-      { id: 'outlinestep', label: 'ступени Z', hint: `Глубина ${num(s.outlineDepth)} мм набирается ступенями по ${num(s.outlineStep)} мм — всего ${depths.length} проход(а/ов).` },
+      { id: 'outlinestep', label: 'ступени Z', hint: `Глубина ${num(s.outlineDepth)} мм набирается ступенями по ${num(s.outlinePasses ? s.outlineDepth / s.outlinePasses : s.outlineStep)} мм — всего ${depths.length} проход(а/ов).` },
       { id: 'tabs', label: 'без перемычек', hint: 'Вырез идёт без удерживающих перемычек: в конце плата может оторваться. Надёжно закрепите заготовку до конца обработки.' },
     ],
   };

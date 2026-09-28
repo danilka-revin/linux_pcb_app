@@ -7,7 +7,7 @@ import type { Doc, Entity, Pt } from './model';
 import { expandDoc } from './expand';
 import { textPolylines } from './strokefont';
 import type { ZipFile } from './zip';
-import { cncRange, validateCncSettings, type CncBoardAnalysis, type CncSettings, type CncSide } from './cnc-settings';
+import { cncDepths, cncRange, validateCncSettings, type CncBoardAnalysis, type CncSettings, type CncSide } from './cnc-settings';
 import { cncSchemesSvg } from './cnc-schemes';
 export { DEFAULT_CNC_SETTINGS, validateCncSettings, type CncBoardAnalysis, type CncSettings } from './cnc-settings';
 
@@ -273,19 +273,17 @@ function gcodeStart(label: string, rpm: number, safeZ: number): string[] {
 
 function gcodeEnd(safeZ: number): string[] { return [`G0 Z${N(safeZ)}`, 'M5', 'M2', '']; }
 
-function millLoops(paths: Pt[][], depth: number, feed: number, plunge: number, rpm: number, safeZ: number, label: string): string {
+function millLoops(paths: Pt[][], depths: number[], feed: number, plunge: number, rpm: number, safeZ: number, label: string): string {
   const out = gcodeStart(label, rpm, safeZ);
   for (const path of paths) {
     if (path.length < 3) throw new Error('Пустой/вырожденный контур фрезеровки.');
-    out.push(`G0 X${N(path[0].x)} Y${N(path[0].y)}`, `G1 Z-${N(depth)} F${N(plunge)}`, `G1 F${N(feed)}`);
-    for (let i = 1; i < path.length; i++) out.push(`G1 X${N(path[i].x)} Y${N(path[i].y)}`);
-    out.push(`G1 X${N(path[0].x)} Y${N(path[0].y)}`, `G0 Z${N(safeZ)}`);
+    for (const depth of depths) {
+      out.push(`G0 X${N(path[0].x)} Y${N(path[0].y)}`, `G1 Z-${N(depth)} F${N(plunge)}`, `G1 F${N(feed)}`);
+      for (let i = 1; i < path.length; i++) out.push(`G1 X${N(path[i].x)} Y${N(path[i].y)}`);
+      out.push(`G1 X${N(path[0].x)} Y${N(path[0].y)}`, `G0 Z${N(safeZ)}`);
+    }
   }
   return [...out, ...gcodeEnd(safeZ)].join('\n');
-}
-
-function passDepths(depth: number, step: number): number[] {
-  return Array.from({ length: Math.ceil(depth / step) }, (_, i) => Math.min(depth, (i + 1) * step));
 }
 
 type DrillHole = { point: Pt; diameter: number };
@@ -316,7 +314,7 @@ function holesOf(entities: Entity[], doc: Doc): DrillHole[] {
 
 function drillProgram(holes: Pt[], diameter: number, doc: Doc, s: CncSettings): string {
   const out = gcodeStart(`DRILL ${N(diameter)}mm ${s.drillSide.toUpperCase()} ${holes.length} HOLES`, s.drillRpm, s.safeZ);
-  const depths = passDepths(s.drillDepth, s.drillStep);
+  const depths = cncDepths(s.drillDepth, s.drillStep, s.drillPasses);
   for (const h of holes) {
     const p = machinePoint(h, s.drillSide, doc, s);
     if (p.x - diameter / 2 < 0 || p.x + diameter / 2 > doc.w + 2 * s.originX ||
@@ -341,7 +339,7 @@ function outlineProgram(doc: Doc, s: CncSettings): { code: string; passes: numbe
   off.Execute(result, mm(s.outlineDiameter / 2));
   if (result.length !== 1) throw new Error('Не удалось построить траекторию контура платы.');
   const loops = transformed(result, 'top', doc, s);
-  const depths = passDepths(s.outlineDepth, s.outlineStep);
+  const depths = cncDepths(s.outlineDepth, s.outlineStep, s.outlinePasses);
   const out = gcodeStart('OUTLINE LAST - NO TABS - SECURE BOARD', s.outlineRpm, s.safeZ);
   const loop = loops[0];
   for (const depth of depths) {
@@ -372,9 +370,9 @@ function setupText(doc: Doc, s: CncSettings, job: CncJob): string {
     ...(job.outlinePasses ? [`  99_kontur_poslednim.nc — ПОСЛЕДНИМ, ${job.outlinePasses} проходов, БЕЗ ПЕРЕМЫЧЕК: закрепите плату!`] : []),
     '',
     'Перед КАЖДЫМ файлом вручную установите нужный инструмент (M6/T-команд нет), проверьте диаметр и выставьте Z0.',
-    `Изоляция: Ø${N(s.toolDiameter)} мм + запас ${N(s.clearance)} мм, разделение меди ${N(s.toolDiameter + 2 * s.clearance)} мм; Z-${N(s.isolationDepth)}, F${N(s.isolationFeed)}, врезание F${N(s.isolationPlunge)}, S${N(s.isolationRpm)}.`,
-    `Сверловка (${s.drillSide === 'top' ? 'сверху' : 'снизу, координаты зеркальны'}): Z-${N(s.drillDepth)}, шаг ${N(s.drillStep)}, F${N(s.drillFeed)}, S${N(s.drillRpm)}.`,
-    ...(s.cutOutline ? [`Контур: Ø${N(s.outlineDiameter)} мм; Z-${N(s.outlineDepth)}, шаг ${N(s.outlineStep)}, F${N(s.outlineFeed)}, врезание F${N(s.isolationPlunge)}, S${N(s.outlineRpm)}.`] : []),
+    `Изоляция: Ø${N(s.toolDiameter)} мм + запас ${N(s.clearance)} мм, разделение меди ${N(s.toolDiameter + 2 * s.clearance)} мм; Z-${N(s.isolationDepth)}, F${N(s.isolationFeed)}, врезание F${N(s.isolationPlunge)}, S${N(s.isolationRpm)}; проходов: ${s.isolationPasses ?? 1}.`,
+    `Сверловка (${s.drillSide === 'top' ? 'сверху' : 'снизу, координаты зеркальны'}): Z-${N(s.drillDepth)}, проходов ${cncDepths(s.drillDepth, s.drillStep, s.drillPasses).length}, F${N(s.drillFeed)}, S${N(s.drillRpm)}.`,
+    ...(s.cutOutline ? [`Контур: Ø${N(s.outlineDiameter)} мм; Z-${N(s.outlineDepth)}, проходов ${cncDepths(s.outlineDepth, s.outlineStep, s.outlinePasses).length}, F${N(s.outlineFeed)}, врезание F${N(s.isolationPlunge)}, S${N(s.outlineRpm)}.`] : []),
     '',
     'Диалект: GRBL-совместимый G-code, G21 G90 G17 G94, M3/M5, G4 P2 (пауза 2 с), G0/G1; без G28, G92 и смены инструмента.',
     'Это ОДНА изоляционная дорожка вокруг объединённой меди, а не полное удаление меди; оставшаяся фольга требует отдельной зачистки.',
@@ -418,9 +416,9 @@ export function buildCncJob(doc: Doc, s: CncSettings, onProgress: CncProgressFn 
   const files: ZipFile[] = [];
   const tickGcode = () => onProgress('gcode', planned ? files.length / planned : 1);
   if (top.length) { files.push({ name: '01_verh_k1.nc', data: millLoops(transformed(top, 'top', doc, s),
-    s.isolationDepth, s.isolationFeed, s.isolationPlunge, s.isolationRpm, s.safeZ, 'TOP K1 ISOLATION') }); tickGcode(); }
+    cncDepths(s.isolationDepth, s.isolationDepth, s.isolationPasses), s.isolationFeed, s.isolationPlunge, s.isolationRpm, s.safeZ, 'TOP K1 ISOLATION') }); tickGcode(); }
   if (bottom.length) { files.push({ name: '02_niz_k2_zerkalo_x.nc', data: millLoops(transformed(bottom, 'bottom', doc, s),
-    s.isolationDepth, s.isolationFeed, s.isolationPlunge, s.isolationRpm, s.safeZ, 'BOTTOM K2 MIRROR X ISOLATION') }); tickGcode(); }
+    cncDepths(s.isolationDepth, s.isolationDepth, s.isolationPasses), s.isolationFeed, s.isolationPlunge, s.isolationRpm, s.safeZ, 'BOTTOM K2 MIRROR X ISOLATION') }); tickGcode(); }
 
   const drills: CncJob['drills'] = [];
   for (const [diameter, points] of [...groups].sort((a, b) => a[0] - b[0])) {

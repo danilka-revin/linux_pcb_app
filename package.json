@@ -22,7 +22,7 @@
     "test:cloud-ui": "esbuild test/cloud-ui.tsx --bundle --platform=node --format=esm --outfile=node_modules/.cache/cloud-ui.mjs --log-level=warning && node node_modules/.cache/cloud-ui.mjs",
     "test:updater": "esbuild test/updater-dom.tsx --bundle --platform=node --format=esm --external:jsdom --outfile=node_modules/.cache/updater-dom.mjs --log-level=warning && node node_modules/.cache/updater-dom.mjs",
     "test:lay6": "esbuild test/lay6rt.ts --bundle --platform=node --format=esm --outfile=node_modules/.cache/lay6rt.mjs --log-level=warning && node node_modules/.cache/lay6rt.mjs",
-    "test": "npm run test:smoke && npm run test:group && npm run test:group-dom && npm run test:select-nodes-dom && npm run test:grid && npm run test:gen && npm run test:kicad && npm run test:partreel && npm run test:ssr && npm run test:cloud-ui && npm run test:updater && npm run test:lay6 && npm run test:route && npm run test:nets && npm run test:inventory && npm run test:cnc && npm run test:server && npm run test:cloud && npm run test:board-shape && npm run test:board-outline-dom && npm run test:board-preview && npm run test:3d && npm run test:modules && npm run test:manual-route && npm run test:trackedit && npm run test:trackedit-route && npm run test:placement && npm run test:track-clearance",
+    "test": "npm run test:smoke && npm run test:group && npm run test:group-dom && npm run test:select-nodes-dom && npm run test:grid && npm run test:gen && npm run test:kicad && npm run test:partreel && npm run test:ssr && npm run test:cloud-ui && npm run test:updater && npm run test:lay6 && npm run test:route && npm run test:nets && npm run test:inventory && npm run test:cnc && npm run test:server && npm run test:cloud && npm run test:board-shape && npm run test:board-outline-dom && npm run test:board-preview && npm run test:3d && npm run test:modules && npm run test:manual-route && npm run test:trackedit && npm run test:trackedit-route && npm run test:placement && npm run test:track-clearance && npm run test:cnc-dom && npm run test:track-branches && npm run test:track-branches-dom",
     "test:server": "node test/server.mjs",
     "test:cloud": "node test/cloud.mjs",
     "start": "node scripts/server.mjs",
@@ -49,7 +49,11 @@
     "test:trackedit-route": "esbuild test/trackedit-route.ts --bundle --platform=node --format=esm --outfile=node_modules/.cache/trackedit-route.mjs --log-level=warning && node node_modules/.cache/trackedit-route.mjs",
     "test:board-shape": "esbuild test/board-shape.ts --bundle --platform=node --format=esm --outfile=node_modules/.cache/board-shape.mjs --log-level=warning && node node_modules/.cache/board-shape.mjs",
     "test:board-outline-dom": "esbuild test/board-outline-dom.tsx --bundle --platform=node --format=esm --external:jsdom --outfile=node_modules/.cache/board-outline-dom.mjs --log-level=warning && node node_modules/.cache/board-outline-dom.mjs",
-    "test:track-clearance": "esbuild test/track-clearance.ts --bundle --platform=node --format=esm --outfile=node_modules/.cache/track-clearance.mjs --log-level=warning && node node_modules/.cache/track-clearance.mjs"
+    "test:track-clearance": "esbuild test/track-clearance.ts --bundle --platform=node --format=esm --outfile=node_modules/.cache/track-clearance.mjs --log-level=warning && node node_modules/.cache/track-clearance.mjs",
+    "test:cnc-dom": "esbuild test/cnc-dom.tsx --bundle --platform=node --format=esm --external:jsdom --outfile=node_modules/.cache/cnc-dom.mjs --log-level=warning && node node_modules/.cache/cnc-dom.mjs",
+    "test:cnc-browser": "playwright test --config test/cnc.playwright.config.ts",
+    "test:track-branches": "esbuild test/track-branches.ts --bundle --platform=node --format=esm --outfile=node_modules/.cache/track-branches.mjs --log-level=warning && node node_modules/.cache/track-branches.mjs",
+    "test:track-branches-dom": "esbuild test/track-branches-dom.tsx --bundle --platform=node --format=esm --external:jsdom --outfile=node_modules/.cache/track-branches-dom.mjs --log-level=warning && node node_modules/.cache/track-branches-dom.mjs"
   },
   "dependencies": {
     "clipper-lib": "^6.4.2",

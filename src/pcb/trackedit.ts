@@ -212,3 +212,18 @@ export function joinTrackPts(a: Track, aEnd: 0 | 1, b: Track, bEnd: 0 | 1): Pt[]
   }
   return pts;
 }
+
+/** Move a track vertex and all coincident vertices on the same copper layer.
+ * Caller owns the mutable document copy. A junction remains electrical copper,
+ * so no fragile parent IDs or export-only metadata are needed for branches.
+ */
+export function moveTrackNode(entities: Entity[], trackId: string, index: number, target: Pt): void {
+  const track = entities.find((e): e is Track => e.id === trackId && e.kind === 'track');
+  const source = track?.pts[index];
+  if (!track || !source) return;
+  const original = { ...source };
+  for (const e of entities) {
+    if (e.kind !== 'track' || e.layer !== track.layer) continue;
+    e.pts = e.pts.map(p => Math.hypot(p.x - original.x, p.y - original.y) < EPS ? { ...target } : p);
+  }
+}

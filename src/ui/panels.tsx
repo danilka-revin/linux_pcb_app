@@ -17,7 +17,7 @@ export const TOOLS: { id: ToolId; name: string; icon: string; hint: string }[] =
   { id: 'solder', name: 'Пайка', icon: 'solder', hint: 'ЛКМ рядом с двумя концами дорожек на одном слое — соединить их прямой перемычкой' },
   { id: 'route', name: 'Автотрассировка', icon: 'route', hint: 'Две точки или группы соединений — выберите режим справа · вход в площадки по низу (K2), к SMD — по слою площадки' },
   { id: 'probe', name: 'Тест цепи', icon: 'probe', hint: 'ЛКМ по дорожке, площадке, переходу или SMD — подсветить всю электрическую цепь мигающим фиолетовым · клик мимо — снять' },
-  { id: 'track', name: 'Дорожка', icon: 'track', hint: 'ЛКМ — точки излома · ПКМ/Esc — закончить · L — сменить слой с переходом' },
+  { id: 'track', name: 'Дорожка', icon: 'track', hint: 'ЛКМ по узлу — ответвление · ПКМ/Esc — закончить · L — сменить слой с переходом' },
   { id: 'pad', name: 'Площадка', icon: 'pad', hint: 'ЛКМ — поставить площадку (с обеих сторон, с металлизацией)' },
   { id: 'smd', name: 'SMD-площадка', icon: 'smd', hint: 'ЛКМ — поставить планарную площадку на активном слое меди' },
   { id: 'via', name: 'Переход', icon: 'via', hint: 'ЛКМ — поставить переходное отверстие' },
@@ -257,7 +257,7 @@ export function PropsPanel({
   placeName, placeRot, placeSide, setPlaceRot, setPlaceSide, cancelPlace,
   textRot, setTextRot, routeInfo, routeGroups, onSaveSel,
   selGroup, onGroup, onUngroup, onRenameGroup,
-  editInfo, onEditNode, onDeleteEditNode, toolMsg,
+  editInfo, onEditNode, onDeleteEditNode, onBranchNode, toolMsg,
 }: {
   tool: ToolId;
   defs: Defs;
@@ -292,6 +292,8 @@ export function PropsPanel({
   onEditNode?: (x: number, y: number) => void;
   /** удалить выбранный узел */
   onDeleteEditNode?: () => void;
+  /** Start a connected branch at the selected track vertex. */
+  onBranchNode?: () => void;
   /** сообщение правки узлов / инструментов «Разрыв» и «Пайка» */
   toolMsg?: { msg: string; ok: boolean | null } | null;
 }) {
@@ -310,6 +312,9 @@ export function PropsPanel({
             <h3>Узел {editInfo.node + 1} из {editInfo.pts}</h3>
             <NI label="X узла, мм" value={editInfo.x} on={(v) => onEditNode(v, editInfo.y)} />
             <NI label="Y узла, мм" value={editInfo.y} on={(v) => onEditNode(editInfo.x, v)} />
+            {onBranchNode && <div className="row">
+              <button className="btn primary" onClick={onBranchNode}>Ответвление от узла</button>
+            </div>}
             {onDeleteEditNode && <div className="row">
               <button className="btn danger" onClick={onDeleteEditNode} title="Del">Удалить узел</button>
             </div>}
@@ -509,8 +514,9 @@ export function PropsPanel({
           <SI label="Углы" value={defs.angle} options={[['45', '45°'], ['90', '90°'], ['free', 'Свободно']]} on={(v) => setDefs({ angle: v as Defs['angle'] })} />
           <div className="hint">
             ЛКМ — точки, ПКМ/Esc — закончить. <span className="kbd">L</span> во время прокладки —
-            переход на другой слой с виой. Центры выводов, в том числе внутри компонентов,
-            подхватываются автоматически; Alt отключает привязку. При старте с пятачка выбирается
+            переход на другой слой с виой. Клик по узлу дорожки начинает ответвление
+            с её шириной и слоем. Узлы и центры выводов подхватываются автоматически;
+            Alt отключает привязку. При старте с пятачка выбирается
             K2, с SMD — слой площадки. Для подключения к площадке другого слоя сначала нажмите L.
           </div>
         </div>
