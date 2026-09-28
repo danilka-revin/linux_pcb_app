@@ -119,6 +119,19 @@ export function CncDialog({ doc, onClose }: { doc: Doc; onClose: () => void }) {
             <span>По {n(depth / count)} мм · до Z −{n(depth)} мм</span>
           </div>
           {operation === 'isolation' && <>
+            <div className="cnc-pass-card">
+              <label htmlFor="cnc-width-pass-count">Проходов по ширине</label>
+              <div className="cnc-counter">
+                <button className="btn" aria-label="Уменьшить число проходов по ширине" disabled={(settings.isolationWidthPasses ?? 1) <= 1}
+                  onClick={() => change('isolationWidthPasses', (settings.isolationWidthPasses ?? 1) - 1)}>−</button>
+                <input id="cnc-width-pass-count" type="number" min="1" max="100" step="1" value={settings.isolationWidthPasses ?? 1}
+                  onChange={e => { const v = Number(e.target.value); if (Number.isInteger(v) && v >= 1 && v <= 100) change('isolationWidthPasses', v); }} />
+                <button className="btn" aria-label="Увеличить число проходов по ширине" disabled={(settings.isolationWidthPasses ?? 1) >= 100}
+                  onClick={() => change('isolationWidthPasses', (settings.isolationWidthPasses ?? 1) + 1)}>+</button>
+              </div>
+              <span>Шаг XY {n(settings.toolDiameter * .8)} мм · канавка до {n(settings.toolDiameter * (1 + .8 * ((settings.isolationWidthPasses ?? 1) - 1)))} мм</span>
+              <span>Расширяет зазор рядом с дорожкой, не глубину. В узких местах расширение ограничено соседней медью.</span>
+            </div>
             {field('Ширина реза, мм', 'toolDiameter', .1, 6, .05)}
             {field('Запас до меди, мм', 'clearance', 0, 2, .05)}
             {field('Глубина, мм', 'isolationDepth', .01, 2, .01)}

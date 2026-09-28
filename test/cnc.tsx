@@ -256,7 +256,7 @@ for (const file of multipass.files.filter(f => f.name.endsWith('.nc'))) {
   assert.equal(during.move.pass, 1);
   close(during.position.z, (plunge.from.z + plunge.to.z) / 2);
 }
-for (const key of ['isolationPasses', 'drillPasses', 'outlinePasses'] as const) {
+for (const key of ['isolationPasses', 'isolationWidthPasses', 'drillPasses', 'outlinePasses'] as const) {
   for (const value of [0, -1, 1.5, 101, NaN, Infinity]) {
     assert.throws(() => buildCncJob(doc, settings({ [key]: value })), /Проходы/);
   }
@@ -271,3 +271,21 @@ const exportUi = renderToString(createElement(ExportDialog, {
 }));
 assert(exportUi.includes('Настроить и скачать CNC ZIP') && exportUi.includes('НЕ G-code'));
 console.log('CNC OK: copper union + offsets, mirrored K2 and drills, diameter files, pecks, safety, contour, ZIP, UI');
+
+// XY widening is independent of Z passes, on both sides (including mirrored K2).
+const widened = buildCncJob(doc, settings({ isolationWidthPasses: 3 }));
+assert.equal(widened.topLoops, job.topLoops * 3);
+assert.equal(widened.bottomLoops, job.bottomLoops * 3);
+for (const side of ['top', 'bottom'] as const) {
+  const original = job.preview[side], wide = widened.preview[side];
+  for (const path of original) assert(wide.some(p => JSON.stringify(p) === JSON.stringify(path)));
+  close(bounds(wide)[0], bounds(original)[0] - .64);
+}
+for (const file of widened.files.filter(f => /^0[12]_/.test(f.name))) {
+  assert.deepEqual(cncMotion(text(file), 3).depths, [.12], 'width does not add Z levels');
+}
+const combined = buildCncJob(doc, settings({ isolationWidthPasses: 3, isolationPasses: 2 }));
+assert.deepEqual(cncMotion(text(combined.files[0]), 3).depths, [.06, .12]);
+assert.deepEqual(buildCncJob(doc, settings({ isolationWidthPasses: undefined })).preview, job.preview,
+  'legacy settings keep a single XY pass');
+assert(renderToString(createElement(CncDialog, { doc, onClose: () => {} })).includes('Проходов по ширине'));
