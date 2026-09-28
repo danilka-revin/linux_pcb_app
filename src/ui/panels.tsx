@@ -46,6 +46,8 @@ export interface Defs {
   showAxes: boolean;            // показывать оси координат
   angle: '45' | '90' | 'free';
   trackW: number;
+  drcClear: number;
+  drcEnabled: boolean;
   cutGap: number;           // ширина зазора инструмента «Разрыв», мм
   cutPads: boolean;         // ставить площадки под провода на концах разрыва
   padShape: PadShape;
