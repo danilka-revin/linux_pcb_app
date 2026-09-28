@@ -2,7 +2,8 @@ import { useEffect, useRef, useState } from 'react';
 import type { Doc } from '../pcb/model';
 import type { CncJob, CncStage } from '../pcb/cnc';
 import { DEFAULT_CNC_SETTINGS, cncDepths, isolationFits, pickForBoard, validateCncSettings,
-  type CncBoardAnalysis, type CncSettings } from '../pcb/cnc-settings';
+  CNC_ORIGINS, CNC_ORIGIN_LABEL,
+  type CncBoardAnalysis, type CncSettings, type CncOrigin } from '../pcb/cnc-settings';
 import { download, makeZip } from '../pcb/zip';
 import { Modal, NI } from './widgets';
 import { CncPreview } from './cnc-preview';
@@ -15,7 +16,10 @@ function loadSettings(): CncSettings {
   try {
     const raw = globalThis.localStorage?.getItem(KEY);
     if (raw) {
-      const saved = { ...settings, ...JSON.parse(raw) };
+      const parsed = JSON.parse(raw);
+      // миграция старых сохранений без origin
+      if (!parsed.origin) parsed.origin = 'bottom-left';
+      const saved = { ...settings, ...parsed };
       validateCncSettings(saved); settings = saved;
     }
   } catch { /* invalid/legacy storage falls back to defaults */ }
@@ -146,10 +150,21 @@ export function CncDialog({ doc, onClose }: { doc: Doc; onClose: () => void }) {
             </>}
           </details>
         </fieldset>
-        <details className="cnc-advanced"><summary>Ноль и безопасная высота</summary>
-          {field('Отступ X, мм', 'originX', 0, 50)}
-          {field('Отступ Y, мм', 'originY', 0, 50)}
+        <details className="cnc-advanced" open><summary>Ноль и безопасная высота</summary>
+          <label className="cnc-program">Положение нуля<select className="txt" aria-label="Положение нуля" value={settings.origin}
+            onChange={e => change('origin', e.target.value as CncOrigin)}>
+            {CNC_ORIGINS.map(o => <option key={o} value={o}>{CNC_ORIGIN_LABEL[o]}</option>)}
+          </select></label>
+          <div className="cnc-origin-grid" style={{display:'grid', gridTemplateColumns:'repeat(3, 1fr)', gap:'4px', margin:'6px 0'}}>
+            {CNC_ORIGINS.map(o => {
+              const active = settings.origin === o;
+              return <button key={o} type="button" className={'btn' + (active ? ' primary' : '')} style={{fontSize:'11px', padding:'4px 2px'}} onClick={() => change('origin', o as CncOrigin)}>{CNC_ORIGIN_LABEL[o]}</button>;
+            })}
+          </div>
+          {field('Координата нуля X, мм', 'originX', -100, 500)}
+          {field('Координата нуля Y, мм', 'originY', -100, 500)}
           {field('Безопасная Z, мм', 'safeZ', .5, 50)}
+          <div style={{fontSize:'11px', opacity:0.7, marginTop:'4px'}}>Ноль — выбранная точка платы. При «по центру» плата уходит в отрицательные координаты, если X/Y=0. Установите X = W/2+запас, Y = H/2+запас, чтобы вся плата была в плюсе, или оставьте 0 для центрирования.</div>
         </details>
         <div className={'cnc-fit-compact' + (fits === false ? ' is-bad' : '')}>
           {analysis ? (fits ? 'Фреза проходит' : 'Фреза не проходит в зазор') : analyzing ? 'Проверка зазоров…' : 'Зазоры не проверены'}

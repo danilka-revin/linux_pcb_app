@@ -2,6 +2,7 @@ import { useEffect, useMemo, useState } from 'react';
 import type { Doc, Pt } from '../pcb/model';
 import type { CncJob } from '../pcb/cnc';
 import type { CncSettings } from '../pcb/cnc-settings';
+import { cncOriginRef } from '../pcb/cnc-settings';
 import { cncMotion, sampleCncMotion } from '../pcb/cnc-motion';
 
 const n = (v: number) => String(Number(v.toFixed(3)));
@@ -56,8 +57,25 @@ function CncPlayer({ doc, settings, job, name, program }: {
   const diameter = drilling ? job.drills.find(d => d.filename === name)?.diameter ?? 1
     : name.startsWith('99_') ? settings.outlineDiameter : settings.toolDiameter;
   const geometry = useMemo(() => {
+    const ref = cncOriginRef(doc, settings.origin ?? 'bottom-left');
+    const toBoard = (mx: number, my: number) => {
+      if (bottom) {
+        // bottom: mx = ox + (w - bx - ref.x) => bx = w - (mx - ox + ref.x)
+        const bx = doc.w - (mx - settings.originX + ref.x);
+        const by = my - settings.originY + ref.y;
+        return { x: bx, y: by };
+      } else {
+        const bx = mx - settings.originX + ref.x;
+        const by = my - settings.originY + ref.y;
+        return { x: bx, y: by };
+      }
+    };
     const line = (rapid: boolean) => motion.moves.filter(m => m.rapid === rapid && (m.from.x !== m.to.x || m.from.y !== m.to.y))
-      .map(m => `M${n(m.from.x - settings.originX)} ${n(m.from.y - settings.originY)}L${n(m.to.x - settings.originX)} ${n(m.to.y - settings.originY)}`).join('');
+      .map(m => {
+        const a = toBoard(m.from.x, m.from.y);
+        const b = toBoard(m.to.x, m.to.y);
+        return `M${n(a.x)} ${n(a.y)}L${n(b.x)} ${n(b.y)}`;
+      }).join('');
     const copper = bottom ? job.preview.copperBottom : job.preview.copperTop;
     return <>
       <rect width={doc.w} height={doc.h} className="cnc-preview-board" />
@@ -65,13 +83,23 @@ function CncPlayer({ doc, settings, job, name, program }: {
       <path d={line(false)} strokeWidth={diameter} className="cnc-preview-kerf" />
       <path d={line(false)} className="cnc-preview-path" />
       <path d={line(true)} className="cnc-preview-rapid" />
-      {drilling && motion.moves.filter(m => !m.rapid && m.to.z < 0 && m.pass === 1).map((m, i) =>
-        <circle key={i} cx={m.to.x - settings.originX} cy={m.to.y - settings.originY} r={diameter / 2} className="cnc-preview-hole" />)}
+      {drilling && motion.moves.filter(m => !m.rapid && m.to.z < 0 && m.pass === 1).map((m, i) => {
+        const p = toBoard(m.to.x, m.to.y);
+        return <circle key={i} cx={p.x} cy={p.y} r={diameter / 2} className="cnc-preview-hole" />;
+      })}
     </>;
-  }, [motion, settings.originX, settings.originY, bottom, job, doc.w, doc.h, diameter, drilling]);
-  const pad = Math.max(settings.originX, settings.originY, diameter, 2) + Math.max(diameter, 1);
-  const x = (sample?.position.x ?? 0) - settings.originX;
-  const y = (sample?.position.y ?? 0) - settings.originY;
+  }, [motion, settings.originX, settings.originY, settings.origin, bottom, job, doc.w, doc.h, diameter, drilling]);
+  const pad = Math.max(10, diameter, 2) + Math.max(diameter, 1);
+  const ref = cncOriginRef(doc, settings.origin ?? 'bottom-left');
+  const toBoardPos = (mx: number, my: number) => {
+    if (bottom) {
+      return { x: doc.w - (mx - settings.originX + ref.x), y: my - settings.originY + ref.y };
+    }
+    return { x: mx - settings.originX + ref.x, y: my - settings.originY + ref.y };
+  };
+  const pos = toBoardPos(sample?.position.x ?? settings.originX, sample?.position.y ?? settings.originY);
+  const x = pos.x;
+  const y = pos.y;
   const z = sample?.position.z ?? settings.safeZ;
   const r = Math.max(diameter / 2, Math.min(doc.w, doc.h) / 100);
   const maxDepth = motion.depths[motion.depths.length - 1] ?? 1;

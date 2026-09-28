@@ -1,8 +1,20 @@
 // Параметры станка и их проверка отдельно от геометрии: UI не загружает Clipper.
 export type CncSide = 'top' | 'bottom';
+export type CncOrigin =
+  | 'bottom-left'
+  | 'bottom-center'
+  | 'bottom-right'
+  | 'center-left'
+  | 'center'
+  | 'center-right'
+  | 'top-left'
+  | 'top-center'
+  | 'top-right';
 
 export interface CncSettings {
-  /** Расстояние от рабочего нуля станка до левого нижнего угла платы, мм. */
+  /** Где находится рабочий ноль на плате. */
+  origin: CncOrigin;
+  /** Координата выбранного нуля в системе станка, мм. */
   originX: number;
   originY: number;
   /** Безопасный подъём над поверхностью платы (Z=0), мм. */
@@ -31,6 +43,7 @@ export interface CncSettings {
 
 /** Отправные значения, не универсальный режим резания: оператор обязан сверить их со станком. */
 export const DEFAULT_CNC_SETTINGS: CncSettings = {
+  origin: 'bottom-left',
   originX: 5, originY: 5, safeZ: 3,
   toolDiameter: 0.4, clearance: 0.15, isolationDepth: 0.12,
   isolationFeed: 120, isolationPlunge: 60, isolationRpm: 12000,
@@ -44,8 +57,42 @@ export function cncRange(name: string, value: number, min: number, max: number):
     throw new Error(`${name}: введите число от ${min} до ${max}.`);
 }
 
+export const CNC_ORIGINS: CncOrigin[] = [
+  'bottom-left', 'bottom-center', 'bottom-right',
+  'center-left', 'center', 'center-right',
+  'top-left', 'top-center', 'top-right',
+];
+
+export const CNC_ORIGIN_LABEL: Record<CncOrigin, string> = {
+  'bottom-left': 'Слева снизу',
+  'bottom-center': 'Снизу по центру',
+  'bottom-right': 'Справа снизу',
+  'center-left': 'Слева по центру',
+  'center': 'По центру платы',
+  'center-right': 'Справа по центру',
+  'top-left': 'Слева сверху',
+  'top-center': 'Сверху по центру',
+  'top-right': 'Справа сверху',
+};
+
+export function cncOriginRef(doc: { w: number; h: number }, origin: CncOrigin): { x: number; y: number } {
+  const w = doc.w, h = doc.h;
+  switch (origin) {
+    case 'bottom-left': return { x: 0, y: 0 };
+    case 'bottom-center': return { x: w / 2, y: 0 };
+    case 'bottom-right': return { x: w, y: 0 };
+    case 'center-left': return { x: 0, y: h / 2 };
+    case 'center': return { x: w / 2, y: h / 2 };
+    case 'center-right': return { x: w, y: h / 2 };
+    case 'top-left': return { x: 0, y: h };
+    case 'top-center': return { x: w / 2, y: h };
+    case 'top-right': return { x: w, y: h };
+  }
+}
+
 export function validateCncSettings(s: CncSettings): void {
   if (!s || typeof s !== 'object') throw new Error('Не указаны параметры ЧПУ.');
+  if (!CNC_ORIGINS.includes(s.origin as CncOrigin)) throw new Error('Некорректное положение нуля.');
   for (const [label, count] of [['Проходы изоляции', s.isolationPasses], ['Проходы сверления', s.drillPasses],
     ['Проходы контура', s.outlinePasses]] as const) {
     if (count !== undefined) {
@@ -53,8 +100,8 @@ export function validateCncSettings(s: CncSettings): void {
       if (!Number.isInteger(count)) throw new Error(`${label}: введите целое число.`);
     }
   }
-  cncRange('Отступ X от рабочего нуля', s.originX, 0, 50);
-  cncRange('Отступ Y от рабочего нуля', s.originY, 0, 50);
+  cncRange('Координата нуля X', s.originX, -100, 500);
+  cncRange('Координата нуля Y', s.originY, -100, 500);
   cncRange('Безопасная высота Z', s.safeZ, 0.5, 50);
   cncRange('Диаметр фрезы для изоляции', s.toolDiameter, 0.1, 6);
   cncRange('Зазор до меди', s.clearance, 0, 2);
@@ -129,27 +176,45 @@ export function suggestIsolation(maxOffset: number): { toolDiameter: number; cle
   return best;
 }
 
-/** Минимальные отступы заготовки, чтобы контур фрезы не вылез за стол. */
+/** Минимальные координаты нуля, чтобы фреза не вылезла за стол, с учётом положения нуля. */
 export function suggestOrigin(
   doc: { w: number; h: number },
   offset: number,
   copper: CncBoardAnalysis['copper'],
   cutOutline: boolean,
   outlineDiameter: number,
+  origin: CncOrigin = 'bottom-left',
 ): { originX: number; originY: number } {
-  let needX = 0, needY = 0;
+  const ref = cncOriginRef(doc, origin);
+  let needX = ref.x + offset;
+  let needY = ref.y + offset;
   if (copper) {
-    needX = Math.max(0, offset - copper.minX, copper.maxX + offset - doc.w);
-    needY = Math.max(0, offset - copper.minY, copper.maxY + offset - doc.h);
-  } else {
-    needX = offset;
-    needY = offset;
+    // медь может выходить за край платы (редко), учитываем
+    const minLocalX = Math.min(copper.minX, doc.w - copper.maxX);
+    const minLocalY = copper.minY; // Y не зеркалится
+    const maxLocalX = Math.max(copper.maxX, doc.w - copper.minX);
+    const maxLocalY = copper.maxY;
+    // требуем чтобы медь с отступом не уходила в минус
+    const needMinX = ref.x + offset - minLocalX;
+    const needMinY = ref.y + offset - minLocalY;
+    // и чтобы не вылезала за правый/верхний край с запасом
+    const needMaxX = ref.x - (doc.w - maxLocalX) + offset;
+    const needMaxY = ref.y - (doc.h - maxLocalY) + offset;
+    needX = Math.max(needX, needMinX, needMaxX);
+    needY = Math.max(needY, needMinY, needMaxY);
   }
   if (cutOutline) {
-    needX = Math.max(needX, outlineDiameter / 2);
-    needY = Math.max(needY, outlineDiameter / 2);
+    // контур режется снаружи платы на полдиаметра
+    const extra = outlineDiameter / 2;
+    needX = Math.max(needX, ref.x + extra, ref.x + extra + (doc.w - (doc.w)) );
+    needY = Math.max(needY, ref.y + extra);
+    // для центра и правых/верхних нулей нужен запас с другой стороны тоже,
+    // но origin уже включает ref, а заготовка считается как w+2*margin,
+    // поэтому достаточно ref+extra
+    needX = Math.max(needX, ref.x + extra);
+    needY = Math.max(needY, ref.y + extra);
   }
-  const round = (v: number) => Math.min(50, Math.ceil(v * 10) / 10);
+  const round = (v: number) => Math.min(500, Math.ceil(v * 10) / 10);
   return { originX: round(needX), originY: round(needY) };
 }
 
@@ -172,14 +237,14 @@ export function autoFitGaps(s: CncSettings, a: CncBoardAnalysis, doc: { w: numbe
     }
   }
   const offset = isolationOffset({ toolDiameter: s.toolDiameter, clearance: patch.clearance ?? s.clearance });
-  const origin = suggestOrigin(doc, offset, a.copper, s.cutOutline, s.outlineDiameter);
+  const origin = suggestOrigin(doc, offset, a.copper, s.cutOutline, s.outlineDiameter, s.origin);
   if (origin.originX > s.originX + 1e-9) {
     patch.originX = origin.originX;
-    notes.push(`Отступ слева увеличен до ${origin.originX} мм, чтобы фреза не вышла за заготовку.`);
+    notes.push(`Координата нуля X увеличена до ${origin.originX} мм, чтобы фреза не вышла за заготовку.`);
   }
   if (origin.originY > s.originY + 1e-9) {
     patch.originY = origin.originY;
-    notes.push(`Отступ снизу увеличен до ${origin.originY} мм, чтобы фреза не вышла за заготовку.`);
+    notes.push(`Координата нуля Y увеличена до ${origin.originY} мм, чтобы фреза не вышла за заготовку.`);
   }
   if (!Object.keys(patch).length) return null;
   return { settings: { ...s, ...patch }, note: notes.join(' ') };
@@ -188,7 +253,7 @@ export function autoFitGaps(s: CncSettings, a: CncBoardAnalysis, doc: { w: numbe
 /** Полный подбор под плату, включая диаметр фрезы. */
 export function pickForBoard(s: CncSettings, a: CncBoardAnalysis, doc: { w: number; h: number }): CncSettings {
   const iso = suggestIsolation(a.maxOffset);
-  const origin = suggestOrigin(doc, isolationOffset(iso), a.copper, s.cutOutline, s.outlineDiameter);
+  const origin = suggestOrigin(doc, isolationOffset(iso), a.copper, s.cutOutline, s.outlineDiameter, s.origin);
   return {
     ...s,
     ...iso,
