@@ -23,6 +23,8 @@ export interface CncSettings {
   clearance: number;
   isolationDepth: number;
   isolationPasses?: number;
+  /** Число соседних обходов в XY; шаг — 80% диаметра фрезы. */
+  isolationWidthPasses?: number;
   isolationFeed: number;
   isolationPlunge: number;
   isolationRpm: number;
@@ -45,6 +47,7 @@ export interface CncSettings {
 export const DEFAULT_CNC_SETTINGS: CncSettings = {
   origin: 'bottom-left',
   originX: 5, originY: 5, safeZ: 3,
+  isolationWidthPasses: 1,
   toolDiameter: 0.4, clearance: 0.15, isolationDepth: 0.12,
   isolationFeed: 120, isolationPlunge: 60, isolationRpm: 12000,
   drillSide: 'top', drillDepth: 1.8, drillStep: 0.6, drillFeed: 80, drillRpm: 12000,
@@ -93,7 +96,7 @@ export function cncOriginRef(doc: { w: number; h: number }, origin: CncOrigin): 
 export function validateCncSettings(s: CncSettings): void {
   if (!s || typeof s !== 'object') throw new Error('Не указаны параметры ЧПУ.');
   if (!CNC_ORIGINS.includes(s.origin as CncOrigin)) throw new Error('Некорректное положение нуля.');
-  for (const [label, count] of [['Проходы изоляции', s.isolationPasses], ['Проходы сверления', s.drillPasses],
+  for (const [label, count] of [['Проходы по ширине', s.isolationWidthPasses], ['Проходы изоляции', s.isolationPasses], ['Проходы сверления', s.drillPasses],
     ['Проходы контура', s.outlinePasses]] as const) {
     if (count !== undefined) {
       cncRange(label, count, 1, 100);

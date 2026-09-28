@@ -181,6 +181,15 @@ function isolationPaths(copper: Clipper.Paths, s: CncSettings, side: CncSide): C
   const [newOuter, newHoles] = topology(result);
   if (newOuter < outer || newHoles < holes)
     throw new Error(`${side === 'top' ? 'Верхняя' : 'Нижняя'} медь: фреза с зазором не проходит между элементами или во внутреннее окно. Уменьшите диаметр фрезы/зазор либо измените разводку.`);
+  // Каждый обход строится от ВСЕЙ объединённой меди: он не может
+  // пересечь соседнюю дорожку. На дополнительных обходах островки могут
+  // сливаться, а окна исчезать: первый обход уже обеспечил изоляцию.
+  // Перекрытие 20% не оставляет полосок фольги между соседними резами.
+  for (let pass = 1; pass < (s.isolationWidthPasses ?? 1); pass++) {
+    const paths = offsetCopper(copper, s.toolDiameter / 2 + s.clearance + pass * s.toolDiameter * .8);
+    for (const path of paths) result.push(path);
+    countPoints(result);
+  }
   return result;
 }
 
@@ -384,12 +393,12 @@ function setupText(doc: Doc, s: CncSettings, job: CncJob): string {
     ...(job.outlinePasses ? [`  99_kontur_poslednim.nc — ПОСЛЕДНИМ, ${job.outlinePasses} проходов, БЕЗ ПЕРЕМЫЧЕК: закрепите плату!`] : []),
     '',
     'Перед КАЖДЫМ файлом вручную установите нужный инструмент (M6/T-команд нет), проверьте диаметр и выставьте Z0.',
-    `Изоляция: Ø${N(s.toolDiameter)} мм + запас ${N(s.clearance)} мм, разделение меди ${N(s.toolDiameter + 2 * s.clearance)} мм; Z-${N(s.isolationDepth)}, F${N(s.isolationFeed)}, врезание F${N(s.isolationPlunge)}, S${N(s.isolationRpm)}; проходов: ${s.isolationPasses ?? 1}.`,
+    `Изоляция: Ø${N(s.toolDiameter)} мм + запас ${N(s.clearance)} мм, разделение меди ${N(s.toolDiameter + 2 * s.clearance)} мм; Z-${N(s.isolationDepth)}, F${N(s.isolationFeed)}, врезание F${N(s.isolationPlunge)}, S${N(s.isolationRpm)}; проходов по глубине: ${s.isolationPasses ?? 1}; по ширине: ${s.isolationWidthPasses ?? 1}, шаг XY ${N(s.toolDiameter * .8)} мм.`,
     `Сверловка (${s.drillSide === 'top' ? 'сверху' : 'снизу, координаты зеркальны'}): Z-${N(s.drillDepth)}, проходов ${cncDepths(s.drillDepth, s.drillStep, s.drillPasses).length}, F${N(s.drillFeed)}, S${N(s.drillRpm)}.`,
     ...(s.cutOutline ? [`Контур: Ø${N(s.outlineDiameter)} мм; Z-${N(s.outlineDepth)}, проходов ${cncDepths(s.outlineDepth, s.outlineStep, s.outlinePasses).length}, F${N(s.outlineFeed)}, врезание F${N(s.isolationPlunge)}, S${N(s.outlineRpm)}.`] : []),
     '',
     'Диалект: GRBL-совместимый G-code, G21 G90 G17 G94, M3/M5, G4 P2 (пауза 2 с), G0/G1; без G28, G92 и смены инструмента.',
-    'Это ОДНА изоляционная дорожка вокруг объединённой меди, а не полное удаление меди; оставшаяся фольга требует отдельной зачистки.',
+    'Соседние обходы расширяют канавку вокруг объединённой меди без увеличения глубины. В узких местах расширение ограничено соседней медью. Это не полное удаление меди; оставшаяся фольга требует отдельной зачистки.',
     'Ширина V-образного резца — эффективная ширина на выбранной глубине, не диаметр хвостовика.',
     'ПРОВЕРЬТЕ программу в симуляторе вашего контроллера, направление осей, отражение низа, ноль, подачу и обороты.',
     'Первый пуск — холостой проход с Z выше платы и включённой защитой; сверяйте контуры и все отверстия с чертежом.',
