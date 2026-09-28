@@ -1,6 +1,8 @@
 import type { Entity, Pt, Track } from './model';
 
 export interface TrackClearanceViolation {
+  /** Geometry-bound identity: editing a segment or the rule re-enables its warning. */
+  key: string;
   a: Pt;
   b: Pt;
   gap: number;
@@ -60,10 +62,18 @@ export function trackClearance(entities: Entity[], limit: number, candidates?: T
         if (gap >= limit - 1e-7) continue;
         // Mark copper edges rather than centre lines when they do not overlap.
         const dir = distance ? sub(y, x) : { x: 0, y: 0 };
-        result.push({ a: at(x, dir, distance ? Math.min(a.w / 2 / distance, .5) : 0),
+        const segmentKey = (t: Track, p: Pt, q: Pt) => JSON.stringify([t.id, t.w,
+          ...[JSON.stringify(p), JSON.stringify(q)].sort()]);
+        const key = JSON.stringify([a.layer, limit, ...[segmentKey(a, p, q), segmentKey(b, r, s)].sort()]);
+        result.push({ key, a: at(x, dir, distance ? Math.min(a.w / 2 / distance, .5) : 0),
           b: at(y, dir, distance ? -Math.min(b.w / 2 / distance, .5) : 0), gap, layer: a.layer });
       }
     }
   });
   return result;
+}
+
+export function activeClearance(violations: TrackClearanceViolation[], ignored: string[] = []): TrackClearanceViolation[] {
+  const keys = new Set(ignored);
+  return violations.filter(v => !keys.has(v.key));
 }

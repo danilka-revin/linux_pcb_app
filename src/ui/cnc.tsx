@@ -1,376 +1,175 @@
-// Настройка станка, асинхронный CAM и проверка траекторий перед скачиванием.
-// Зазоры подстраиваются под щели платы; превью показывает ход фрезы и разделение меди.
-// Рядом с каждой группой параметров — интерактивная схема «что за что отвечает»
-// (те же схемы вшиваются в ZIP как 00b_SHEMY_PARAMETROV.svg); построение и
-// проверка показываются интерактивными полосами прогресса.
-// Просмотр теперь не обязателен для скачивания и открывается в отдельном окне.
-import { useEffect, useMemo, useRef, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import type { Doc } from '../pcb/model';
 import type { CncJob, CncStage } from '../pcb/cnc';
-import {
-  DEFAULT_CNC_SETTINGS, autoFitGaps, isolationFits, isolationNeed, isolationOffset,
-  pickForBoard, validateCncSettings, type CncBoardAnalysis, type CncSettings,
-} from '../pcb/cnc-settings';
-import { drillScheme, filesScheme, flipScheme, isolationScheme, outlineScheme, workZeroScheme } from '../pcb/cnc-schemes';
+import { DEFAULT_CNC_SETTINGS, cncDepths, isolationFits, pickForBoard, validateCncSettings,
+  type CncBoardAnalysis, type CncSettings } from '../pcb/cnc-settings';
 import { download, makeZip } from '../pcb/zip';
 import { Modal, NI } from './widgets';
-import { ProgressBar, type PbStep } from './progress';
-import { Scheme } from './cnc-schemes';
 import { CncPreview } from './cnc-preview';
-import { openCncPreviewWindow } from './cnc-preview-window';
 
 const KEY = 'psbees.cnc.settings';
 const n = (v: number) => String(Number(v.toFixed(3)));
-const gapLabel = (g: number) => Number.isFinite(g) ? `${n(g)} мм` : 'широкие';
-
+const STAGES: CncStage[] = ['copper-top', 'copper-bottom', 'isolation', 'drills', 'gcode', 'docs'];
 function loadSettings(): CncSettings {
+  let settings = { ...DEFAULT_CNC_SETTINGS };
   try {
     const raw = globalThis.localStorage?.getItem(KEY);
     if (raw) {
-      const saved = { ...DEFAULT_CNC_SETTINGS, ...JSON.parse(raw) } as CncSettings;
-      validateCncSettings(saved);
-      return saved;
+      const saved = { ...settings, ...JSON.parse(raw) };
+      validateCncSettings(saved); settings = saved;
     }
-  } catch { /* при повреждённом сохранении — безопасные начальные параметры */ }
-  return { ...DEFAULT_CNC_SETTINGS };
+  } catch { /* invalid/legacy storage falls back to defaults */ }
+  return { ...settings, isolationPasses: settings.isolationPasses ?? 1,
+    drillPasses: cncDepths(settings.drillDepth, settings.drillStep, settings.drillPasses).length,
+    outlinePasses: cncDepths(settings.outlineDepth, settings.outlineStep, settings.outlinePasses).length };
 }
-
-/** Этапы расчёта CAM: веса для общей полосы и подсказки «что считаем». */
-const STAGES: { id: CncStage; label: string; weight: number; hint: string }[] = [
-  { id: 'copper-top', label: 'Медь верха K1', weight: 2, hint: 'Дорожки и площадки верха объединяются в один контур — фреза не разрежет соединение.' },
-  { id: 'copper-bottom', label: 'Медь низа K2', weight: 2, hint: 'То же для нижней меди.' },
-  { id: 'isolation', label: 'Контуры изоляции', weight: 3, hint: 'Смещение на радиус фрезы + зазор и проверка, что фреза проходит между элементами.' },
-  { id: 'drills', label: 'Сверловка', weight: 2, hint: 'Отверстия собираются по диаметрам, повторы в одной точке убираются.' },
-  { id: 'gcode', label: 'Программы G-code', weight: 3, hint: 'Каждый инструмент — своя программа .nc с проверкой безопасности Z.' },
-  { id: 'docs', label: 'Схемы и инструкция', weight: 1, hint: 'Схемы «что за что отвечает» и файл 00_PROCHTITE_PERED_ZAPUSKOM.txt.' },
-];
 
 export function CncDialog({ doc, onClose }: { doc: Doc; onClose: () => void }) {
   const [settings, setSettings] = useState(loadSettings);
+  const [operation, setOperation] = useState<'isolation' | 'drill' | 'outline'>('isolation');
   const [job, setJob] = useState<CncJob | null>(null);
+  const [analyzing, setAnalyzing] = useState(true);
+  const [analysis, setAnalysis] = useState<CncBoardAnalysis | null>(null);
   const [error, setError] = useState('');
   const [building, setBuilding] = useState(false);
-  const [bp, setBp] = useState<{ stage: CncStage; frac: number } | null>(null);
-  const [reviewed, setReviewed] = useState(false);
-  const [previewSide, setPreviewSide] = useState<'top' | 'bottom'>('top');
-  const [showInlinePreview, setShowInlinePreview] = useState(false);
-  const [analysis, setAnalysis] = useState<CncBoardAnalysis | null>(null);
-  const [fitNote, setFitNote] = useState('');
+  const [progress, setProgress] = useState(0);
   const worker = useRef<Worker | null>(null);
-  const fitDone = useRef(false);
-  const settingsRef = useRef(settings);
-  settingsRef.current = settings;
-
-  useEffect(() => () => { worker.current?.terminate(); worker.current = null; }, []);
-  useEffect(() => {
-    worker.current?.terminate(); worker.current = null;
-    setJob(null); setReviewed(false); setBuilding(false); setBp(null);
-    setAnalysis(null); setFitNote(''); fitDone.current = false;
-    const w = new Worker(new URL('../pcb/cnc.worker.ts', import.meta.url), { type: 'module' });
-    w.onmessage = (event: MessageEvent<{ type?: string; analysis?: CncBoardAnalysis; error?: string }>) => {
-      if (event.data?.type !== 'analysis') return;
-      if (event.data.analysis) setAnalysis(event.data.analysis);
-      else setFitNote(event.data.error || 'Не удалось оценить щели этой платы.');
-      w.terminate();
-    };
-    w.onerror = () => { setFitNote('Не удалось оценить щели этой платы.'); w.terminate(); };
-    w.postMessage({ op: 'analyze', doc });
-    return () => w.terminate();
-  }, [doc]);
-
-  useEffect(() => {
-    if (!analysis || fitDone.current) return;
-    fitDone.current = true;
-    const fitted = autoFitGaps(settingsRef.current, analysis, doc);
-    if (fitted) {
-      setSettings(fitted.settings);
-      setFitNote(fitted.note);
-    }
-  }, [analysis, doc]);
-
   const invalidate = () => {
     worker.current?.terminate(); worker.current = null;
-    setJob(null); setReviewed(false); setBuilding(false); setBp(null); setError('');
+    setJob(null); setBuilding(false); setProgress(0); setError('');
   };
+  useEffect(() => {
+    invalidate(); setAnalysis(null); setAnalyzing(true);
+    const w = new Worker(new URL('../pcb/cnc.worker.ts', import.meta.url), { type: 'module' });
+    let active = true;
+    w.onmessage = e => {
+      if (active && e.data.type === 'analysis') { setAnalysis(e.data.analysis ?? null); setAnalyzing(false); }
+      w.terminate();
+    };
+    w.onerror = () => { if (active) setAnalyzing(false); w.terminate(); };
+    w.postMessage({ op: 'analyze', doc });
+    return () => { active = false; w.terminate(); worker.current?.terminate(); worker.current = null; };
+  }, [doc]);
   const change = <K extends keyof CncSettings>(key: K, value: CncSettings[K]) => {
-    invalidate();
-    setSettings((old) => ({ ...old, [key]: value }));
+    invalidate(); setSettings(old => ({ ...old, [key]: value }));
   };
-  const applyBoard = () => {
-    if (!analysis) return;
-    invalidate();
-    const next = pickForBoard(settingsRef.current, analysis, doc);
-    setSettings(next);
-    setFitNote(`Подобрано под эту плату: фреза Ø${n(next.toolDiameter)} мм, запас ${n(next.clearance)} мм, разделение ${n(isolationNeed(next))} мм.`);
-  };
-
+  const field = (label: string, key: keyof CncSettings, min: number, max: number, step = .1) =>
+    <NI label={label} value={settings[key] as number} min={min} max={max} step={step} on={v => change(key, v)} />;
   const build = () => {
     invalidate();
     try {
       validateCncSettings(settings);
-      const next = new Worker(new URL('../pcb/cnc.worker.ts', import.meta.url), { type: 'module' });
-      worker.current = next;
-      setBuilding(true);
-      setBp({ stage: 'copper-top', frac: 0 });
-      next.onmessage = (event: MessageEvent<{ type?: string; stage?: CncStage; frac?: number } | { ok: true; job: CncJob } | { ok: false; error: string }>) => {
-        if (worker.current !== next) return;
-        if ('type' in event.data && event.data.type === 'progress') {
-          setBp({ stage: event.data.stage ?? 'copper-top', frac: event.data.frac ?? 0 });
-          return;
+      const w = new Worker(new URL('../pcb/cnc.worker.ts', import.meta.url), { type: 'module' });
+      worker.current = w; setBuilding(true);
+      w.onmessage = e => {
+        if (worker.current !== w) return;
+        if (e.data.type === 'progress') {
+          setProgress((STAGES.indexOf(e.data.stage) + e.data.frac) / STAGES.length * 100); return;
         }
-        worker.current = null; next.terminate(); setBuilding(false); setBp(null);
-        if ('ok' in event.data && event.data.ok) {
-          setJob(event.data.job);
-        } else setError('error' in event.data ? event.data.error : 'Не удалось построить траектории ЧПУ.');
+        worker.current = null; w.terminate(); setBuilding(false);
+        if (e.data.ok) setJob(e.data.job); else setError(e.data.error || 'Не удалось построить траектории.');
       };
-      next.onerror = () => {
-        if (worker.current !== next) return;
-        worker.current = null; next.terminate(); setBuilding(false); setBp(null);
-        setError('Не удалось построить траектории ЧПУ. Проверьте плату и попробуйте ещё раз.');
+      w.onerror = () => {
+        if (worker.current !== w) return;
+        worker.current = null; w.terminate(); setBuilding(false); setError('Ошибка расчёта. Попробуйте ещё раз.');
       };
-      next.postMessage({ doc, settings });
-    } catch (e) {
-      setBuilding(false); setBp(null);
-      setError(e instanceof Error ? e.message : String(e));
-    }
+      w.postMessage({ doc, settings });
+    } catch (e) { setError(e instanceof Error ? e.message : String(e)); setBuilding(false); }
   };
-
   const save = () => {
     if (!job) return;
-    // Просмотр теперь не обязателен — скачивание доступно сразу после построения.
     const base = (doc.name || 'board').replace(/[^\wа-яА-ЯёЁ-]+/g, '_').slice(0, 100) || 'board';
     download(`${base}_cnc_grbl.zip`, makeZip(job.files));
-    try { globalThis.localStorage?.setItem(KEY, JSON.stringify(settings)); }
-    catch { /* приватный режим браузера */ }
+    try { globalThis.localStorage?.setItem(KEY, JSON.stringify(settings)); } catch { /* private mode */ }
   };
-
-  const openPreview = (side: 'top' | 'bottom') => {
-    if (!job) return;
-    setPreviewSide(side);
-    openCncPreviewWindow(doc, settings, job, side);
-  };
-
-  const openCurrentPreview = () => {
-    if (!job) return;
-    openCncPreviewWindow(doc, settings, job, previewSide);
-  };
-
-  // Схемы пересчитываются вместе с параметрами: цифры на чертежах всегда живые.
-  const schemes = useMemo(() => ({
-    zero: workZeroScheme(doc, settings),
-    iso: isolationScheme(settings),
-    drill: drillScheme(settings),
-    flip: flipScheme(doc, settings),
-    out: outlineScheme(doc, settings),
-    files: filesScheme(doc, settings, job ?? { topLoops: 0, bottomLoops: 0, drills: [], outlinePasses: 0 }),
-  }), [doc, settings, job]);
-
-  // Полоса прогресса расчёта с этапами и подсказками.
-  const buildSteps: PbStep[] = (() => {
-    const cur = bp ? STAGES.findIndex((x) => x.id === bp.stage) : -1;
-    return STAGES.map((s, i) => ({
-      id: s.id,
-      label: s.label,
-      hint: s.hint,
-      state: !building && !bp ? 'wait' : i < cur ? 'done' : i === cur ? 'run' : 'wait',
-      frac: i === cur ? bp?.frac ?? 0 : 0,
-    }));
-  })();
-  const buildPct = (() => {
-    if (!bp) return 0;
-    const total = STAGES.reduce((a, s) => a + s.weight, 0);
-    const idx = STAGES.findIndex((x) => x.id === bp.stage);
-    const done = STAGES.slice(0, idx).reduce((a, s) => a + s.weight, 0);
-    return ((done + bp.frac * (STAGES[idx]?.weight ?? 0)) / total) * 100;
-  })();
-
-  // Готовность к экспорту: просмотр теперь опционален и в отдельном окне.
-  const reviewSteps: PbStep[] = [
-    { id: 'build', label: 'Построить траектории', state: job ? 'done' : 'wait', hint: 'Расчёт изоляции, сверловки и G-code в фоновом потоке.' },
-    {
-      id: 'preview',
-      label: 'Просмотр в отдельном окне (необязательно)',
-      state: job ? 'done' : 'wait',
-      hint: 'Откройте просмотр в отдельном окне, чтобы сверить медь и ход фрезы. Скачивание доступно и без просмотра.',
-      onSelect: () => { if (job) openCurrentPreview(); },
-    },
-    { id: 'confirm', label: 'Подтвердить проверку (необязательно)', state: reviewed ? 'done' : 'wait', hint: 'Галочка для вашей проверки — не блокирует скачивание.' },
-  ];
-  const reviewDone = reviewSteps.filter((s) => s.state === 'done').length;
-  const reviewPct = (reviewDone / reviewSteps.length) * 100;
-  const need = isolationNeed(settings);
-  const offset = isolationOffset(settings);
+  const depth = operation === 'isolation' ? settings.isolationDepth : operation === 'drill' ? settings.drillDepth : settings.outlineDepth;
+  const countKey = operation === 'isolation' ? 'isolationPasses' : operation === 'drill' ? 'drillPasses' : 'outlinePasses';
+  const count = settings[countKey] ?? 1;
   const fits = analysis ? isolationFits(settings, analysis) : null;
-  const pick = analysis ? pickForBoard(settings, analysis, doc) : null;
 
-  const hasTop = !!job && (job.topLoops > 0 || (job.drills.length > 0 && settings.drillSide === 'top'));
-  const hasBottom = !!job && (job.bottomLoops > 0 || (job.drills.length > 0 && settings.drillSide === 'bottom'));
-
-  return <Modal title="ЧПУ: фрезеровка и сверловка (G-code / GRBL)" className="cnc-modal" onClose={onClose}
-    foot={<>
-      <button className="btn" onClick={onClose}>Закрыть</button>
-      <button className="btn" disabled={building} onClick={build}>{building ? 'Строим траектории…' : 'Построить и проверить'}</button>
-      <button className="btn primary" disabled={!job || building} onClick={save}>Скачать CNC ZIP</button>
-    </>}>
-    <p className="cnc-intro">Плата «{doc.name}», {n(doc.w)} × {n(doc.h)} мм. Фреза обходит дорожки канавкой — это не зачистка всей фольги.
-      Зазоры ниже <b>подстраиваются под щели этой платы</b>. После построения можно <b>смотреть, как пойдёт станок</b> в отдельном окне (просмотр не обязателен).
-      Под группами — схемы «что за что отвечает» (они же в ZIP: <code>00b_SHEMY_PARAMETROV.svg</code>).
-      Числа — <b>пример, а не проверенный режим вашего станка</b>.</p>
-
-    <div className={'cnc-fit' + (fits === false ? ' is-bad' : fits ? ' is-ok' : '')}>
-      <div className="cnc-fit-grid">
-        <div className="cnc-fit-gap">
-          <b>Разделение меди</b>
-          <strong>{n(need)} мм</strong>
-          <small>рез Ø{n(settings.toolDiameter)} + запас {n(settings.clearance)} мм × 2</small>
+  return <Modal title="Экспорт для ЧПУ" onClose={onClose} className="cnc-modal cnc-simple" foot={<>
+    <button className="btn" onClick={onClose}>Закрыть</button>
+    {building ? <button className="btn" onClick={invalidate}>Отменить расчёт</button>
+      : <button className="btn" onClick={build}>{job ? 'Пересчитать' : 'Построить траектории'}</button>}
+    <button className="btn primary" disabled={!job || building} onClick={save}>Скачать CNC ZIP</button>
+  </>}>
+    <div className="cnc-heading"><span>{doc.name} · {n(doc.w)} × {n(doc.h)} мм</span><span>GRBL · мм</span></div>
+    <div className="cnc-workspace">
+      <div className="cnc-setup">
+        <div className="cnc-tabs" role="tablist" aria-label="Настройки операции">
+          {(['isolation', 'drill', 'outline'] as const).map((op, i) => <button key={op} type="button" role="tab"
+            aria-selected={operation === op} className={'btn' + (operation === op ? ' primary' : '')} onClick={() => setOperation(op)}>
+            {['Медь', 'Отверстия', 'Контур'][i]}</button>)}
         </div>
-        <div>
-          <b>Щели на этой плате</b>
-          <strong>{analysis ? gapLabel(analysis.minGap) : 'считаем…'}</strong>
-          <small>{fits === false ? 'фреза не пройдёт — подберите тоньше' : fits ? 'фрезе есть куда пройти' : 'смотрим дорожки платы'}</small>
-        </div>
-        <div>
-          <b>Заготовка</b>
-          <strong>{n(doc.w + 2 * settings.originX)} × {n(doc.h + 2 * settings.originY)}</strong>
-          <small>отступы {n(settings.originX)} и {n(settings.originY)} мм, центр фрезы +{n(offset)} мм от меди</small>
+        {operation === 'outline' && <label className="chk cnc-outline-toggle"><input type="checkbox" checked={settings.cutOutline}
+          onChange={e => change('cutOutline', e.target.checked)} />Вырезать контур</label>}
+        <fieldset className="cnc-operation" disabled={operation === 'outline' && !settings.cutOutline}>
+          <div className="cnc-pass-card">
+            <label htmlFor="cnc-pass-count">Проходов по глубине</label>
+            <div className="cnc-counter">
+              <button className="btn" aria-label="Уменьшить число проходов" disabled={count <= 1} onClick={() => change(countKey, count - 1)}>−</button>
+              <input id="cnc-pass-count" type="number" min="1" max="100" step="1" value={count}
+                onChange={e => { const v = Number(e.target.value); if (Number.isInteger(v) && v >= 1 && v <= 100) change(countKey, v); }} />
+              <button className="btn" aria-label="Увеличить число проходов" disabled={count >= 100} onClick={() => change(countKey, count + 1)}>+</button>
+            </div>
+            <span>По {n(depth / count)} мм · до Z −{n(depth)} мм</span>
+          </div>
+          {operation === 'isolation' && <>
+            {field('Ширина реза, мм', 'toolDiameter', .1, 6, .05)}
+            {field('Запас до меди, мм', 'clearance', 0, 2, .05)}
+            {field('Глубина, мм', 'isolationDepth', .01, 2, .01)}
+          </>}
+          {operation === 'drill' && <>
+            <label className="cnc-program">Сторона<select className="txt" aria-label="Сторона сверления" value={settings.drillSide}
+              onChange={e => change('drillSide', e.target.value as 'top' | 'bottom')}>
+              <option value="top">Сверлить сверху</option><option value="bottom">Снизу · зеркало X</option>
+            </select></label>
+            {field('Глубина, мм', 'drillDepth', .1, 10)}
+          </>}
+          {operation === 'outline' && <>
+            {field('Диаметр фрезы, мм', 'outlineDiameter', .1, 10)}
+            {field('Глубина, мм', 'outlineDepth', .1, 10)}
+            <div className="cnc-short-warning">Без перемычек · закрепите плату</div>
+          </>}
+          <details className="cnc-advanced"><summary>Подачи и обороты</summary>
+            {operation === 'isolation' ? <>
+              {field('Подача XY, мм/мин', 'isolationFeed', 1, 5000, 10)}
+              {field('Подача Z, мм/мин', 'isolationPlunge', 1, 5000, 10)}
+              {field('Шпиндель, об/мин', 'isolationRpm', 100, 60000, 100)}
+            </> : operation === 'drill' ? <>
+              {field('Подача Z, мм/мин', 'drillFeed', 1, 5000, 10)}
+              {field('Шпиндель, об/мин', 'drillRpm', 100, 60000, 100)}
+            </> : <>
+              {field('Подача XY, мм/мин', 'outlineFeed', 1, 5000, 10)}
+              {field('Подача Z, мм/мин', 'isolationPlunge', 1, 5000, 10)}
+              {field('Шпиндель, об/мин', 'outlineRpm', 100, 60000, 100)}
+            </>}
+          </details>
+        </fieldset>
+        <details className="cnc-advanced"><summary>Ноль и безопасная высота</summary>
+          {field('Отступ X, мм', 'originX', 0, 50)}
+          {field('Отступ Y, мм', 'originY', 0, 50)}
+          {field('Безопасная Z, мм', 'safeZ', .5, 50)}
+        </details>
+        <div className={'cnc-fit-compact' + (fits === false ? ' is-bad' : '')}>
+          {analysis ? (fits ? 'Фреза проходит' : 'Фреза не проходит в зазор') : analyzing ? 'Проверка зазоров…' : 'Зазоры не проверены'}
+          <button className="btn" disabled={!analysis} onClick={() => {
+            if (analysis) { invalidate(); setSettings(pickForBoard(settings, analysis, doc)); }
+          }}>Подобрать фрезу</button>
         </div>
       </div>
-      {fitNote && <p className="cnc-fit-note">{fitNote}</p>}
-      {fits === false && pick && <p className="cnc-fit-note">Для этой платы подойдёт Ø{n(pick.toolDiameter)} мм и запас {n(pick.clearance)} мм (разделение {n(isolationNeed(pick))} мм).</p>}
-      <button type="button" className="btn" disabled={!analysis} onClick={applyBoard}>Подобрать под эту плату</button>
-    </div>
-
-    {building && <ProgressBar
-      label="Построение траекторий ЧПУ…"
-      pct={buildPct} live steps={buildSteps}
-      meta={bp ? `сейчас: ${STAGES.find((s) => s.id === bp.stage)?.label ?? ''}` : 'подготовка'}
-    />}
-
-    <div className="cnc-settings">
-      <section>
-        <h3>1. Где плата лежит на столе</h3>
-        <p>Ноль X/Y — нижний левый угол заготовки (смотрите на ту сторону, которую сейчас режете). Отступы — воздух от нуля до края платы,
-          чтобы фреза и зажимы не столкнулись. Ноль Z — поверхность этой стороны; после каждой смены инструмента выставьте заново.</p>
-        <Scheme built={schemes.zero} />
-        <div className="cnc-fields">
-          <NI label="Отступ слева, мм" value={settings.originX} on={(v) => change('originX', v)} min={0} max={50} />
-          <NI label="Отступ снизу, мм" value={settings.originY} on={(v) => change('originY', v)} min={0} max={50} />
-          <NI label="Подъём над платой, мм" value={settings.safeZ} on={(v) => change('safeZ', v)} min={0.5} max={50} />
-        </div>
-        <p>Заготовка от {n(doc.w + 2 * settings.originX)} × {n(doc.h + 2 * settings.originY)} мм; зажимы должны быть <b>ниже подъёма</b>.</p>
-      </section>
-
-      <section>
-        <h3>2. Как фреза обходит медь</h3>
-        <p>Фреза идёт вокруг дорожек и вырезает канавку, чтобы они не коротнули с остальной фольгой.
-          <b>Разделение меди {n(need)} мм</b> = ширина реза Ø{n(settings.toolDiameter)} + запас {n(settings.clearance)} мм с каждой стороны.
-          Между двумя дорожками нужно столько свободного места. Для V-фрезы укажите <b>ширину реза на глубине</b>, не хвостовик.</p>
-        <Scheme built={schemes.iso} />
-        <div className="cnc-fields">
-          <NI label="Ширина реза, мм" value={settings.toolDiameter} on={(v) => change('toolDiameter', v)} min={0.1} max={6} step={0.05} />
-          <NI label="Запас до меди, мм" value={settings.clearance} on={(v) => change('clearance', v)} min={0} max={2} step={0.05} />
-          <NI label="Глубина реза фольги, мм" value={settings.isolationDepth} on={(v) => change('isolationDepth', v)} min={0.01} max={2} step={0.01} />
-          <NI label="Скорость по плате, мм/мин" value={settings.isolationFeed} on={(v) => change('isolationFeed', v)} min={1} max={5000} step={10} />
-          <NI label="Скорость вниз, мм/мин" value={settings.isolationPlunge} on={(v) => change('isolationPlunge', v)} min={1} max={5000} step={10} />
-          <NI label="Обороты шпинделя" value={settings.isolationRpm} on={(v) => change('isolationRpm', v)} min={100} max={60000} step={100} />
-        </div>
-      </section>
-
-      <section>
-        <h3>3. Сверление отверстий</h3>
-        <p>Каждый диаметр — свой файл, отдельная программа для каждого сверла. Сверло меняете <b>руками между файлами</b> (команды смены нет).
-          По умолчанию сверлим сверху, до переворота. «Снизу» — только если сверлите уже перевёрнутую плату.</p>
-        <Scheme built={schemes.drill} />
-        <div className="radio-row">
-          <label><input type="radio" checked={settings.drillSide === 'top'} onChange={() => change('drillSide', 'top')} />Сверлить сверху</label>
-          <label><input type="radio" checked={settings.drillSide === 'bottom'} onChange={() => change('drillSide', 'bottom')} />Сверлить снизу (зеркало X)</label>
-        </div>
-        <div className="cnc-fields">
-          <NI label="Глубина, мм" value={settings.drillDepth} on={(v) => change('drillDepth', v)} min={0.1} max={10} step={0.1} />
-          <NI label="Шаг вниз, мм" value={settings.drillStep} on={(v) => change('drillStep', v)} min={0.1} max={10} step={0.1} />
-          <NI label="Скорость вниз, мм/мин" value={settings.drillFeed} on={(v) => change('drillFeed', v)} min={1} max={5000} step={10} />
-          <NI label="Обороты шпинделя" value={settings.drillRpm} on={(v) => change('drillRpm', v)} min={100} max={60000} step={100} />
-        </div>
-      </section>
-
-      <section>
-        <h3>4. Переворот платы лево/право</h3>
-        <p>Низ обрабатывается только после физического переворота в той же оснастке.
-          X зеркалируется <b>один раз</b> — дополнительное отражение в УП станка не включать.</p>
-        <Scheme built={schemes.flip} />
-      </section>
-
-      <section>
-        <label className="chk"><input type="checkbox" checked={settings.cutOutline} onChange={(e) => change('cutOutline', e.target.checked)} />
-          <b>5. Дополнительно: вырезать прямоугольный контур ПОСЛЕДНИМ</b></label>
-        <p>По умолчанию выключено: вырезается БЕЗ перемычек, плату надо закрепить до конца обработки.
-          Сложный контур не поддерживается — нужен CAM для Gerber.</p>
-        {settings.cutOutline && <>
-          <Scheme built={schemes.out} />
-          <div className="cnc-fields">
-            <NI label="Диаметр фрезы, мм" value={settings.outlineDiameter} on={(v) => change('outlineDiameter', v)} min={0.1} max={10} />
-            <NI label="Глубина реза, мм" value={settings.outlineDepth} on={(v) => change('outlineDepth', v)} min={0.1} max={10} step={0.1} />
-            <NI label="Шаг прохода, мм" value={settings.outlineStep} on={(v) => change('outlineStep', v)} min={0.1} max={10} step={0.1} />
-            <NI label="Подача XY, мм/мин" value={settings.outlineFeed} on={(v) => change('outlineFeed', v)} min={1} max={5000} step={10} />
-            <NI label="Обороты S, об/мин" value={settings.outlineRpm} on={(v) => change('outlineRpm', v)} min={100} max={60000} step={100} />
-          </div>
-        </>}
+      <section className="cnc-demo" aria-label="Демонстрация обработки">
+        <h3>Демонстрация обработки</h3>
+        {building ? <div className="cnc-empty"><span>Расчёт траекторий · {Math.round(progress)}%</span><progress max="100" value={progress} /></div>
+          : job ? <CncPreview doc={doc} settings={settings} job={job} />
+          : <div className="cnc-empty"><span className="cnc-empty-symbol" aria-hidden="true">⌁</span><span>Траектории ещё не построены</span>
+            <button className="btn primary" onClick={build}>Построить и показать</button></div>}
+        {error && <p role="alert" className="cnc-error">{error}</p>}
+        {job && <details className="cnc-advanced"><summary>Файлы · {job.files.filter(f => f.name.endsWith('.nc')).length} программ</summary>
+          <ul className="cnc-file-list">{job.files.filter(f => f.name.endsWith('.nc')).map(f => <li key={f.name}>{f.name}</li>)}</ul>
+        </details>}
       </section>
     </div>
-
-    {error && <p role="alert" className="cnc-error">{error}</p>}
-    <section className="cnc-result">
-      <h3>6. {job ? 'Готово — можно скачивать (просмотр не обязателен)' : 'Готовность к экспорту'}</h3>
-      <ProgressBar
-        label="Готовность к экспорту"
-        pct={reviewPct}
-        tone={job ? 'ok' : 'accent'}
-        steps={reviewSteps}
-        meta={job ? 'Траектории построены. Просмотр — в отдельном окне, не обязателен для скачивания.' : 'Нажмите «Построить и проверить» — расчёт идёт в фоне.'}
-      />
-      {job && <>
-      <p>Верх K1: <b>{job.topLoops}</b> замкнутых контуров; низ K2 (зеркало X): <b>{job.bottomLoops}</b>;
-        сверла: <b>{job.drills.length}</b> отдельных файлов; {job.drills.reduce((sum, d) => sum + d.count, 0)} отверстий
-        {job.outlinePasses ? `; контур: ${job.outlinePasses} проходов` : ''}.</p>
-      {job.drills.length > 0 && <p>Свёрла: {job.drills.map((d) => `Ø${n(d.diameter)} — ${d.count} шт.`).join('; ')}.</p>}
-      <Scheme built={schemes.files} />
-      <p>Самостоятельные файлы ZIP (запускайте только нужный файл после ручной установки инструмента):</p>
-      <ul className="cnc-file-list">{job.files.map((f) => <li key={f.name}>{f.name}</li>)}</ul>
-
-      <div className="cnc-preview-actions">
-        <h4>Предпросмотр — в отдельном окне (необязательно)</h4>
-        <p className="muted">Откройте ход фрезы в отдельном окне — его удобно держать рядом со станком. Скачать ZIP можно и без просмотра.</p>
-        <div className="radio-row" style={{ flexWrap: 'wrap', gap: '8px' }}>
-          <button className="btn primary" onClick={() => openPreview('top')} disabled={!hasTop}>Просмотр K1 в отдельном окне</button>
-          <button className="btn primary" onClick={() => openPreview('bottom')} disabled={!hasBottom}>Просмотр K2 в отдельном окне</button>
-          <button className="btn" onClick={openCurrentPreview}>Открыть текущий ({previewSide === 'top' ? 'K1' : 'K2'}) в отдельном окне</button>
-          <button className="btn" onClick={() => setShowInlinePreview((v) => !v)}>{showInlinePreview ? 'Скрыть встроенный просмотр' : 'Показать встроенный просмотр (необязательно)'}</button>
-        </div>
-      </div>
-
-      {showInlinePreview && (
-        <>
-          <div className="radio-row" role="tablist" aria-label="Предпросмотр фрезеровки (встроенный, необязательный)">
-            <button className={'btn' + (previewSide === 'top' ? ' primary' : '')} role="tab" aria-selected={previewSide === 'top'} onClick={() => setPreviewSide('top')}>Верх K1 (встроенный)</button>
-            <button className={'btn' + (previewSide === 'bottom' ? ' primary' : '')} role="tab" aria-selected={previewSide === 'bottom'} onClick={() => setPreviewSide('bottom')}>Низ K2 — зеркально (встроенный)</button>
-            <button className="btn" onClick={openCurrentPreview}>↗ В отдельном окне</button>
-          </div>
-          <CncPreview doc={doc} settings={settings} job={job} side={previewSide} />
-          <p>Низ фрезеруется <b>только после физического переворота лево/право</b> в той же оснастке: X′ = ширина платы − X. X/Y не перенастраивать; Z0 выставить по поверхности низа.</p>
-        </>
-      )}
-
-      {!showInlinePreview && (
-        <p className="muted">Встроенный просмотр скрыт — используйте кнопки выше, чтобы открыть его в отдельном окне. Это окно можно держать рядом со станком.</p>
-      )}
-
-      <label className="chk cnc-confirm" style={{ marginTop: '12px' }}>
-        <input type="checkbox" checked={reviewed} onChange={(e) => setReviewed(e.target.checked)} />
-        Я проверил(а) привязку нуля, зажимы и инструменты (необязательно, не блокирует скачивание). Перед работой выполню холостой прогон и проверю параметры резания своего станка.
-      </label>
-      </>}
-    </section>
-    <div className="hint cnc-warning">Перед запуском прочитайте инструкцию и схемы в ZIP. Не запускайте файлы подряд без ручной смены сверла и настройки Z0.
-      Контроллер должен поддерживать GRBL-совместимый G-code. Параметры этого компьютера сохраняются после скачивания. Просмотр — необязателен и доступен в отдельном окне.</div>
+    <div className="cnc-safety-line">Перед запуском: проверьте Z0, инструмент и крепление.</div>
   </Modal>;
 }

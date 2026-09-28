@@ -1,7 +1,8 @@
 import { NI } from './ui/widgets';
-import { trackClearance } from './pcb/track-clearance';
+import { activeClearance, trackClearance } from './pcb/track-clearance';
+import { ClearanceExceptions } from './ui/clearance-exceptions';
 import { boardShape, boardPath } from './pcb/board-shape';
-import { terminalPath } from './pcb/manual-route';
+import { pickTrackNode, terminalPath, trackNodeTerminal, type TrackNodeTerminal } from './pcb/manual-route';
 // PSBees — редактор печатных плат для Linux и Windows (аналог Sprint-Layout;
 // фирменный стиль «пчелиный»: оса с молнией, золото на графите; тёмная и светлая темы).
 import { Fragment, Suspense, lazy, useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from 'react';
@@ -30,7 +31,7 @@ import {
 import { productionFiles } from './pcb/gerber';
 import { autoroute, clearanceAt, pickEndpoint, endpointOf, type RouteEnd } from './pcb/autoroute';
 import {
-  deleteNode, insertNode, joinTrackPts, nearestOnPts, nodeAction, nodeUnder,
+  deleteNode, insertNode, joinTrackPts, moveTrackNode, nearestOnPts, nodeAction, nodeUnder,
   pickSolderPair, splitTrackAt, trackEndsNear,
 } from './pcb/trackedit';
 import { copperComponents, type NetRouteVariants, type NetRouteVariant } from './pcb/netroute';
@@ -698,8 +699,11 @@ export default function App({ cloudUser, onLogout }: { cloudUser?: CloudUser; on
   const trackTerminal = useCallback((w: M.Pt, fine: boolean) => {
     if (fine) return null;
     const starting = draft?.t !== 'track';
-    return pickEndpoint(routePrimitives, w, defs.snapPx / Math.max(view.s, 0.01), starting ? undefined : activeCu);
-  }, [routePrimitives, draft, activeCu, defs.snapPx, view.s]);
+    const tolerance = defs.snapPx / Math.max(view.s, 0.01);
+    return pickTrackNode(routePrimitives, w, tolerance, {
+      layer: starting ? undefined : activeCu, preferredLayer: activeCu, hidden,
+    }) ?? pickEndpoint(routePrimitives, w, tolerance, starting ? undefined : activeCu);
+  }, [routePrimitives, draft, activeCu, defs.snapPx, view.s, hidden]);
 
   const snapPt = useCallback((w: M.Pt, fine: boolean): M.Pt => {
     if (fine) return w;                       // Alt — временно без привязки
@@ -817,7 +821,8 @@ export default function App({ cloudUser, onLogout }: { cloudUser?: CloudUser; on
     const nd = M.cloneDoc(doc);
     const t = nd.entities.find((e) => e.id === editEnt.id);
     if (!t || (t.kind !== 'track' && t.kind !== 'poly') || !t.pts[editNode]) return;
-    t.pts[editNode] = { x, y };
+    if (t.kind === 'track') moveTrackNode(nd.entities, t.id, editNode, { x, y });
+    else t.pts[editNode] = { x, y };
     commit(nd);
   }, [doc, commit, editEnt, editNode]);
 
@@ -990,6 +995,20 @@ export default function App({ cloudUser, onLogout }: { cloudUser?: CloudUser; on
     setTrackMsg({ msg: '', ok: null });
     if (t === 'route') setSel(new Set());
   }, [tool, finishOrCancel]);
+
+  const startBranch = useCallback((node: TrackNodeTerminal) => {
+    setToolRaw('track');
+    setSel(new Set()); setEditNode(null); drag.current = null;
+    setActiveCu(node.layers[0]);
+    setDefs({ trackW: node.width });
+    setDraft({ t: 'track', pts: [{ x: node.x, y: node.y, layer: node.layers[0] }] });
+    setTrackMsg({ msg: '', ok: null });
+  }, [setDefs]);
+
+  const branchFromSelectedNode = useCallback(() => {
+    if (editEnt?.kind === 'track' && editNode != null && editEnt.pts[editNode])
+      startBranch(trackNodeTerminal(editEnt, editNode));
+  }, [editEnt, editNode, startBranch]);
 
   // ---------------- операции с выделением ----------------
   const selBbox = useCallback((): [number, number, number, number] | null => {
@@ -1772,6 +1791,7 @@ export default function App({ cloudUser, onLogout }: { cloudUser?: CloudUser; on
       case 'solder': solderAt(w); break;
       case 'track': {
         if (!draft || draft.t !== 'track') {
+          if (terminal?.kind === 'track') { startBranch(terminal); break; }
           const layer = terminal && !terminal.layers.includes(activeCu) ? terminal.layers[0] : activeCu;
           setActiveCu(layer);
           setDraft({ t: 'track', pts: [{ ...sp, layer }] });
@@ -1917,7 +1937,8 @@ export default function App({ cloudUser, onLogout }: { cloudUser?: CloudUser; on
       const nd = M.cloneDoc(d.doc0);
       const t = nd.entities.find((x) => x.id === d.entId);
       if (t && (t.kind === 'track' || t.kind === 'poly') && t.pts[d.idx]) {
-        t.pts[d.idx] = target;
+        if (t.kind === 'track') moveTrackNode(nd.entities, t.id, d.idx, target);
+        else t.pts[d.idx] = target;
         setDoc(nd);
       }
     }
@@ -2134,8 +2155,8 @@ export default function App({ cloudUser, onLogout }: { cloudUser?: CloudUser; on
     return trackClearance(routePrimitives, defs.drcClear, tracks);
   }, [routePrimitives, defs.drcEnabled, defs.drcClear, defs.trackW, defs.angle, draft,
     mouse.rx, mouse.ry, mouse.wx, mouse.wy, mouse.alt, trackTerminal, constrain, activeCu]);
-  const clearanceMarks = useMemo(() => [...boardClearance, ...liveClearance]
-    .filter(v => !hidden.has(v.layer)), [boardClearance, liveClearance, hidden]);
+  const clearanceMarks = useMemo(() => [...activeClearance(boardClearance, doc.ignoredClearance), ...liveClearance]
+    .filter(v => !hidden.has(v.layer)), [boardClearance, liveClearance, hidden, doc.ignoredClearance]);
   const [clearanceBlink, setClearanceBlink] = useState(false);
   const hasClearanceMarks = clearanceMarks.length > 0;
   useEffect(() => {
@@ -2367,6 +2388,7 @@ export default function App({ cloudUser, onLogout }: { cloudUser?: CloudUser; on
         const next = terminal ? terminalPath(last, target, defs.angle) : [constrain(last, target)];
         const a = toPx(last.x, last.y);
         ctx.globalAlpha = 0.5;
+        ctx.lineWidth = Math.max(defs.trackW * view.s, 1);
         ctx.strokeStyle = activeCu === 'k1' ? COLORS.k1 : COLORS.k2;
         ctx.beginPath(); ctx.moveTo(a.px, a.py);
         for (const p of next) { const b = toPx(p.x, p.y); ctx.lineTo(b.px, b.py); }
@@ -3090,6 +3112,7 @@ export default function App({ cloudUser, onLogout }: { cloudUser?: CloudUser; on
             y: editNode != null ? editEnt.pts[editNode]?.y ?? 0 : 0,
           } : null}
           onEditNode={patchEditNode}
+          onBranchNode={editEnt?.kind === 'track' && editNode != null ? branchFromSelectedNode : undefined}
           onDeleteEditNode={editEnt && editNode != null ? () => deleteEditNode(editEnt.id, editNode) : undefined}
           toolMsg={trackMsg.msg ? trackMsg : null}
         />
@@ -3099,8 +3122,13 @@ export default function App({ cloudUser, onLogout }: { cloudUser?: CloudUser; on
             onChange={e => setDefs({ drcEnabled: e.target.checked })} /> Подсвечивать нарушения</label>
           <NI label="Минимальный зазор, мм" value={defs.drcClear} min={0} step={0.05}
             on={v => setDefs({ drcClear: v })} />
-          <div className="hint">Мигающий красный круг — зазор между краями дорожек меньше лимита.
-            Проверяются дорожки на одном слое; общие концы считаются соединением.</div>
+          <ClearanceExceptions violations={boardClearance} ignored={doc.ignoredClearance ?? []}
+            onChange={ignoredClearance => commit({ ...doc, ignoredClearance })}
+            onLocate={v => {
+              const x = (v.a.x + v.b.x) / 2, y = (v.a.y + v.b.y) / 2;
+              setHidden(old => { const next = new Set(old); next.delete(v.layer); return next; });
+              setView(old => ({ ...old, ox: size.w / 2 - (old.mir ? -x : x) * old.s, oy: size.h / 2 + y * old.s }));
+            }} />
         </div>
         <GridQuickPanel
           defs={defs} setDefs={setDefs} scale={view.s}
@@ -3113,7 +3141,7 @@ export default function App({ cloudUser, onLogout }: { cloudUser?: CloudUser; on
     selEnts, place, placeRot, placeSide, view.s, changeNets, routeAll, patchEnt, rotateSel,
     mirrorSel, duplicateSel, deleteSel, setDocSize, setDefs, saveSelFromProps,
     selGroup, canGroupSel, groupSel, ungroupSel, renameGroupCb,
-    editEnt, editNode, trackMsg, patchEditNode, deleteEditNode,
+    editEnt, editNode, trackMsg, patchEditNode, deleteEditNode, branchFromSelectedNode, boardClearance, commit, size,
   ]);
 
   // ---------------- разметка ----------------

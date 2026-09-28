@@ -10,18 +10,21 @@ export interface CncSettings {
   toolDiameter: number;
   clearance: number;
   isolationDepth: number;
+  isolationPasses?: number;
   isolationFeed: number;
   isolationPlunge: number;
   isolationRpm: number;
   drillSide: CncSide;
   drillDepth: number;
   drillStep: number;
+  drillPasses?: number;
   drillFeed: number;
   drillRpm: number;
   cutOutline: boolean;
   outlineDiameter: number;
   outlineDepth: number;
   outlineStep: number;
+  outlinePasses?: number;
   outlineFeed: number;
   outlineRpm: number;
 }
@@ -43,6 +46,13 @@ export function cncRange(name: string, value: number, min: number, max: number):
 
 export function validateCncSettings(s: CncSettings): void {
   if (!s || typeof s !== 'object') throw new Error('Не указаны параметры ЧПУ.');
+  for (const [label, count] of [['Проходы изоляции', s.isolationPasses], ['Проходы сверления', s.drillPasses],
+    ['Проходы контура', s.outlinePasses]] as const) {
+    if (count !== undefined) {
+      cncRange(label, count, 1, 100);
+      if (!Number.isInteger(count)) throw new Error(`${label}: введите целое число.`);
+    }
+  }
   cncRange('Отступ X от рабочего нуля', s.originX, 0, 50);
   cncRange('Отступ Y от рабочего нуля', s.originY, 0, 50);
   cncRange('Безопасная высота Z', s.safeZ, 0.5, 50);
@@ -185,4 +195,11 @@ export function pickForBoard(s: CncSettings, a: CncBoardAnalysis, doc: { w: numb
     originX: Math.max(s.originX, origin.originX),
     originY: Math.max(s.originY, origin.originY),
   };
+}
+
+/** Explicit counts split the final depth evenly. Old saved step-based settings remain valid. */
+export function cncDepths(depth: number, step: number, count?: number): number[] {
+  const passes = count ?? Math.ceil(depth / step - 1e-9);
+  return Array.from({ length: passes }, (_, i) => count !== undefined
+    ? depth * (i + 1) / passes : Math.min(depth, (i + 1) * step));
 }

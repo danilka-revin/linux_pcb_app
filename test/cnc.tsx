@@ -8,6 +8,7 @@ import {
 import type { Doc, Pt } from '../src/pcb/model';
 import { newBoard } from '../src/pcb/model';
 import { CncDialog } from '../src/ui/cnc';
+import { cncMotion, sampleCncMotion } from '../src/pcb/cnc-motion';
 import { CncPreview } from '../src/ui/cnc-preview';
 import { ExportDialog } from '../src/ui/dialogs';
 import { makeZip, unzip } from '../src/pcb/zip';
@@ -220,17 +221,51 @@ assert(new TextDecoder().decode(archive.get('00_PROCHTITE_PERED_ZAPUSKOM.txt')).
 assert.equal(new TextDecoder().decode(archive.get('sverlo_0p8mm_verh.nc')), drill08);
 
 const ui = renderToString(createElement(CncDialog, { doc, onClose: () => {} }));
-assert(ui.includes('отдельная программа для каждого сверла') && ui.includes('Построить и проверить'));
-assert(ui.includes('Сверлить сверху') && ui.includes('контур') && ui.includes('Скачать CNC ZIP'));
-assert(ui.includes('что за что отвечает') && ui.includes('00b_SHEMY_PARAMETROV.svg'), 'схемы объявлены в диалоге');
-assert(ui.includes('scheme-chip') && ui.includes('data-part="clearance"'), 'схемы интерактивные: чипы и узлы чертежа');
-assert(ui.includes('Готовность к экспорту') && ui.includes('role="progressbar"'), 'полоса прогресса проверки в диалоге');
-assert(ui.includes('data-part="gap"') && ui.includes('Разделение меди'), 'зазор разделения меди виден в диалоге');
-assert(ui.includes('Подобрать под эту плату') && ui.includes('подстраиваются под щели'), 'подбор зазоров под плату');
+assert(ui.includes('Проходов по глубине') && ui.includes('Построить траектории'));
+assert(ui.includes('Демонстрация обработки') && ui.includes('Скачать CNC ZIP'));
+assert(!ui.includes('scheme-chip') && !ui.includes('что за что отвечает'), 'no explanatory diagrams in export UI');
+assert(ui.includes('Подобрать фрезу') && ui.includes('Подачи и обороты'));
 const preview = renderToString(createElement(CncPreview, { doc, settings: settings(), job, side: 'top' }));
-assert(preview.includes('cnc-walk') && preview.includes('Старт — ход станка'), 'предпросмотр хода станка');
-assert(preview.includes('cnc-preview-kerf') && preview.includes('cnc-walk-tool'), 'канавка реза и фреза на превью');
-assert(preview.includes('Разделение меди') && preview.includes('0.7'), 'на превью указан зазор разделения');
+assert(preview.includes('cnc-walk') && preview.includes('Демонстрация'), 'inline simulation');
+assert(preview.includes('cnc-preview-kerf') && preview.includes('cnc-walk-tool'), 'kerf and tool');
+assert(preview.includes('Ход демонстрации') && preview.includes('cnc-depth'), 'scrubbing and depth view');
+assert(preview.includes('sverlo_0p8mm_verh.nc') && preview.includes('02_niz_k2_zerkalo_x.nc'), 'all operations selectable');
+
+const multipass = buildCncJob(doc, settings({ isolationDepth: .12, isolationPasses: 3,
+  drillDepth: 1.8, drillPasses: 6, cutOutline: true, outlineDepth: 1.7, outlinePasses: 4 }));
+const isoProgram = text(multipass.files[0]);
+for (const depth of ['0.04', '0.08', '0.12']) {
+  assert.equal(isoProgram.split(`G1 Z-${depth} F`).length - 1, multipass.topLoops);
+}
+assert.equal(multipass.outlinePasses, 4);
+for (const file of multipass.files.filter(f => f.name.endsWith('.nc'))) {
+  const program = text(file), motion = cncMotion(program, 3);
+  const drilling = file.name.startsWith('sverlo_'), outline = file.name.startsWith('99_');
+  const count = drilling ? 6 : outline ? 4 : 3;
+  assert.equal(motion.depths.length, count, file.name);
+  assert.equal(Math.min(...motion.moves.map(m => m.to.z)), drilling ? -1.8 : outline ? -1.7 : -.12);
+  for (const m of motion.moves) {
+    if (m.rapid && (m.from.x !== m.to.x || m.from.y !== m.to.y)) assert(m.from.z >= 3 && m.to.z >= 3);
+    assert(Number.isFinite(m.end) && m.end > m.start);
+  }
+  const last = sampleCncMotion(motion, 1)!;
+  assert.equal(last.position.z, 3, 'completion stays at final retract, not first frame');
+  assert.deepEqual(last.position, motion.moves[motion.moves.length - 1].to);
+  const plunge = motion.moves.find(m => m.to.z < 0)!;
+  const during = sampleCncMotion(motion, ((plunge.start + plunge.end) / 2) / motion.duration)!;
+  assert.equal(during.move.pass, 1);
+  close(during.position.z, (plunge.from.z + plunge.to.z) / 2);
+}
+for (const key of ['isolationPasses', 'drillPasses', 'outlinePasses'] as const) {
+  for (const value of [0, -1, 1.5, 101, NaN, Infinity]) {
+    assert.throws(() => buildCncJob(doc, settings({ [key]: value })), /Проходы/);
+  }
+}
+const onePass = buildCncJob(doc, settings({ isolationPasses: 1, drillPasses: 1, cutOutline: true, outlinePasses: 1 }));
+assert.equal(onePass.outlinePasses, 1);
+assert.deepEqual(cncMotion(text(onePass.files[2]), 3).depths, [1.8]);
+assert.deepEqual(cncMotion('G21 G90 G17 G94\nG1 F120\nM2', 3).moves, []);
+assert.equal(sampleCncMotion(cncMotion('', 3), .5), null);
 const exportUi = renderToString(createElement(ExportDialog, {
   onGerber: () => {}, onPng: () => {}, onLay6: () => {}, onCnc: () => {}, onClose: () => {},
 }));

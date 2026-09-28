@@ -157,6 +157,7 @@ export interface Doc {
   h: number; // высота рабочего поля / платы без замкнутого контура, мм
   entities: Entity[];
   nets?: Net[]; // сохраняются в проекте JSON, не в Sprint-Layout
+  ignoredClearance?: string[]; // geometry-bound DRC exceptions, stored in JSON projects
   groups?: Group[]; // сохраняются в проекте JSON, не в Sprint-Layout
 }
 

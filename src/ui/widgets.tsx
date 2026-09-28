@@ -32,6 +32,7 @@ export function NI({
       <label>{label}</label>
       <input
         className="txt"
+        aria-label={label}
         value={s}
         step={step}
         onChange={(e) => setS(e.target.value)}

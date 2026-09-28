@@ -71,8 +71,6 @@ export function ExportDialog({
 
       <div className="sect">
         <h3 style={{ margin: '0 0 6px', fontSize: 13 }}>Фрезерный станок (CNC / GRBL)</h3>
-        <p>Изоляция верхней меди, зеркальный низ, отдельная программа G-code для каждого сверла
-          с ручной сменой. Параметры резания и предпросмотр — перед скачиванием.</p>
         <div className="row" style={{ marginTop: 4 }}>
           <button className="btn primary" onClick={onCnc}>Настроить и скачать CNC ZIP…</button>
         </div>
