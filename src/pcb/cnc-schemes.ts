@@ -1,7 +1,7 @@
 // Схемы к экспорту на станок: SVG-чертежи «что за что отвечает».
 // Печатные схемы для файла 00b_SHEMY_PARAMETROV.svg внутри CNC ZIP.
 import type { Doc } from './model';
-import { cncDepths, type CncSettings } from './cnc-settings';
+import { cncDepths, cncOriginRef, CNC_ORIGIN_LABEL, type CncSettings } from './cnc-settings';
 
 export interface SchemePart {
   id: string;
@@ -68,21 +68,37 @@ const dimV = (x: number, y1: number, y2: number, label: string, arr: string, par
 
 export function workZeroScheme(doc: Doc, s: CncSettings): BuiltScheme {
   const arr = 'sch-arr-zero';
-  const W = doc.w + 2 * s.originX, H = doc.h + 2 * s.originY;
-  const k = Math.min(250 / W, 86 / H);
+  const ref = cncOriginRef(doc, s.origin ?? 'bottom-left');
+  // плата в системе станка занимает [originX-ref.x, originX+W-ref.x] x [originY-ref.y, originY+H-ref.y]
+  const minX = s.originX - ref.x;
+  const minY = s.originY - ref.y;
+  const maxX = s.originX + doc.w - ref.x;
+  const maxY = s.originY + doc.h - ref.y;
+  // заготовка — с запасом 2мм вокруг платы для наглядности
+  const stockMinX = Math.min(0, minX) - 2;
+  const stockMinY = Math.min(0, minY) - 2;
+  const stockMaxX = Math.max(maxX, s.originX) + 2;
+  const stockMaxY = Math.max(maxY, s.originY) + 2;
+  const W = stockMaxX - stockMinX;
+  const H = stockMaxY - stockMinY;
+  const k = Math.min(250 / Math.max(W, 1), 86 / Math.max(H, 1));
   const sw = W * k, sh = H * k;
   const sx = 42 + (250 - sw) / 2, sy = 32;
-  const bx = sx + s.originX * k, by = sy + sh - (s.originY + doc.h) * k;
+  const bx = sx + (minX - stockMinX) * k;
+  const by = sy + sh - (maxY - stockMinY) * k;
   const bw = doc.w * k, bh = doc.h * k;
+  const ox = sx + (s.originX - stockMinX) * k;
+  const oy = sy + sh - (s.originY - stockMinY) * k;
   const ySurf = 194, kv = 20 / Math.max(s.safeZ, 2), ySafe = ySurf - s.safeZ * kv;
+  const originLabel = (CNC_ORIGIN_LABEL as any)[s.origin] ?? s.origin;
 
   const svg = `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 320 226" class="scheme-svg-root" role="img" aria-label="Схема рабочего нуля и отступов">${arrDefs(arr)}
-    ${T(160, 12, 'Сверху: заготовка и плата в рабочих координатах')}
-    ${G('stock', R(sx, sy, sw, sh, 'sch-stock') + T(sx + sw / 2, sy - 6, `заготовка ≥ ${num(W)} × ${num(H)} мм`, 'sch-text'))}
+    ${T(160, 12, `Сверху: ноль — ${originLabel} платы`)}
+    ${G('stock', R(sx, sy, sw, sh, 'sch-stock') + T(sx + sw / 2, sy - 6, `заготовка ~ ${num(W)} × ${num(H)} мм`, 'sch-text'))}
     ${G('board', R(bx, by, bw, bh, 'sch-board', 2) + T(bx + bw / 2, by + bh / 2 + 3, `плата ${num(doc.w)} × ${num(doc.h)} мм`))}
-    ${G('origin', C(sx, sy + sh, 3, 'sch-cut') + L(sx - 5, sy + sh, sx + 9, sy + sh, 'sch-cut') + L(sx, sy + sh - 9, sx, sy + sh + 5, 'sch-cut') + T(sx + 12, sy + sh + 11, 'X0 Y0', 'sch-text', 'start'))}
-    ${dimH(sx, bx, sy + sh + 11, `a = ${num(s.originX)} мм`, arr, 'originx', 12)}
-    ${dimV(sx - 14, sy + sh, by + bh, `b = ${num(s.originY)} мм`, arr, 'originy')}
+    ${G('origin', C(ox, oy, 3, 'sch-cut') + L(ox - 5, oy, ox + 9, oy, 'sch-cut') + L(ox, oy - 9, ox, oy + 5, 'sch-cut') + T(ox + 12, oy + 3, `X0 Y0 (${originLabel})`, 'sch-text', 'start'))}
+    ${dimH(bx, ox, oy + 11, `X0=${num(s.originX)}`, arr, 'originx', 12)}
+    ${dimV(ox - 14, by + bh, oy, `Y0=${num(s.originY)}`, arr, 'originy')}
     ${T(160, 168, 'Сбоку: ноль Z и безопасный подъём')}
     ${G('z0', R(70, ySurf, 180, 12, 'sch-board') + R(70, ySurf - 3, 180, 3, 'sch-copper') + T(62, ySurf + 8, 'Z0', 'sch-text', 'end') + L(66, ySurf, 250, ySurf, 'sch-line'))}
     ${G('safez', L(70, ySafe, 250, ySafe, 'sch-safe') + dimV(282, ySurf, ySafe, `+${num(s.safeZ)} мм`, arr))}
@@ -92,16 +108,16 @@ export function workZeroScheme(doc: Doc, s: CncSettings): BuiltScheme {
     id: 'zero',
     title: '1. Рабочий ноль и безопасный подъём',
     svg,
-    caption: 'Ноль X/Y — левый нижний угол заготовки; плата стоит с отступами a и b.',
+    caption: `Ноль X/Y — ${originLabel} платы в точке (${num(ref.x)}, ${num(ref.y)}) платы → G-code (${num(s.originX)}, ${num(s.originY)}). Плата в станке X[${num(minX)}, ${num(maxX)}] Y[${num(minY)}, ${num(maxY)}].`,
     parts: [
-      { id: 'origin', label: 'X0 Y0', hint: 'Рабочий ноль станка: левый нижний угол заготовки при взгляде на обрабатываемую сторону. Все координаты G-code считаются от него.' },
-      { id: 'originx', label: 'a — отступ X', hint: `Сколько мм от рабочего нуля до левого края платы. Сейчас ${num(s.originX)} мм. Увеличьте, если фреза попадёт в зажимы.` },
-      { id: 'originy', label: 'b — отступ Y', hint: `Сколько мм от рабочего нуля до нижнего края платы. Сейчас ${num(s.originY)} мм.` },
-      { id: 'board', label: 'плата', hint: `Размер вашей платы ${num(doc.w)} × ${num(doc.h)} мм — прямоугольник, внутри которого идут все операции.` },
-      { id: 'stock', label: 'заготовка', hint: `Заготовка должна быть не меньше ${num(W)} × ${num(H)} мм (плата + два отступа).` },
-      { id: 'z0', label: 'Z0', hint: 'Ноль Z — поверхность текущей стороны платы. После КАЖДОЙ смены инструмента выставляйте Z0 заново.' },
-      { id: 'safez', label: 'безопасный Z', hint: `Подъём над платой +${num(s.safeZ)} мм. На этой высоте идут быстрые перемещения; она должна быть выше зажимов.` },
-      { id: 'clamps', label: 'зажимы', hint: 'Зажимы и оснастка обязаны быть ниже безопасного Z — иначе фреза врежется в них при быстром ходе.' },
+      { id: 'origin', label: `X0 Y0 — ${originLabel}`, hint: `Рабочий ноль станка совмещён с точкой платы (${num(ref.x)}, ${num(ref.y)}) — ${originLabel}. Все координаты G-code считаются от него.` },
+      { id: 'originx', label: 'X нуля', hint: `Координата X выбранной точки платы в G-code. Сейчас ${num(s.originX)} мм.` },
+      { id: 'originy', label: 'Y нуля', hint: `Координата Y выбранной точки платы в G-code. Сейчас ${num(s.originY)} мм.` },
+      { id: 'board', label: 'плата', hint: `Размер вашей платы ${num(doc.w)} × ${num(doc.h)} мм.` },
+      { id: 'stock', label: 'заготовка', hint: `Заготовка должна покрывать диапазон платы в станке.` },
+      { id: 'z0', label: 'Z0', hint: 'Ноль Z — поверхность текущей стороны платы.' },
+      { id: 'safez', label: 'безопасный Z', hint: `Подъём над платой +${num(s.safeZ)} мм.` },
+      { id: 'clamps', label: 'зажимы', hint: 'Зажимы обязаны быть ниже безопасного Z.' },
     ],
   };
 }
@@ -206,16 +222,21 @@ export function drillScheme(s: CncSettings): BuiltScheme {
 
 export function flipScheme(doc: Doc, s: CncSettings): BuiltScheme {
   const arr = 'sch-arr-flip';
+  const ref = cncOriginRef(doc, s.origin ?? 'bottom-left');
   const px = Math.max(2, Math.round(doc.w / 5)), py = Math.max(2, Math.round(doc.h / 2));
-  const mx = num(s.originX + doc.w - px), my = num(s.originY + py);
+  const topX = s.originX + (px - ref.x);
+  const topY = s.originY + (py - ref.y);
+  const botX = s.originX + (doc.w - px - ref.x);
+  const botY = topY;
+  const mx = num(botX), my = num(topY);
   const svg = `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 320 202" class="scheme-svg-root" role="img" aria-label="Схема переворота платы">${arrDefs(arr)}
     ${T(78, 12, 'K1 — до переворота')}
     ${T(242, 12, 'K2 — после переворота')}
     ${G('flip', R(28, 22, 100, 70, 'sch-board', 2) + T(78, 52, 'верх', 'sch-copper-text'))}
-    ${G('formula', C(48, 72, 3.5, 'sch-cut') + T(78, 108, `P (${px}, ${py})`, 'sch-text') + T(78, 122, `X = ${num(s.originX)} + x = ${num(s.originX + px)}`, 'sch-text'))}
+    ${G('formula', C(48, 72, 3.5, 'sch-cut') + T(78, 108, `P (${px}, ${py})`, 'sch-text') + T(78, 122, `X=${num(topX)} Y=${num(topY)}`, 'sch-text'))}
     ${G('flip', `<path d="M140 64 Q160 50 180 64" class="sch-dim" fill="none" marker-end="url(#${arr})" />` + T(160, 22, 'переворот', 'sch-text') + T(160, 33, 'лево/право', 'sch-text') + T(160, 44, 'вокруг оси Y', 'sch-text'))}
-    ${G('mirror', R(192, 22, 100, 70, 'sch-board', 2) + T(242, 52, 'низ', 'sch-copper-text') + C(272, 72, 3.5, 'sch-cut') + T(242, 108, `P′ (${num(doc.w - px)}, ${py})`, 'sch-text') + T(242, 122, `X′ = ${num(s.originX)} + ${num(doc.w)} − x = ${mx}`, 'sch-text'))}
-    ${T(160, 142, `Y не меняется: Y = ${num(s.originY)} + y = ${my}`, 'sch-text')}
+    ${G('mirror', R(192, 22, 100, 70, 'sch-board', 2) + T(242, 52, 'низ', 'sch-copper-text') + C(272, 72, 3.5, 'sch-cut') + T(242, 108, `P′ (${num(doc.w - px)}, ${py})`, 'sch-text') + T(242, 122, `X′=${mx} Y′=${my}`, 'sch-text'))}
+    ${T(160, 142, `Ноль ${(CNC_ORIGIN_LABEL as any)[s.origin] ?? s.origin} остаётся на месте`, 'sch-text')}
     ${T(160, 162, s.drillSide === 'bottom'
       ? 'Сверловка снизу: X отверстий тоже зеркальный (_niz_zerkalo_x).'
       : 'Сверловка сверху: X отверстий НЕ зеркалируется.', 'sch-warn-text')}
@@ -228,9 +249,9 @@ export function flipScheme(doc: Doc, s: CncSettings): BuiltScheme {
     svg,
     caption: 'Низ фрезеруется только после физического переворота лево/право в той же оснастке.',
     parts: [
-      { id: 'flip', label: 'переворот', hint: 'Заготовка переворачивается лево/право (вокруг вертикальной оси Y), а не верх/низ. Тот же рабочий ноль X/Y и та же привязка платы.' },
-      { id: 'formula', label: 'X верха', hint: `На K1 координата X = a + x = ${num(s.originX)} + x.` },
-      { id: 'mirror', label: 'X низа', hint: `На K2 после переворота X′ = a + ширина − x. Пример: x=${px} → X′=${mx}. Дополнительное отражение в УП станка включать НЕЛЬЗЯ.` },
+      { id: 'flip', label: 'переворот', hint: 'Заготовка переворачивается лево/право (вокруг вертикальной оси Y).' },
+      { id: 'formula', label: 'X верха', hint: `На K1 координата X = ${num(s.originX)} + (x - ref.x).` },
+      { id: 'mirror', label: 'X низа', hint: `На K2 после переворота X′ = ${num(s.originX)} + (w - x - ref.x). Пример: x=${px} → X′=${mx}.` },
     ],
   };
 }

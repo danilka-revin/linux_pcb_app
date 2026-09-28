@@ -1,5 +1,5 @@
 import { NI } from './ui/widgets';
-import { activeClearance, trackClearance } from './pcb/track-clearance';
+import { activeClearance, trackClearance, type TrackClearanceViolation } from './pcb/track-clearance';
 import { ClearanceExceptions } from './ui/clearance-exceptions';
 import { boardShape, boardPath } from './pcb/board-shape';
 import { pickTrackNode, terminalPath, trackNodeTerminal, type TrackNodeTerminal } from './pcb/manual-route';
@@ -133,9 +133,9 @@ type Draft =
 
 type Drag =
   | { mode: 'pan'; startPx: { x: number; y: number }; view0: View }
-  | { mode: 'move'; startWorld: M.Pt; doc0: M.Doc; moved: boolean }
+  | { mode: 'move'; startWorld: M.Pt; doc0: M.Doc; moved: boolean; dx: number; dy: number }
   | { mode: 'marquee'; startWorld: M.Pt; curWorld: M.Pt }
-  | { mode: 'node'; entId: string; idx: number; doc0: M.Doc; moved: boolean; startWorld: M.Pt };
+  | { mode: 'node'; entId: string; idx: number; doc0: M.Doc; moved: boolean; startWorld: M.Pt; preview?: M.Pt };
 
 /** Что писать справа после того, как узел поставлен двойным кликом. */
 const NODE_HINT = 'Узел поставлен — тяните его мышью или задайте X/Y справа.';
@@ -465,14 +465,16 @@ export default function App({ cloudUser, onLogout }: { cloudUser?: CloudUser; on
     cancelAnimationFrame(overRaf.current);
     cancelAnimationFrame(moveRaf.current);
   }, []);
+  // развёрнутый список примитивов — один раз на изменение doc.entities, переиспользуется везде
+  const expanded = useMemo(() => expandDoc(doc.entities), [doc.entities]);
   const netGeometry = useMemo(() => {
     const ends = new Map<string, RouteEnd>();
-    if (tool === 'route' && routeMode === 'nets') for (const e of expandDoc(doc.entities)) {
+    if (tool === 'route' && routeMode === 'nets') for (const e of expanded) {
       const end = endpointOf(e);
       if (end) ends.set(e.id, end);
     }
     return { ends, comp: ends.size ? copperComponents(doc.entities) : new Map<string, string>() };
-  }, [doc, tool, routeMode]);
+  }, [expanded, doc.entities, tool, routeMode]);
   const [routeA, setRouteA] = useState<RouteEnd | null>(null);
   const [routeMsg, setRouteMsg] = useState<{ msg: string; ok: boolean | null }>({ msg: '', ok: null });
   const [dialog, setDialog] = useState<'new' | 'export' | 'cnc' | 'panelize' | 'about' | 'inventory' | 'uib' | 'colors' | 'grid' | 'close' | 'cloud' | 'account' | 'board-preview' | 'autoplace' | null>(null);
@@ -494,8 +496,8 @@ export default function App({ cloudUser, onLogout }: { cloudUser?: CloudUser; on
   // связность меди пересчитывается только в режиме «Тест цепи»
   const probeData = useMemo(() => {
     if (tool !== 'probe') return null;
-    return { flat: expandDoc(doc.entities), comp: copperComponents(doc.entities) };
-  }, [doc, tool]);
+    return { flat: expanded, comp: copperComponents(doc.entities) };
+  }, [expanded, doc.entities, tool]);
   // если инструмент сменили напрямую (установка компонента, импорт макроса) — подсветку снять
   useEffect(() => { if (tool !== 'probe') setProbe(null); }, [tool]);
   useEffect(() => {
@@ -508,6 +510,9 @@ export default function App({ cloudUser, onLogout }: { cloudUser?: CloudUser; on
   const past = useRef<M.Doc[]>([]);
   const future = useRef<M.Doc[]>([]);
   const drag = useRef<Drag | null>(null);
+  const [dragTick, setDragTick] = useState(0);
+  const dragTickRef = useRef(0);
+  dragTickRef.current = dragTick;
   const clipboard = useRef<M.Entity[]>([]);
   // группы, целиком попавшие в буфер обмена: вставляются вместе с элементами
   const clipboardGroups = useRef<M.Group[]>([]);
@@ -596,9 +601,14 @@ export default function App({ cloudUser, onLogout }: { cloudUser?: CloudUser; on
   // ---------------- автосохранение ----------------
   useEffect(() => {
     const t = setTimeout(() => {
-      if (docRef.current !== doc) return; // не затереть уже открытый другой проект старым таймером
-      try { (cloudUser ? sessionStorage : localStorage).setItem(draftKey(cloudUser?.id), JSON.stringify(doc)); } catch { /* ignore */ }
-    }, 400);
+      if (docRef.current !== doc) return;
+      const ric = (globalThis as any).requestIdleCallback as any;
+      const save = () => {
+        try { (cloudUser ? sessionStorage : localStorage).setItem(draftKey(cloudUser?.id), JSON.stringify(doc)); } catch { /* ignore */ }
+      };
+      if (ric) ric(save, { timeout: 1000 });
+      else save();
+    }, 600);
     return () => clearTimeout(t);
   }, [doc, cloudUser]);
   useEffect(() => {
@@ -691,11 +701,11 @@ export default function App({ cloudUser, onLogout }: { cloudUser?: CloudUser; on
   // точки, к которым «прилипает» курсор при привязке к объектам: плоский
   // массив строится один раз при изменении платы, а не на каждое движение мыши
   const snapPts = useMemo(
-    () => (defs.snapOn && defs.snapObj ? collectRefs(expandDoc(doc.entities)) : null),
-    [defs.snapOn, defs.snapObj, doc.entities],
+    () => (defs.snapOn && defs.snapObj ? collectRefs(expanded) : null),
+    [defs.snapOn, defs.snapObj, expanded],
   );
 
-  const routePrimitives = useMemo(() => expandDoc(doc.entities), [doc.entities]);
+  const routePrimitives = expanded;
   const trackTerminal = useCallback((w: M.Pt, fine: boolean) => {
     if (fine) return null;
     const starting = draft?.t !== 'track';
@@ -1780,7 +1790,7 @@ export default function App({ cloudUser, onLogout }: { cloudUser?: CloudUser; on
           }
           setSel(ns);
           if (ns.has(hitId))
-            drag.current = { mode: 'move', startWorld: w, doc0: M.cloneDoc(doc), moved: false };
+            drag.current = { mode: 'move', startWorld: w, doc0: M.cloneDoc(doc), moved: false, dx: 0, dy: 0 };
         } else {
           if (!e.shiftKey) setSel(new Set());
           drag.current = { mode: 'marquee', startWorld: w, curWorld: w };
@@ -1914,33 +1924,29 @@ export default function App({ cloudUser, onLogout }: { cloudUser?: CloudUser; on
     } else if (d.mode === 'move') {
       const mdx = m.rx - d.startWorld.x, mdy = m.ry - d.startWorld.y;
       if (!d.moved && Math.hypot(mdx, mdy) * view.s < 4) return;
-      d.moved = true;
       const sdx = m.alt ? mdx : M.snap(mdx, defs.grid);
       const sdy = m.alt ? mdy : M.snap(mdy, defs.grid);
-      const nd = M.cloneDoc(d.doc0);
-      nd.entities.forEach((ent) => {
-        if (selRef.current.has(ent.id)) M.translateEnt(ent, sdx, sdy);
-      });
-      setDoc(nd);
+      const first = !d.moved;
+      d.moved = true;
+      d.dx = sdx; d.dy = sdy;
+      if (first) {
+        // первый сдвиг — прячем оригинал из базы, теперь рисуем только превью в оверлее
+        setDragTick(t => t + 1);
+      }
+      // превью рисуется в оверлее, документ не клонируем каждый кадр — меньше фризов
     } else if (d.mode === 'node') {
-      // тянуть узел дорожки: привязка к сетке, Alt — без неё,
-      // Shift — строго по горизонтали/вертикали от стартовой точки узла
       const mdx = m.rx - d.startWorld.x, mdy = m.ry - d.startWorld.y;
       if (!d.moved && Math.hypot(mdx, mdy) * view.s < 4) return;
-      d.moved = true;
       let target = snapPt({ x: m.rx, y: m.ry }, m.alt);
       if (m.sh) {
         const origin = d.doc0.entities.find((x) => x.id === d.entId);
         const start = origin && (origin.kind === 'track' || origin.kind === 'poly') ? origin.pts[d.idx] : null;
         if (start) target = Math.abs(mdx) >= Math.abs(mdy) ? { x: target.x, y: start.y } : { x: start.x, y: target.y };
       }
-      const nd = M.cloneDoc(d.doc0);
-      const t = nd.entities.find((x) => x.id === d.entId);
-      if (t && (t.kind === 'track' || t.kind === 'poly') && t.pts[d.idx]) {
-        if (t.kind === 'track') moveTrackNode(nd.entities, t.id, d.idx, target);
-        else t.pts[d.idx] = target;
-        setDoc(nd);
-      }
+      const first = !d.moved;
+      d.moved = true;
+      d.preview = target;
+      if (first) setDragTick(t => t + 1);
     }
   }, [view.s, defs.grid, snapPt]);
 
@@ -1966,13 +1972,25 @@ export default function App({ cloudUser, onLogout }: { cloudUser?: CloudUser; on
       past.current.push(d.doc0);
       if (past.current.length > 100) past.current.shift();
       future.current = [];
-      setDoc((cur) => cur);
-    } else if (d.mode === 'node') {
-      if (d.moved) {
-        past.current.push(d.doc0);
-        if (past.current.length > 100) past.current.shift();
-        future.current = [];
+      // финальный коммит — только один раз, а не каждый кадр
+      const nd = M.cloneDoc(d.doc0);
+      nd.entities.forEach((ent) => {
+        if (selRef.current.has(ent.id)) M.translateEnt(ent, d.dx, d.dy);
+      });
+      setDoc(nd);
+      setDragTick(t => t + 1);
+    } else if (d.mode === 'node' && d.moved && d.preview) {
+      past.current.push(d.doc0);
+      if (past.current.length > 100) past.current.shift();
+      future.current = [];
+      const nd = M.cloneDoc(d.doc0);
+      const t = nd.entities.find((x) => x.id === d.entId);
+      if (t && (t.kind === 'track' || t.kind === 'poly') && t.pts[d.idx]) {
+        if (t.kind === 'track') moveTrackNode(nd.entities, t.id, d.idx, d.preview);
+        else t.pts[d.idx] = d.preview;
+        setDoc(nd);
       }
+      setDragTick(t => t + 1);
     } else if (d.mode === 'marquee') {
       const x1 = Math.min(d.startWorld.x, d.curWorld.x), x2 = Math.max(d.startWorld.x, d.curWorld.x);
       const y1 = Math.min(d.startWorld.y, d.curWorld.y), y2 = Math.max(d.startWorld.y, d.curWorld.y);
@@ -2137,11 +2155,39 @@ export default function App({ cloudUser, onLogout }: { cloudUser?: CloudUser; on
   }, []);
 
   // ---------------- отрисовка ----------------
-  // Плоский список примитивов в порядке отрисовки (площадки/переходы поверх
-  // заливок) — развёртка компонентов строится при изменении платы, а не в кадре.
-  const boardClearance = useMemo(() => defs.drcEnabled
-    ? trackClearance(routePrimitives, defs.drcClear) : [],
-    [routePrimitives, defs.drcEnabled, defs.drcClear]);
+  // zEnts — плоский список в порядке отрисовки, строится из уже развёрнутых примитивов
+  const zEnts = useMemo(() => {
+    const under: M.Entity[] = [], over: M.Entity[] = [];
+    for (let i = 0; i < expanded.length; i++) {
+      const e = expanded[i];
+      if (e.kind === 'pad' || e.kind === 'via') over.push(e);
+      else under.push(e);
+    }
+    return [...under, ...over];
+  }, [expanded]);
+
+  // boardClearance — тяжёлая O(n²) проверка, не должна фризить UI при каждом движении.
+  // Делаем её асинхронно с дебаунсом и храним в состоянии, а не в синхронном useMemo.
+  const [boardClearance, setBoardClearance] = useState<TrackClearanceViolation[]>([]);
+  useEffect(() => {
+    if (!defs.drcEnabled) { setBoardClearance([]); return; }
+    let alive = true;
+    const t = setTimeout(() => {
+      // requestIdleCallback если есть, иначе сразу
+      const run = () => {
+        if (!alive) return;
+        try {
+          const res = trackClearance(expanded as any, defs.drcClear);
+          if (alive) setBoardClearance(res);
+        } catch { if (alive) setBoardClearance([]); }
+      };
+      const ric = (globalThis as any).requestIdleCallback as ((cb: () => void, opts?: any) => number) | undefined;
+      if (ric) ric(run, { timeout: 300 });
+      else run();
+    }, 180);
+    return () => { alive = false; clearTimeout(t); };
+  }, [expanded, defs.drcEnabled, defs.drcClear]);
+
   const liveClearance = useMemo(() => {
     if (!defs.drcEnabled || draft?.t !== 'track' || !draft.pts.length) return [];
     const pts = draft.pts, last = pts[pts.length - 1];
@@ -2152,8 +2198,8 @@ export default function App({ cloudUser, onLogout }: { cloudUser?: CloudUser; on
       id: 'drc-draft', kind: 'track', pts: [pts[i], p], layer: pts[i].layer, w: defs.trackW,
     }));
     tracks.push({ id: 'drc-live', kind: 'track', pts: [last, ...next], layer: activeCu, w: defs.trackW });
-    return trackClearance(routePrimitives, defs.drcClear, tracks);
-  }, [routePrimitives, defs.drcEnabled, defs.drcClear, defs.trackW, defs.angle, draft,
+    return trackClearance(expanded as any, defs.drcClear, tracks);
+  }, [expanded, defs.drcEnabled, defs.drcClear, defs.trackW, defs.angle, draft,
     mouse.rx, mouse.ry, mouse.wx, mouse.wy, mouse.alt, trackTerminal, constrain, activeCu]);
   const clearanceMarks = useMemo(() => [...activeClearance(boardClearance, doc.ignoredClearance), ...liveClearance]
     .filter(v => !hidden.has(v.layer)), [boardClearance, liveClearance, hidden, doc.ignoredClearance]);
@@ -2165,12 +2211,27 @@ export default function App({ cloudUser, onLogout }: { cloudUser?: CloudUser; on
     return () => window.clearInterval(timer);
   }, [hasClearanceMarks]);
 
-  const zEnts = useMemo(() => zOrdered(doc), [doc]);
-  const substrate = useMemo(() => boardShape(doc, zEnts), [doc, zEnts]);
+  const outlineKey = useMemo(() => {
+    // ключ только по контуру — плата не пересчитывается при движении дорожек
+    const ol = zEnts.filter(e => (e as any).layer === 'outline');
+    // быстрый хеш: id + координаты, без JSON.stringify всего doc
+    let s = '' + ol.length + '|' + doc.w + '|' + doc.h + '|';
+    for (let i = 0; i < ol.length; i++) {
+      const e = ol[i] as any;
+      s += e.id + ':' + (e.kind) + ':' + (e.x ?? '') + ',' + (e.y ?? '') + ',' + (e.x1 ?? '') + ',' + (e.y1 ?? '') + ',' + (e.x2 ?? '') + ',' + (e.y2 ?? '') + ',' + (e.w ?? '') + ',' + (e.h ?? '') + ',' + (e.r ?? '') + ';';
+    }
+    return s;
+  }, [zEnts, doc.w, doc.h]);
+  const substrate = useMemo(() => {
+    const outlineEnts = zEnts.filter(e => (e as any).layer === 'outline');
+    return boardShape(doc, outlineEnts as any);
+  }, [outlineKey]);
 
   // ---------------- отрисовка: базовый слой (сетка + плата) ----------------
   // Перерисовывается только когда меняются плата/вид/слои/выделение/тема —
-  // движение мыши базовый слой НЕ трогает. Кадровые запросы схлопываются (rAF).
+  // движение мыши базовый слой НЕ трогает (кроме старта/конца перетаскивания).
+  // Во время перетаскивания выбранных элементов база рисует плату без них,
+  // а превью — в оверлее: меньше клонирований doc и меньше фризов.
   useEffect(() => {
     const cv = baseRef.current;
     if (!cv) return;
@@ -2213,10 +2274,21 @@ export default function App({ cloudUser, onLogout }: { cloudUser?: CloudUser; on
       // документ: примитивы вне видимого прямоугольника не рисуются
       const cA = toWorld(view, 0, 0), cB = toWorld(view, size.w, size.h);
       const clipPad = 4 / view.s + 2;
-      drawFlat(ctx, view, zEnts, hidden, {
+      const clip = {
         x1: Math.min(cA.x, cB.x) - clipPad, x2: Math.max(cA.x, cB.x) + clipPad,
         y1: Math.min(cA.y, cB.y) - clipPad, y2: Math.max(cA.y, cB.y) + clipPad,
-      });
+      } as const;
+      const dragNow = drag.current;
+      if (dragNow?.mode === 'move' && dragNow.moved) {
+        // во время перетаскивания не рисуем выбранное в базе — оно в оверлее
+        const filtered = zEnts.filter(e => !selRef.current.has(e.id) && !selRef.current.has(e.id.split(':')[0]));
+        drawFlat(ctx, view, filtered, hidden, clip);
+      } else if (dragNow?.mode === 'node' && dragNow.moved) {
+        const filtered = zEnts.filter(e => e.id !== dragNow.entId && !e.id.startsWith(dragNow.entId + ':'));
+        drawFlat(ctx, view, filtered, hidden, clip);
+      } else {
+        drawFlat(ctx, view, zEnts, hidden, clip);
+      }
 
       // выделение
       if (sel.size) {
@@ -2314,7 +2386,7 @@ export default function App({ cloudUser, onLogout }: { cloudUser?: CloudUser; on
   }, [
     doc, zEnts, substrate, view, hidden, sel, gridConf, defs.showAxes,
     defs.rtHoleClear, size, tool, routeMode, activeNet, netGeometry, theme, colors, toPx,
-    selGroups,
+    selGroups, dragTick,
   ]);
 
   // «Тест цепи»: отдельный слой мигает через CSS, не перерисовывая плату
@@ -2590,6 +2662,39 @@ export default function App({ cloudUser, onLogout }: { cloudUser?: CloudUser; on
           ctx.setLineDash([]);
         }
         ctx.restore();
+      }
+
+      // превью перетаскивания выбранных элементов — рисуем в оверлее, а не клонируя doc каждый кадр
+      const dragNow = drag.current;
+      if (dragNow?.mode === 'move' && dragNow.moved) {
+        const dx = dragNow.dx, dy = dragNow.dy;
+        // выбранные — полупрозрачно с цветом выделения, чтобы отличать от оригинала (который скрыт в базе)
+        for (const ent of dragNow.doc0.entities) {
+          if (!selRef.current.has(ent.id)) continue;
+          // быстрый клон только выбранных
+          const sc = (globalThis as any).structuredClone as (<T>(v:T)=>T)|undefined;
+          let c: M.Entity;
+          try { c = sc ? sc(ent) : JSON.parse(JSON.stringify(ent)) as M.Entity; }
+          catch { c = JSON.parse(JSON.stringify(ent)) as M.Entity; }
+          M.translateEnt(c, dx, dy);
+          drawEnt(ctx, view, c, { tint: COLORS.sel, alpha: 0.85, hidden: new Set() });
+        }
+      } else if (dragNow?.mode === 'node' && dragNow.moved && dragNow.preview) {
+        const orig = dragNow.doc0.entities.find(x => x.id === dragNow.entId);
+        if (orig && (orig.kind === 'track' || orig.kind === 'poly')) {
+          const sc = (globalThis as any).structuredClone as (<T>(v:T)=>T)|undefined;
+          let c: M.Entity;
+          try { c = sc ? sc(orig) : JSON.parse(JSON.stringify(orig)) as M.Entity; }
+          catch { c = JSON.parse(JSON.stringify(orig)) as M.Entity; }
+          if (c.kind === 'track') {
+            // применяем moveTrackNode логику упрощённо: меняем точку
+            const pts = (c as any).pts as M.Pt[];
+            if (pts[dragNow.idx]) pts[dragNow.idx] = dragNow.preview;
+          } else if (c.kind === 'poly') {
+            (c as any).pts[dragNow.idx] = dragNow.preview;
+          }
+          drawEnt(ctx, view, c, { tint: COLORS.sel, alpha: 0.9, hidden: new Set() });
+        }
       }
 
       // фантомы размещения

@@ -94,20 +94,38 @@ function xformEmbedded(e: Entity, c: Comp, tf: (p: Pt) => Pt, idx: string): Enti
 
 /** Компонент -> примитивы (id вида "compId:idx") */
 export function expandComp(c: Comp): Entity[] {
-  if (c.ents && c.ents.length) {
-    const tf = compTF(c);
-    return c.ents.flatMap((e, i) => xformEmbedded(e, c, tf, c.id + ':' + i));
+  const src = c.ents;
+  if (!src || !src.length) return [];
+  const tf = compTF(c);
+  const out: Entity[] = [];
+  for (let i = 0; i < src.length; i++) {
+    const e = src[i];
+    const arr = xformEmbedded(e, c, tf, c.id + ':' + i);
+    for (let j = 0; j < arr.length; j++) out.push(arr[j]);
   }
-  return []; // каталога макросов больше нет: деталь хранит свои примитивы
+  return out;
 }
 
 /** Весь документ -> плоский список примитивов */
 export function expandDoc(entities: Entity[]): Entity[] {
-  const out: Entity[] = [];
-  for (const e of entities) {
-    if (e.kind === 'comp') out.push(...expandComp(e));
-    else out.push(e);
+  const out: Entity[] = new Array(entities.length * 2);
+  let n = 0;
+  for (let k = 0; k < entities.length; k++) {
+    const e = entities[k];
+    if (e.kind === 'comp') {
+      const ex = expandComp(e);
+      for (let j = 0; j < ex.length; j++) {
+        if (n >= out.length) out.push(ex[j]);
+        else out[n] = ex[j];
+        n++;
+      }
+    } else {
+      if (n >= out.length) out.push(e);
+      else out[n] = e;
+      n++;
+    }
   }
+  out.length = n;
   return out;
 }
 

@@ -178,7 +178,13 @@ export function newBoard(w = 100, h = 80, name = 'Плата'): Doc {
   };
 }
 
-export const cloneDoc = (d: Doc): Doc => JSON.parse(JSON.stringify(d)) as Doc;
+export const cloneDoc = (d: Doc): Doc => {
+  const sc = (globalThis as any).structuredClone as (<T>(v: T) => T) | undefined;
+  if (typeof sc === 'function') {
+    try { return sc(d); } catch { /* fallback */ }
+  }
+  return JSON.parse(JSON.stringify(d)) as Doc;
+};
 export const snap = (v: number, g: number): number => Math.round(v / g) * g;
 export const clamp = (v: number, a: number, b: number): number => Math.min(b, Math.max(a, v));
 export const fmt = (v: number, d = 3): string => String(parseFloat(v.toFixed(d)));
@@ -274,52 +280,85 @@ export function mirrorEnt(e: Entity, cx: number): void {
 }
 
 export function entBBox(e: Entity): [number, number, number, number] {
+  const cache = (entBBox as any)._cache as WeakMap<Entity, [number, number, number, number]> | undefined;
+  if (cache) {
+    const hit = cache.get(e);
+    if (hit) return hit;
+  }
+  let box: [number, number, number, number];
   switch (e.kind) {
-    case 'pad': { const r = e.size / 2; return [e.x - r, e.y - r, e.x + r, e.y + r]; }
-    case 'via': { const r = e.size / 2; return [e.x - r, e.y - r, e.x + r, e.y + r]; }
-    case 'hole': { const r = Math.max(e.d / 2, 0.5); return [e.x - r, e.y - r, e.x + r, e.y + r]; }
+    case 'pad': { const r = e.size / 2; box = [e.x - r, e.y - r, e.x + r, e.y + r]; break; }
+    case 'via': { const r = e.size / 2; box = [e.x - r, e.y - r, e.x + r, e.y + r]; break; }
+    case 'hole': { const r = Math.max(e.d / 2, 0.5); box = [e.x - r, e.y - r, e.x + r, e.y + r]; break; }
     case 'smd': {
       const rot = (((Math.round(e.rot) % 180) + 180) % 180);
       const w = rot === 0 ? e.w : e.h;
       const h = rot === 0 ? e.h : e.w;
-      return [e.x - w / 2, e.y - h / 2, e.x + w / 2, e.y + h / 2];
+      box = [e.x - w / 2, e.y - h / 2, e.x + w / 2, e.y + h / 2]; break;
     }
-    case 'circle': return [e.x - e.r, e.y - e.r, e.x + e.r, e.y + e.r];
+    case 'circle': box = [e.x - e.r, e.y - e.r, e.x + e.r, e.y + e.r]; break;
     case 'track': case 'poly': {
       let x1 = 1e9, y1 = 1e9, x2 = -1e9, y2 = -1e9;
-      for (const p of e.pts) {
-        x1 = Math.min(x1, p.x); y1 = Math.min(y1, p.y);
-        x2 = Math.max(x2, p.x); y2 = Math.max(y2, p.y);
+      for (let i = 0; i < e.pts.length; i++) {
+        const p = e.pts[i];
+        if (p.x < x1) x1 = p.x;
+        if (p.y < y1) y1 = p.y;
+        if (p.x > x2) x2 = p.x;
+        if (p.y > y2) y2 = p.y;
       }
       const m = e.kind === 'track' ? e.w / 2 : 0;
-      return [x1 - m, y1 - m, x2 + m, y2 + m];
+      box = [x1 - m, y1 - m, x2 + m, y2 + m]; break;
     }
     case 'line': {
       const m = e.w / 2;
-      return [Math.min(e.x1, e.x2) - m, Math.min(e.y1, e.y2) - m,
-              Math.max(e.x1, e.x2) + m, Math.max(e.y1, e.y2) + m];
+      const x1 = e.x1 < e.x2 ? e.x1 : e.x2;
+      const x2 = e.x1 > e.x2 ? e.x1 : e.x2;
+      const y1 = e.y1 < e.y2 ? e.y1 : e.y2;
+      const y2 = e.y1 > e.y2 ? e.y1 : e.y2;
+      box = [x1 - m, y1 - m, x2 + m, y2 + m]; break;
     }
-    case 'rect': return [e.x, e.y, e.x + e.w, e.y + e.h];
+    case 'rect': box = [e.x, e.y, e.x + e.w, e.y + e.h]; break;
     case 'text': {
       // шаг штрихового шрифта — 0.8 высоты на символ (см. strokefont.textPolylines)
       const w = e.text.length * e.size * 0.8, h = e.size;
       // зеркальный текст (нижняя сторона платы) уходит влево от точки привязки
       const x0 = e.mirror ? -w : 0, x1 = e.mirror ? 0 : w;
       const cs = [[x0, 0], [x1, 0], [x1, h], [x0, h]].map(([xx, yy]) => rotPt(xx, yy, 0, 0, e.rot));
-      const xs = cs.map((p) => p.x), ys = cs.map((p) => p.y);
-      return [Math.min(...xs) + e.x, Math.min(...ys) + e.y, Math.max(...xs) + e.x, Math.max(...ys) + e.y];
+      let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
+      for (let i = 0; i < cs.length; i++) {
+        const p = cs[i];
+        if (p.x < minX) minX = p.x;
+        if (p.y < minY) minY = p.y;
+        if (p.x > maxX) maxX = p.x;
+        if (p.y > maxY) maxY = p.y;
+      }
+      box = [minX + e.x, minY + e.y, maxX + e.x, maxY + e.y]; break;
     }
     case 'comp': {
       const [x1, y1, x2, y2] = e.bl;
       const a = (e.rot * Math.PI) / 180, c = Math.cos(a), s = Math.sin(a);
-      const pts = [[x1, y1], [x2, y1], [x2, y2], [x1, y2]].map(([xx, yy]) => {
+      let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
+      const corners = [[x1, y1], [x2, y1], [x2, y2], [x1, y2]] as const;
+      for (let i = 0; i < 4; i++) {
+        const xx = corners[i][0], yy = corners[i][1];
         const mx = e.side === 'bottom' ? -xx : xx;
-        return { x: e.x + mx * c - yy * s, y: e.y + mx * s + yy * c };
-      });
-      const xs = pts.map((p) => p.x), ys = pts.map((p) => p.y);
-      return [Math.min(...xs), Math.min(...ys), Math.max(...xs), Math.max(...ys)];
+        const x = e.x + mx * c - yy * s;
+        const y = e.y + mx * s + yy * c;
+        if (x < minX) minX = x;
+        if (y < minY) minY = y;
+        if (x > maxX) maxX = x;
+        if (y > maxY) maxY = y;
+      }
+      box = [minX, minY, maxX, maxY]; break;
     }
   }
+  if (cache) cache.set(e, box);
+  else {
+    const wm = new WeakMap<Entity, [number, number, number, number]>();
+    wm.set(e, box);
+    (entBBox as any)._cache = wm;
+  }
+  return box;
 }
 
 export function unionBBox(bs: [number, number, number, number][]): [number, number, number, number] {
@@ -338,9 +377,15 @@ export function docBBox(d: Doc): [number, number, number, number] {
 export function distToSeg(px: number, py: number, x1: number, y1: number, x2: number, y2: number): number {
   const dx = x2 - x1, dy = y2 - y1;
   const L2 = dx * dx + dy * dy;
-  if (!L2) return Math.hypot(px - x1, py - y1);
-  const t = clamp(((px - x1) * dx + (py - y1) * dy) / L2, 0, 1);
-  return Math.hypot(px - (x1 + t * dx), py - (y1 + t * dy));
+  if (L2 === 0) {
+    const ddx = px - x1, ddy = py - y1;
+    return Math.sqrt(ddx * ddx + ddy * ddy);
+  }
+  let t = ((px - x1) * dx + (py - y1) * dy) / L2;
+  if (t < 0) t = 0; else if (t > 1) t = 1;
+  const cx = x1 + t * dx, cy = y1 + t * dy;
+  const ddx = px - cx, ddy = py - cy;
+  return Math.sqrt(ddx * ddx + ddy * ddy);
 }
 
 export function pointInPoly(pts: Pt[], x: number, y: number): boolean {
@@ -354,42 +399,53 @@ export function pointInPoly(pts: Pt[], x: number, y: number): boolean {
 
 /** Точное попадание точки в примитив (для клика) */
 export function hitEnt(e: Entity, p: Pt, tol: number): boolean {
+  // быстрый отсев по bbox
+  const b = entBBox(e);
+  if (p.x < b[0] - tol || p.x > b[2] + tol || p.y < b[1] - tol || p.y > b[3] + tol) return false;
   switch (e.kind) {
-    case 'pad': case 'via':
-      return Math.hypot(p.x - e.x, p.y - e.y) <= e.size / 2 + tol;
-    case 'hole':
-      return Math.hypot(p.x - e.x, p.y - e.y) <= Math.max(e.d / 2 + tol, 0.6);
-    case 'smd': case 'text': case 'comp': {
-      const b = entBBox(e);
-      return p.x >= b[0] - tol && p.x <= b[2] + tol && p.y >= b[1] - tol && p.y <= b[3] + tol;
+    case 'pad': case 'via': {
+      const dx = p.x - e.x, dy = p.y - e.y;
+      return dx * dx + dy * dy <= (e.size / 2 + tol) * (e.size / 2 + tol);
     }
-    case 'circle':
-      return Math.abs(Math.hypot(p.x - e.x, p.y - e.y) - e.r) <= e.w / 2 + tol;
+    case 'hole': {
+      const dx = p.x - e.x, dy = p.y - e.y;
+      const r = Math.max(e.d / 2 + tol, 0.6);
+      return dx * dx + dy * dy <= r * r;
+    }
+    case 'smd': case 'text': case 'comp': {
+      return true; // уже прошли bbox тест
+    }
+    case 'circle': {
+      const dx = p.x - e.x, dy = p.y - e.y;
+      const d = Math.sqrt(dx * dx + dy * dy);
+      return Math.abs(d - e.r) <= e.w / 2 + tol;
+    }
     case 'track': {
-      for (let i = 0; i < e.pts.length - 1; i++)
-        if (distToSeg(p.x, p.y, e.pts[i].x, e.pts[i].y, e.pts[i + 1].x, e.pts[i + 1].y) <= e.w / 2 + tol) return true;
+      const rad = e.w / 2 + tol;
+      for (let i = 0; i < e.pts.length - 1; i++) {
+        if (distToSeg(p.x, p.y, e.pts[i].x, e.pts[i].y, e.pts[i + 1].x, e.pts[i + 1].y) <= rad) return true;
+      }
       return false;
     }
     case 'poly': {
       if (pointInPoly(e.pts, p.x, p.y)) return true;
+      const rad = tol + 0.15;
       for (let i = 0; i < e.pts.length; i++) {
         const a = e.pts[i], b = e.pts[(i + 1) % e.pts.length];
-        if (distToSeg(p.x, p.y, a.x, a.y, b.x, b.y) <= tol + 0.15) return true;
+        if (distToSeg(p.x, p.y, a.x, a.y, b.x, b.y) <= rad) return true;
       }
       return false;
     }
     case 'line':
       return distToSeg(p.x, p.y, e.x1, e.y1, e.x2, e.y2) <= e.w / 2 + tol;
     case 'rect': {
-      if (e.filled) {
-        const b = entBBox(e);
-        return p.x >= b[0] - tol && p.x <= b[2] + tol && p.y >= b[1] - tol && p.y <= b[3] + tol;
-      }
-      const edges: [number, number, number, number][] = [
-        [e.x, e.y, e.x + e.w, e.y], [e.x + e.w, e.y, e.x + e.w, e.y + e.h],
-        [e.x + e.w, e.y + e.h, e.x, e.y + e.h], [e.x, e.y + e.h, e.x, e.y],
-      ];
-      return edges.some((s) => distToSeg(p.x, p.y, s[0], s[1], s[2], s[3]) <= Math.max(e.th / 2, 0.2) + tol);
+      if (e.filled) return true;
+      const th = Math.max(e.th / 2, 0.2) + tol;
+      if (distToSeg(p.x, p.y, e.x, e.y, e.x + e.w, e.y) <= th) return true;
+      if (distToSeg(p.x, p.y, e.x + e.w, e.y, e.x + e.w, e.y + e.h) <= th) return true;
+      if (distToSeg(p.x, p.y, e.x + e.w, e.y + e.h, e.x, e.y + e.h) <= th) return true;
+      if (distToSeg(p.x, p.y, e.x, e.y + e.h, e.x, e.y) <= th) return true;
+      return false;
     }
   }
 }

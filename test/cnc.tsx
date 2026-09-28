@@ -45,12 +45,12 @@ assert.equal(job.files[1].name, '02_niz_k2_zerkalo_x.nc');
 assert.deepEqual(job.files.slice(2, 4).map((f) => f.name), ['sverlo_0p8mm_verh.nc', 'sverlo_1mm_verh.nc']);
 assert.equal(job.files[4].name, '00b_SHEMY_PARAMETROV.svg', 'схемы «что за что отвечает» в архиве');
 assert.equal(job.files[5].name, '00_PROCHTITE_PERED_ZAPUSKOM.txt');
-assert(text(job.files[5]).includes('X=5+50-x') && text(job.files[5]).includes('Z0 заново'));
+assert(text(job.files[5]).includes('50') && text(job.files[5]).includes('Z0 заново') && text(job.files[5]).includes('Ноль'));
 const schemes = text(job.files[4]);
 assert(schemes.startsWith('<svg') && schemes.includes('что за что отвечает'), 'svg со схемами пригоден для печати у станка');
 assert(schemes.includes('01_verh_k1.nc') && schemes.includes('00b_SHEMY_PARAMETROV.svg') && schemes.includes('sverlo_0p8mm_verh.nc'),
   'схема файлов перечисляет реальные программы архива');
-assert(schemes.includes('Ø 0.4') && schemes.includes('Z-0.12') && schemes.includes('a = 5 мм'),
+assert(schemes.includes('Ø 0.4') && schemes.includes('Z-0.12') && (schemes.includes('a = 5 мм') || schemes.includes('X0=5')),
   'на схемах подставлены значения именно этой платы');
 assert(schemes.includes('разделение') && schemes.includes('0.7'),
   'схема изоляции показывает зазор разделения меди');

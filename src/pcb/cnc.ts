@@ -7,7 +7,7 @@ import type { Doc, Entity, Pt } from './model';
 import { expandDoc } from './expand';
 import { textPolylines } from './strokefont';
 import type { ZipFile } from './zip';
-import { cncDepths, cncRange, validateCncSettings, type CncBoardAnalysis, type CncSettings, type CncSide } from './cnc-settings';
+import { cncDepths, cncRange, cncOriginRef, CNC_ORIGIN_LABEL, validateCncSettings, type CncBoardAnalysis, type CncSettings, type CncSide } from './cnc-settings';
 import { cncSchemesSvg } from './cnc-schemes';
 export { DEFAULT_CNC_SETTINGS, validateCncSettings, type CncBoardAnalysis, type CncSettings } from './cnc-settings';
 
@@ -244,14 +244,19 @@ export function analyzeCncBoard(doc: Doc): CncBoardAnalysis {
   };
 }
 
-/** XY рабочего нуля: модель X для верха, (ширина - X) для перевёрнутого низа. */
+/** XY рабочего нуля: учитывает положение нуля на плате и зеркало низа. */
 function machinePoint(p: Pt, side: CncSide, doc: Doc, s: CncSettings): Pt {
-  const x = s.originX + (side === 'bottom' ? doc.w - p.x : p.x);
-  const y = s.originY + p.y;
-  if (!Number.isFinite(x) || !Number.isFinite(y) ||
-    x < -0.00005 || x > doc.w + 2 * s.originX + 0.00005 ||
-    y < -0.00005 || y > doc.h + 2 * s.originY + 0.00005)
+  const ref = cncOriginRef(doc, s.origin ?? 'bottom-left');
+  const localX = side === 'bottom' ? doc.w - p.x : p.x;
+  const localY = p.y;
+  const x = s.originX + (localX - ref.x);
+  const y = s.originY + (localY - ref.y);
+  if (!Number.isFinite(x) || !Number.isFinite(y) || x < -500.00005 || x > 2000.00005 || y < -500.00005 || y > 2000.00005)
+    throw new Error('Траектория выходит за разумные пределы станка. Проверьте положение нуля и координаты платы.');
+  // для режима снизу-слева отрицательные координаты считаем выходом за заготовку
+  if (s.origin === 'bottom-left' && (x < -0.00005 || y < -0.00005)) {
     throw new Error('Траектория выходит за пределы заготовки с указанными отступами X/Y. Увеличьте отступ или исправьте объекты вне платы.');
+  }
   return { x, y };
 }
 
@@ -351,12 +356,21 @@ function outlineProgram(doc: Doc, s: CncSettings): { code: string; passes: numbe
 }
 
 function setupText(doc: Doc, s: CncSettings, job: CncJob): string {
+  const originLabel = (CNC_ORIGIN_LABEL as any)[s.origin] ?? s.origin;
+  const ref = cncOriginRef(doc, s.origin ?? 'bottom-left');
+  const minX = s.originX - ref.x;
+  const minY = s.originY - ref.y;
+  const maxX = s.originX + doc.w - ref.x;
+  const maxY = s.originY + doc.h - ref.y;
+  const stockW = Math.max(maxX, 0) - Math.min(minX, 0) + 2 * 2; // +2мм запас для примера, реальный размер ниже
   return [
     `PSBees - инструкции для ЧПУ: ${doc.name.replace(/[\r\n]/g, ' ')}`,
-    `Плата: ${N(doc.w)} x ${N(doc.h)} мм. Заготовка: не меньше ${N(doc.w + 2 * s.originX)} x ${N(doc.h + 2 * s.originY)} мм.`,
-    `Рабочий ноль G-code (X0 Y0) — нижний левый угол ЗАГОТОВКИ при взгляде сверху на обрабатываемую сторону.`,
-    `Угол ПЛАТЫ: X${N(s.originX)} Y${N(s.originY)}. Верх: X=${N(s.originX)}+x, Y=${N(s.originY)}+y.`,
-    `Низ после переворота вокруг оси Y (лево/право): X=${N(s.originX)}+${N(doc.w)}-x, Y=${N(s.originY)}+y.`,
+    `Плата: ${N(doc.w)} x ${N(doc.h)} мм. Ноль: ${originLabel} (${s.origin}) в точке платы (${N(ref.x)}, ${N(ref.y)}).`,
+    `Координата нуля в G-code: X${N(s.originX)} Y${N(s.originY)} — это выбранная точка платы.`,
+    `Плата в G-code занимает X от ${N(minX)} до ${N(maxX)} мм, Y от ${N(minY)} до ${N(maxY)} мм.`,
+    `Заготовка должна покрывать этот диапазон с запасом. Рекомендуемый минимум с полями ${N(s.originX)}: ширина ≥ ${N(doc.w + 2 * Math.abs(s.originX - ref.x))} мм (пример), высота аналогично.`,
+    `Рабочий ноль G-code (X0 Y0) — ${originLabel} платы. Верх: X=${N(s.originX)}+(x-${N(ref.x)}), Y=${N(s.originY)}+(y-${N(ref.y)}).`,
+    `Низ после переворота (зеркало X): X=${N(s.originX)}+(${N(doc.w)}-x-${N(ref.x)}), Y=${N(s.originY)}+(y-${N(ref.y)}).`,
     `Сохраняйте ту же привязку X/Y в станке и положении платы при перевороте; Z0 заново от поверхности каждой стороны/после смены инструмента.`,
     `Z безопасности: +${N(s.safeZ)} мм; режущие глубины отрицательные. Убедитесь, что подъём выше зажимов.`,
     '',

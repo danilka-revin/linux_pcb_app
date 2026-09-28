@@ -40,11 +40,27 @@ export interface NetRouteFlags {
 
 /** Физическая связность меди, включая ранее проложенные ручные дорожки. */
 export function copperComponents(entities: Entity[]): Map<string, string> {
-  const shapes = expandDoc(entities).flatMap(copperShapes).filter((s) => !s.hole);
+  // быстрый путь: если список уже плоский (без Comp), не разворачиваем заново
+  let flat: Entity[];
+  let hasComp = false;
+  for (let i = 0; i < entities.length; i++) if (entities[i].kind === 'comp') { hasComp = true; break; }
+  if (hasComp) flat = expandDoc(entities);
+  else flat = entities as Entity[];
+  const shapes: Shape[] = [];
+  // избегаем flatMap аллокаций
+  for (let i = 0; i < flat.length; i++) {
+    const arr = copperShapes(flat[i]);
+    for (let j = 0; j < arr.length; j++) {
+      const s = arr[j];
+      if (!s.hole) shapes.push(s);
+    }
+  }
   const comp = new Map<string, string>();
-  for (const s of shapes) {
+  for (let i = 0; i < shapes.length; i++) {
+    const s = shapes[i] as any;
     if (comp.has(s.id)) continue;
-    for (const id of netOf(shapes, new Set([s.id]))) comp.set(id, s.id);
+    const net = netOf(shapes as any, new Set([s.id]));
+    for (const id of net) comp.set(id, s.id);
   }
   return comp;
 }
