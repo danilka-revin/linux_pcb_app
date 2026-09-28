@@ -39,6 +39,22 @@ test('real CAM worker, every operation, animation, ZIP and responsive layout', a
     await expect(page.locator('.cnc-preview-stats')).toContainText('Z 3 мм');
     await expect(page.locator('.cnc-preview-stats')).toContainText('Готово');
   }
+  // Приближение колесом и панорама перетаскиванием — для проверки мелких участков.
+  const preview = page.locator('.cnc-preview');
+  const fitBox = (await preview.getAttribute('viewBox'))!;
+  await preview.hover({ position: { x: 30, y: 30 } });
+  await page.mouse.wheel(0, -600);
+  await expect.poll(() => preview.getAttribute('viewBox')).not.toEqual(fitBox);
+  const afterWheel = await preview.getAttribute('viewBox');
+  const box = (await preview.boundingBox())!;
+  await page.mouse.move(box.x + box.width / 2, box.y + box.height / 2);
+  await page.mouse.down();
+  await page.mouse.move(box.x + box.width / 2 + 80, box.y + box.height / 2 + 50, { steps: 8 });
+  await page.mouse.up();
+  await expect.poll(() => preview.getAttribute('viewBox')).not.toEqual(afterWheel);
+  await page.getByRole('button', { name: 'Вписать' }).click();
+  await expect.poll(() => preview.getAttribute('viewBox')).toEqual(fitBox);
+  expect(await page.locator('.cnc-zoom-level').textContent()).toEqual('100%');
   const [download] = await Promise.all([page.waitForEvent('download'), page.getByRole('button', { name: 'Скачать CNC ZIP' }).click()]);
   expect(await download.failure()).toBeNull();
   const files = await unzip(await readFile((await download.path())!));
