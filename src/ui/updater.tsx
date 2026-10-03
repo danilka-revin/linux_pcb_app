@@ -11,6 +11,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { Modal } from './widgets';
 import { Ic } from './icons';
+import { PerfBuilder } from './perf';
 
 export type UpdatePhase = 'idle' | 'checking' | 'ready' | 'running' | 'done' | 'error' | 'cancelled';
 
@@ -834,6 +835,8 @@ export function UiBuilderDialog({
           />
         </>
       )}
+      <div className="sect" />
+      <PerfBuilder />
     </Modal>
   );
 }

@@ -3,6 +3,7 @@ import { boardShape, boardPath } from '../pcb/board-shape';
 import { useCallback, useEffect, useRef, useState, useMemo } from 'react';
 import { entBBox, type Doc, type Entity, type LayerId } from '../pcb/model';
 import { drawEnt, zOrdered } from '../pcb/render';
+import { perfDpr } from '../perf';
 
 export type Board2DThemeId = 'green' | 'blue' | 'red' | 'black' | 'white' | 'purple' | 'yellow' | 'classic-dark' | 'classic-light' | 'mono';
 
@@ -350,7 +351,7 @@ export function BoardPreview2D({ doc, width = 960, height = 520 }: { doc: Doc; w
   useEffect(() => {
     const cv = canvasRef.current;
     if (!cv) return;
-    const dpr = window.devicePixelRatio || 1;
+    const dpr = perfDpr();
     cv.width = Math.round(size.width * dpr);
     cv.height = Math.round(size.height * dpr);
     const ctx = cv.getContext('2d');

@@ -11,6 +11,7 @@ import { libBBox, libElsToEnts } from '../pcb/expand';
 import { fmt, type Comp, type Doc } from '../pcb/model';
 import type { LibEl } from '../pcb/footprint';
 import { Modal, SI } from './widgets';
+import { perfDpr } from '../perf';
 
 export interface LibPreviewProps {
   /** примитивы генератора (LibEl) — конвертируются на месте */
@@ -74,7 +75,7 @@ export function LibPreview({
     const draw = (): void => {
       const w = cv.clientWidth || 240;
       const h = height;
-      const dpr = window.devicePixelRatio || 1;
+      const dpr = perfDpr();
       if (cv.width !== Math.round(w * dpr)) cv.width = Math.round(w * dpr);
       if (cv.height !== Math.round(h * dpr)) cv.height = Math.round(h * dpr);
       const ctx = cv.getContext('2d');

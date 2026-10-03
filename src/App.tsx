@@ -21,9 +21,11 @@ import {
   pruneGroups, remapGroups, renameGroup, ungroupAll, ungroupSelection,
 } from './pcb/group';
 import {
-  CANVAS_UI, COLORS, drawEnt, drawFlat, renderPrint, setCanvasTheme, toWorld, zOrdered,
+  bboxArray, CANVAS_UI, COLORS, drawEnt, drawFlat, renderPrint, setCanvasTheme, toWorld, zOrdered,
   type ThemeId, type View,
 } from './pcb/render';
+import { noteFrame, perfDpr } from './perf';
+import { usePerfProfile } from './ui/perf';
 import {
   collectRefs, cycleGrid, drawGrid, fmtGridFull, gridSummary, nearestRefPts, snapPoint,
   type GridConf,
@@ -123,6 +125,47 @@ function plur(n: number, w: [string, string, string]): string {
   return `${n} ${w[f]}`;
 }
 
+/** Общий пустой список нарушений: стабильная ссылка для memo-зависимостей. */
+const EMPTY_MARKS: TrackClearanceViolation[] = [];
+
+/**
+ * Сколько шагов истории отмены хранить. Копия документа — это вся плата целиком,
+ * поэтому на очень крупных платах (тысячи примитивов) сто копий съедали память
+ * и роняли слабые устройства. Мелкие платы получают полные 100 шагов, крупные —
+ * меньше (не ниже 12), чтобы отмена всегда работала и редактор не падал.
+ */
+function historyLimit(doc: M.Doc): number {
+  const n = doc.entities.length;
+  if (n <= 800) return 100;
+  return Math.max(12, Math.round(80_000 / n));
+}
+
+/** Состояние курсора (пиксели холста, мировые координаты, привязка, модификаторы). */
+type CursorState = {
+  px: number; py: number; wx: number; wy: number; rx: number; ry: number; alt: boolean; sh: boolean;
+};
+
+/**
+ * Курсор для «живых» подсказок (DRC под курсором). При ms <= 0 отдаём состояние
+ * как есть — профиль «высокий» ничего не теряет. При ms > 0 значение обновляется
+ * не чаще, чем раз в ms миллисекунд: подсказка догоняет курсор с задержкой, зато
+ * тяжёлая проверка зазоров не выполняется на каждый кадр (важно для слабых машин).
+ */
+function useLiveCursor(mouse: CursorState, ms: number): CursorState {
+  const latest = useRef(mouse);
+  latest.current = mouse;
+  const [slow, setSlow] = useState(mouse);
+  useEffect(() => {
+    if (ms <= 0) return;
+    setSlow(latest.current);
+    const t = window.setInterval(() => {
+      setSlow((prev) => (prev === latest.current ? prev : latest.current));
+    }, ms);
+    return () => window.clearInterval(t);
+  }, [ms]);
+  return ms > 0 ? slow : mouse;
+}
+
 type Draft =
   | { t: 'track'; pts: { x: number; y: number; layer: 'k1' | 'k2' }[] }
   | { t: 'poly'; pts: M.Pt[] }
@@ -135,7 +178,7 @@ type Drag =
   | { mode: 'pan'; startPx: { x: number; y: number }; view0: View }
   | { mode: 'move'; startWorld: M.Pt; doc0: M.Doc; moved: boolean; dx: number; dy: number }
   | { mode: 'marquee'; startWorld: M.Pt; curWorld: M.Pt }
-  | { mode: 'node'; entId: string; idx: number; doc0: M.Doc; moved: boolean; startWorld: M.Pt; preview?: M.Pt };
+  | { mode: 'node'; entId: string; idx: number; doc0: M.Doc; moved: boolean; startWorld: M.Pt; preview?: M.Pt; cache?: M.Entity };
 
 /** Что писать справа после того, как узел поставлен двойным кликом. */
 const NODE_HINT = 'Узел поставлен — тяните его мышью или задайте X/Y справа.';
@@ -391,8 +434,11 @@ export default function App({ cloudUser, onLogout }: { cloudUser?: CloudUser; on
   const [defs, setDefsState] = useState<Defs>(loadDefs);
   const [hidden, setHidden] = useState<Set<M.LayerId>>(new Set());
   const [activeCu, setActiveCu] = useState<'k1' | 'k2'>('k1');
-  const [mouse, setMouse] = useState({ px: -100, py: -100, wx: 0, wy: 0, rx: 0, ry: 0, alt: false, sh: false });
+  const [mouse, setMouse] = useState<CursorState>({ px: -100, py: -100, wx: 0, wy: 0, rx: 0, ry: 0, alt: false, sh: false });
   const [size, setSize] = useState({ w: 640, h: 480 });
+  // Профиль качества (адаптивно под устройство, см. src/perf.ts). Смена уровня
+  // перерисовывает холсты в другом разрешении и меняет частоту живых подсказок.
+  const perfLevel = usePerfProfile();
   // --- генератор деталей и личная библиотека (папки + сохранённые футпринты) ---
   // «что ставим»: снапшот детали (чтобы правка строки не меняла призрак под курсором)
   const [place, setPlace] = useState<Detail | null>(null);
@@ -443,6 +489,8 @@ export default function App({ cloudUser, onLogout }: { cloudUser?: CloudUser; on
   const [placeRot, setPlaceRot] = useState(0);
   const [placeSide, setPlaceSide] = useState<'top' | 'bottom'>('top');
   const [pasteTpl, setPasteTpl] = useState<M.Entity[] | null>(null);
+  // габарит буфера вставки: один раз на копирование, а не на каждый кадр мыши
+  const pasteBB = useMemo(() => (pasteTpl ? M.unionBBox(pasteTpl.map(M.entBBox)) : null), [pasteTpl]);
   const [leftTab, setLeftTab] = useState<LeftTabId>('layers');
   // тема оформления: тёмная (по умолчанию) или светлая, переключается в шапке
   const [theme, setTheme] = useState<ThemeId>(loadTheme);
@@ -524,6 +572,7 @@ export default function App({ cloudUser, onLogout }: { cloudUser?: CloudUser; on
   // дорогая база обновляется, лишь когда меняются плата/вид/слои/выделение.
   const baseRef = useRef<HTMLCanvasElement>(null);
   const probeRef = useRef<HTMLCanvasElement>(null);
+  const drcRef = useRef<HTMLCanvasElement>(null);
   const overRef = useRef<HTMLCanvasElement>(null);
   const baseRaf = useRef(0);
   const overRaf = useRef(0);
@@ -563,7 +612,7 @@ export default function App({ cloudUser, onLogout }: { cloudUser?: CloudUser; on
   // ---------------- история ----------------
   const commit = useCallback((next: M.Doc) => {
     past.current.push(doc);
-    if (past.current.length > 100) past.current.shift();
+    if (past.current.length > historyLimit(doc)) past.current.shift();
     future.current = [];
     setDoc(next);
   }, [doc]);
@@ -1970,7 +2019,7 @@ export default function App({ cloudUser, onLogout }: { cloudUser?: CloudUser; on
     if (!d) return;
     if (d.mode === 'move' && d.moved) {
       past.current.push(d.doc0);
-      if (past.current.length > 100) past.current.shift();
+      if (past.current.length > historyLimit(d.doc0)) past.current.shift();
       future.current = [];
       // финальный коммит — только один раз, а не каждый кадр
       const nd = M.cloneDoc(d.doc0);
@@ -1981,7 +2030,7 @@ export default function App({ cloudUser, onLogout }: { cloudUser?: CloudUser; on
       setDragTick(t => t + 1);
     } else if (d.mode === 'node' && d.moved && d.preview) {
       past.current.push(d.doc0);
-      if (past.current.length > 100) past.current.shift();
+      if (past.current.length > historyLimit(d.doc0)) past.current.shift();
       future.current = [];
       const nd = M.cloneDoc(d.doc0);
       const t = nd.entities.find((x) => x.id === d.entId);
@@ -2165,6 +2214,25 @@ export default function App({ cloudUser, onLogout }: { cloudUser?: CloudUser; on
     }
     return [...under, ...over];
   }, [expanded]);
+  // Габариты всех примитивов одной таблицей: кадр больше не вызывает entBBox
+  // на каждый элемент (см. drawFlat/bboxArray в pcb/render.ts).
+  const zBoxes = useMemo(() => bboxArray(zEnts), [zEnts]);
+  // Во время перетаскивания база рисует плату без выбранных/перетаскиваемых —
+  // списки строятся один раз на начало перетаскивания, а не каждый кадр.
+  const dragFilter = useMemo(() => {
+    const d = drag.current;
+    if (!d || d.mode === 'pan' || d.mode === 'marquee' || !d.moved) return null;
+    if (d.mode === 'move') {
+      const ids = selRef.current;
+      return { mode: 'move' as const, ents: zEnts.filter(e => !ids.has(e.id) && !ids.has(e.id.split(':')[0])) };
+    }
+    if (d.mode === 'node') {
+      return { mode: 'node' as const, ents: zEnts.filter(e => e.id !== d.entId && !e.id.startsWith(d.entId + ':')) };
+    }
+    return null;
+    // dragTick меняется на старте/конце перетаскивания — этого достаточно
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [zEnts, dragTick, sel]);
 
   // boardClearance — тяжёлая O(n²) проверка, не должна фризить UI при каждом движении.
   // Делаем её асинхронно с дебаунсом и храним в состоянии, а не в синхронном useMemo.
@@ -2188,11 +2256,18 @@ export default function App({ cloudUser, onLogout }: { cloudUser?: CloudUser; on
     return () => { alive = false; clearTimeout(t); };
   }, [expanded, defs.drcEnabled, defs.drcClear]);
 
+  // «Живой» DRC под курсором — самая тяжёлая проверка в кадре. На среднем и
+  // слабом профиле обновляем её реже (perfLevel.liveMs), а не каждый кадр
+  // движения мыши: подсказка остаётся, но плата не «думает» 60 раз в секунду.
+  // Троттлинг включается только когда живая подсказка действительно нужна —
+  // в покое никаких таймеров (важно и для батареи, и для тестов).
+  const liveNeeded = defs.drcEnabled && draft?.t === 'track' && draft.pts.length > 0;
+  const liveCursor = useLiveCursor(mouse, liveNeeded ? perfLevel.liveMs : 0);
   const liveClearance = useMemo(() => {
-    if (!defs.drcEnabled || draft?.t !== 'track' || !draft.pts.length) return [];
+    if (!defs.drcEnabled || draft?.t !== 'track' || !draft.pts.length) return EMPTY_MARKS;
     const pts = draft.pts, last = pts[pts.length - 1];
-    const terminal = trackTerminal({ x: mouse.rx, y: mouse.ry }, mouse.alt);
-    const target = terminal ?? { x: mouse.wx, y: mouse.wy };
+    const terminal = trackTerminal({ x: liveCursor.rx, y: liveCursor.ry }, liveCursor.alt);
+    const target = terminal ?? { x: liveCursor.wx, y: liveCursor.wy };
     const next = terminal ? terminalPath(last, target, defs.angle) : [constrain(last, target)];
     const tracks: M.Track[] = pts.slice(1).map((p, i) => ({
       id: 'drc-draft', kind: 'track', pts: [pts[i], p], layer: pts[i].layer, w: defs.trackW,
@@ -2200,16 +2275,15 @@ export default function App({ cloudUser, onLogout }: { cloudUser?: CloudUser; on
     tracks.push({ id: 'drc-live', kind: 'track', pts: [last, ...next], layer: activeCu, w: defs.trackW });
     return trackClearance(expanded as any, defs.drcClear, tracks);
   }, [expanded, defs.drcEnabled, defs.drcClear, defs.trackW, defs.angle, draft,
-    mouse.rx, mouse.ry, mouse.wx, mouse.wy, mouse.alt, trackTerminal, constrain, activeCu]);
-  const clearanceMarks = useMemo(() => [...activeClearance(boardClearance, doc.ignoredClearance), ...liveClearance]
-    .filter(v => !hidden.has(v.layer)), [boardClearance, liveClearance, hidden, doc.ignoredClearance]);
-  const [clearanceBlink, setClearanceBlink] = useState(false);
+    liveCursor.rx, liveCursor.ry, liveCursor.wx, liveCursor.wy, liveCursor.alt, trackTerminal, constrain, activeCu]);
+  // Пустой список — всегда один и тот же объект: холст меток и оверлей не
+  // перерисовываются впустую на каждое движение мыши, когда нарушений нет.
+  const clearanceMarks = useMemo(() => {
+    const list = [...activeClearance(boardClearance, doc.ignoredClearance), ...liveClearance]
+      .filter(v => !hidden.has(v.layer));
+    return list.length ? list : EMPTY_MARKS;
+  }, [boardClearance, liveClearance, hidden, doc.ignoredClearance]);
   const hasClearanceMarks = clearanceMarks.length > 0;
-  useEffect(() => {
-    if (!hasClearanceMarks) return;
-    const timer = window.setInterval(() => setClearanceBlink(v => !v), 500);
-    return () => window.clearInterval(timer);
-  }, [hasClearanceMarks]);
 
   const outlineKey = useMemo(() => {
     // ключ только по контуру — плата не пересчитывается при движении дорожек
@@ -2238,7 +2312,8 @@ export default function App({ cloudUser, onLogout }: { cloudUser?: CloudUser; on
     cancelAnimationFrame(baseRaf.current);
     baseRaf.current = requestAnimationFrame(() => {
       baseRaf.current = 0;
-      const dpr = window.devicePixelRatio || 1;
+      const t0 = performance.now();
+      const dpr = perfDpr();
       if (cv.width !== Math.round(size.w * dpr)) cv.width = Math.round(size.w * dpr);
       if (cv.height !== Math.round(size.h * dpr)) cv.height = Math.round(size.h * dpr);
       cv.style.width = size.w + 'px';
@@ -2279,23 +2354,24 @@ export default function App({ cloudUser, onLogout }: { cloudUser?: CloudUser; on
         y1: Math.min(cA.y, cB.y) - clipPad, y2: Math.max(cA.y, cB.y) + clipPad,
       } as const;
       const dragNow = drag.current;
-      if (dragNow?.mode === 'move' && dragNow.moved) {
+      if (dragNow?.mode === 'move' && dragNow.moved && dragFilter?.mode === 'move') {
         // во время перетаскивания не рисуем выбранное в базе — оно в оверлее
-        const filtered = zEnts.filter(e => !selRef.current.has(e.id) && !selRef.current.has(e.id.split(':')[0]));
-        drawFlat(ctx, view, filtered, hidden, clip);
-      } else if (dragNow?.mode === 'node' && dragNow.moved) {
-        const filtered = zEnts.filter(e => e.id !== dragNow.entId && !e.id.startsWith(dragNow.entId + ':'));
-        drawFlat(ctx, view, filtered, hidden, clip);
+        drawFlat(ctx, view, dragFilter.ents, hidden, clip);
+      } else if (dragNow?.mode === 'node' && dragNow.moved && dragFilter?.mode === 'node') {
+        drawFlat(ctx, view, dragFilter.ents, hidden, clip);
       } else {
-        drawFlat(ctx, view, zEnts, hidden, clip);
+        drawFlat(ctx, view, zEnts, hidden, clip, zBoxes);
       }
 
       // выделение
       if (sel.size) {
         ctx.save();
+        // один объект настроек на весь список: drawEnt не принимает Set по ссылке,
+        // а создавать его для каждого выделенного элемента — лишний мусор в кадре
+        const selDraw = { tint: COLORS.sel, alpha: 0.5, hidden: new Set<M.LayerId>() };
         for (const ent of doc.entities) {
           if (!sel.has(ent.id)) continue;
-          drawEnt(ctx, view, ent, { tint: COLORS.sel, alpha: 0.5, hidden: new Set() });
+          drawEnt(ctx, view, ent, selDraw);
           const b = M.entBBox(ent);
           const p1 = toPx(b[0], b[1]), p2 = toPx(b[2], b[3]);
           ctx.strokeStyle = COLORS.sel;
@@ -2382,11 +2458,14 @@ export default function App({ cloudUser, onLogout }: { cloudUser?: CloudUser; on
         });
         ctx.restore();
       }
+      // Сообщаем профилю качества, сколько занял кадр: если стабильно тяжело,
+      // уровень опустится сам (см. src/perf.ts).
+      noteFrame(performance.now() - t0);
     });
   }, [
     doc, zEnts, substrate, view, hidden, sel, gridConf, defs.showAxes,
     defs.rtHoleClear, size, tool, routeMode, activeNet, netGeometry, theme, colors, toPx,
-    selGroups, dragTick,
+    selGroups, dragTick, perfLevel.level,
   ]);
 
   // «Тест цепи»: отдельный слой мигает через CSS, не перерисовывая плату
@@ -2394,7 +2473,7 @@ export default function App({ cloudUser, onLogout }: { cloudUser?: CloudUser; on
   useEffect(() => {
     const cv = probeRef.current;
     if (!cv) return;
-    const dpr = window.devicePixelRatio || 1;
+    const dpr = perfDpr();
     if (cv.width !== Math.round(size.w * dpr)) cv.width = Math.round(size.w * dpr);
     if (cv.height !== Math.round(size.h * dpr)) cv.height = Math.round(size.h * dpr);
     cv.style.width = size.w + 'px';
@@ -2406,7 +2485,33 @@ export default function App({ cloudUser, onLogout }: { cloudUser?: CloudUser; on
     for (const e of probeData.flat) {
       if (probe.ents.has(e.id)) drawEnt(ctx, view, e, { tint: COLORS.probe });
     }
-  }, [probe, probeData, tool, view, size, theme, colors]);
+  }, [probe, probeData, tool, view, size, theme, colors, perfLevel.level]);
+
+  // Предупреждения DRC («зазор дорожек») — отдельный холст между платой и оверлеем.
+  // Пересчёт меток идёт по простоям и при правке, а не каждый кадр, поэтому слой
+  // перерисовывается только на изменение меток/вида, а мигание делает CSS-анимация
+  // (.canvas-drc). Так движение мыши и таймер не гоняют React ради подсветки.
+  // DRC — только редактор: в печать, Gerber и ЧПУ метки не попадают.
+  useEffect(() => {
+    const cv = drcRef.current;
+    if (!cv) return;
+    const dpr = perfDpr();
+    if (cv.width !== Math.round(size.w * dpr)) cv.width = Math.round(size.w * dpr);
+    if (cv.height !== Math.round(size.h * dpr)) cv.height = Math.round(size.h * dpr);
+    cv.style.width = size.w + 'px';
+    cv.style.height = size.h + 'px';
+    const ctx = cv.getContext('2d')!;
+    ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+    ctx.clearRect(0, 0, size.w, size.h);
+    if (!clearanceMarks.length) return;
+    ctx.strokeStyle = '#ff354f';
+    ctx.lineWidth = 3;
+    for (const mark of clearanceMarks) {
+      const a = toPx(mark.a.x, mark.a.y), b = toPx(mark.b.x, mark.b.y);
+      ctx.beginPath(); ctx.moveTo(a.px, a.py); ctx.lineTo(b.px, b.py); ctx.stroke();
+      ctx.beginPath(); ctx.arc((a.px + b.px) / 2, (a.py + b.py) / 2, 8, 0, Math.PI * 2); ctx.stroke();
+    }
+  }, [clearanceMarks, hasClearanceMarks, view, size, theme, colors, toPx, perfLevel.level]);
 
   // ---------------- отрисовка: оверлей (черновики, фантомы, перекрестие) ----------------
   // Лёгкий слой поверх платы: обновляется при движении курсора и рисовании,
@@ -2417,7 +2522,8 @@ export default function App({ cloudUser, onLogout }: { cloudUser?: CloudUser; on
     cancelAnimationFrame(overRaf.current);
     overRaf.current = requestAnimationFrame(() => {
       overRaf.current = 0;
-      const dpr = window.devicePixelRatio || 1;
+      const t0 = performance.now();
+      const dpr = perfDpr();
       if (cv.width !== Math.round(size.w * dpr)) cv.width = Math.round(size.w * dpr);
       if (cv.height !== Math.round(size.h * dpr)) cv.height = Math.round(size.h * dpr);
       cv.style.width = size.w + 'px';
@@ -2667,38 +2773,45 @@ export default function App({ cloudUser, onLogout }: { cloudUser?: CloudUser; on
       // превью перетаскивания выбранных элементов — рисуем в оверлее, а не клонируя doc каждый кадр
       const dragNow = drag.current;
       if (dragNow?.mode === 'move' && dragNow.moved) {
-        const dx = dragNow.dx, dy = dragNow.dy;
+        // сдвиг задаём трансформацией холста: раньше каждый выбранный примитив
+        // глубоко клонировался (structuredClone/JSON) на каждом кадре — при
+        // выделении сотен элементов это и был главный фриз перетаскивания
+        const dxPx = dragNow.dx * view.s * (view.mir ? -1 : 1);
+        const dyPx = -dragNow.dy * view.s;
+        const dragDraw = { tint: COLORS.sel, alpha: 0.85, hidden: new Set<M.LayerId>() };
+        ctx.save();
+        ctx.translate(dxPx, dyPx);
         // выбранные — полупрозрачно с цветом выделения, чтобы отличать от оригинала (который скрыт в базе)
         for (const ent of dragNow.doc0.entities) {
           if (!selRef.current.has(ent.id)) continue;
-          // быстрый клон только выбранных
-          const sc = (globalThis as any).structuredClone as (<T>(v:T)=>T)|undefined;
-          let c: M.Entity;
-          try { c = sc ? sc(ent) : JSON.parse(JSON.stringify(ent)) as M.Entity; }
-          catch { c = JSON.parse(JSON.stringify(ent)) as M.Entity; }
-          M.translateEnt(c, dx, dy);
-          drawEnt(ctx, view, c, { tint: COLORS.sel, alpha: 0.85, hidden: new Set() });
+          drawEnt(ctx, view, ent, dragDraw);
         }
+        ctx.restore();
       } else if (dragNow?.mode === 'node' && dragNow.moved && dragNow.preview) {
-        const orig = dragNow.doc0.entities.find(x => x.id === dragNow.entId);
-        if (orig && (orig.kind === 'track' || orig.kind === 'poly')) {
-          const sc = (globalThis as any).structuredClone as (<T>(v:T)=>T)|undefined;
-          let c: M.Entity;
-          try { c = sc ? sc(orig) : JSON.parse(JSON.stringify(orig)) as M.Entity; }
-          catch { c = JSON.parse(JSON.stringify(orig)) as M.Entity; }
-          if (c.kind === 'track') {
-            // применяем moveTrackNode логику упрощённо: меняем точку
-            const pts = (c as any).pts as M.Pt[];
-            if (pts[dragNow.idx]) pts[dragNow.idx] = dragNow.preview;
-          } else if (c.kind === 'poly') {
-            (c as any).pts[dragNow.idx] = dragNow.preview;
+        // клон одной дорожки держим между кадрами: точка меняется на месте,
+        // глубокое клонирование на каждый кадр здесь больше не нужно
+        let c = dragNow.cache;
+        if (!c) {
+          const orig = dragNow.doc0.entities.find(x => x.id === dragNow.entId);
+          if (orig && (orig.kind === 'track' || orig.kind === 'poly')) {
+            const sc = (globalThis as any).structuredClone as (<T>(v:T)=>T)|undefined;
+            try { c = sc ? sc(orig) : JSON.parse(JSON.stringify(orig)) as M.Entity; }
+            catch { c = JSON.parse(JSON.stringify(orig)) as M.Entity; }
+            dragNow.cache = c;
           }
-          drawEnt(ctx, view, c, { tint: COLORS.sel, alpha: 0.9, hidden: new Set() });
+        }
+        if (c && (c.kind === 'track' || c.kind === 'poly')) {
+          // применяем moveTrackNode логику упрощённо: меняем точку
+          const pts = (c as any).pts as M.Pt[];
+          if (pts[dragNow.idx]) pts[dragNow.idx] = dragNow.preview;
+          drawEnt(ctx, view, c, { tint: COLORS.sel, alpha: 0.9, hidden: new Set<M.LayerId>() });
         }
       }
 
       // фантомы размещения
-      const ghost = (ent: M.Entity) => drawEnt(ctx, view, ent, { alpha: 0.55, hidden: new Set() });
+      const ghostOpts = { alpha: 0.55, hidden: new Set<M.LayerId>() };
+      const pasteOpts = { alpha: 0.55, tint: COLORS.sel, hidden: new Set<M.LayerId>() };
+      const ghost = (ent: M.Entity) => drawEnt(ctx, view, ent, ghostOpts);
       if (!sel.size && !drag.current) {
         const at = { x: mouse.wx, y: mouse.wy };
         if (tool === 'pad') ghost({ id: 'g', kind: 'pad', ...at, shape: defs.padShape, size: defs.padSize, drill: defs.padDrill });
@@ -2715,14 +2828,15 @@ export default function App({ cloudUser, onLogout }: { cloudUser?: CloudUser; on
             bl: place.bl, ents: place.ents,
           });
         }
-        // буфер вставки
-        if (pasteTpl) {
-          const bb = M.unionBBox(pasteTpl.map(M.entBBox));
-          pasteTpl.forEach((tpl) => {
-            const c = JSON.parse(JSON.stringify(tpl)) as M.Entity;
-            M.translateEnt(c, at.x - bb[0], at.y - bb[1]);
-            drawEnt(ctx, view, c, { alpha: 0.55, tint: COLORS.sel, hidden: new Set() });
-          });
+        // буфер вставки: сдвиг задаём трансформацией холста — раньше здесь
+        // клонировался каждый примитив через JSON на каждый кадр движения мыши
+        if (pasteTpl && pasteBB) {
+          const dx = (at.x - pasteBB[0]) * view.s * (view.mir ? -1 : 1);
+          const dy = -(at.y - pasteBB[1]) * view.s;
+          ctx.save();
+          ctx.translate(dx, dy);
+          for (let i = 0; i < pasteTpl.length; i++) drawEnt(ctx, view, pasteTpl[i], pasteOpts);
+          ctx.restore();
         }
       }
 
@@ -2737,19 +2851,6 @@ export default function App({ cloudUser, onLogout }: { cloudUser?: CloudUser; on
         ctx.strokeRect(Math.min(a.px, b.px) + 0.5, Math.min(a.py, b.py) + 0.5, Math.abs(b.px - a.px), Math.abs(b.py - a.py));
         ctx.setLineDash([]);
       }
-
-      // DRC is editor-only: never included in print, Gerber or CNC exports.
-      ctx.save();
-      ctx.globalAlpha = clearanceBlink ? 1 : 0.35;
-      ctx.strokeStyle = '#ff354f';
-      ctx.fillStyle = '#ff354f';
-      ctx.lineWidth = 3;
-      for (const mark of clearanceMarks) {
-        const a = toPx(mark.a.x, mark.a.y), b = toPx(mark.b.x, mark.b.y);
-        ctx.beginPath(); ctx.moveTo(a.px, a.py); ctx.lineTo(b.px, b.py); ctx.stroke();
-        ctx.beginPath(); ctx.arc((a.px + b.px) / 2, (a.py + b.py) / 2, 8, 0, Math.PI * 2); ctx.stroke();
-      }
-      ctx.restore();
 
       // перекрестие курсора
       if (mouse.px >= 0 && mouse.px <= size.w && mouse.py >= 0 && mouse.py <= size.h) {
@@ -2767,6 +2868,7 @@ export default function App({ cloudUser, onLogout }: { cloudUser?: CloudUser; on
         ctx.fillStyle = CANVAS_UI.labelInk;
         ctx.fillText(lbl, mouse.px + 14, mouse.py - 11);
       }
+      noteFrame(performance.now() - t0);
     });
   });
 
@@ -3262,6 +3364,8 @@ export default function App({ cloudUser, onLogout }: { cloudUser?: CloudUser; on
           <canvas ref={baseRef} className="canvas-base" />
           <canvas ref={probeRef} aria-hidden="true"
             className={`canvas-probe${tool === 'probe' && probe ? ' is-active' : ''}`} />
+          <canvas ref={drcRef} aria-hidden="true"
+            className={`canvas-drc${hasClearanceMarks ? ' is-active' : ''}`} />
           {/* оверлей: черновики, фантомы, перекрестие; принимает события */}
           <canvas
             ref={overRef}

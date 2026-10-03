@@ -309,11 +309,30 @@ export function zOrdered(doc: Doc): Entity[] {
 export interface ClipRect { x1: number; y1: number; x2: number; y2: number }
 
 /**
+ * Габариты списка примитивов одной плоской таблицей (x1,y1,x2,y2 подряд).
+ * Строится один раз на изменение платы и переиспользуется в кадрах: отсечение
+ * по видимой области перестаёт ходить в entBBox (WeakMap) на каждый кадр и не
+ * создаёт мусора. Порядок обязан совпадать с ents.
+ */
+export function bboxArray(ents: Entity[]): Float32Array {
+  const out = new Float32Array(ents.length * 4);
+  for (let i = 0; i < ents.length; i++) {
+    const b = entBBox(ents[i]);
+    const o = i * 4;
+    out[o] = b[0]; out[o + 1] = b[1]; out[o + 2] = b[2]; out[o + 3] = b[3];
+  }
+  return out;
+}
+
+/**
  * Отрисовка готового плоского списка примитивов (например, из zOrdered).
  * Список можно построить один раз (useMemo) и переиспользовать в кадрах —
  * развёртка компонентов (expandComp) не вызывается на каждую перерисовку.
  * clip — видимый прямоугольник в мм: примитивы вне его не рисуются
- * (существенно ускоряет работу на крупных платах при увеличении).
+ * (существенно ускоряет работу на крупных платах при увеличении: меньше
+ * вызовов canvas-API).
+ * boxes — необязательная таблица габаритов из bboxArray для того же списка
+ * (если список отфильтрован, таблица не подходит — не передавайте её).
  */
 export function drawFlat(
   ctx: CanvasRenderingContext2D,
@@ -321,6 +340,7 @@ export function drawFlat(
   ents: Entity[],
   hidden?: Set<LayerId>,
   clip?: ClipRect | null,
+  boxes?: Float32Array | null,
 ): void {
   const o: DrawOpts = { hidden };
   const len = ents.length;
@@ -329,7 +349,14 @@ export function drawFlat(
     return;
   }
   const { x1: cx1, y1: cy1, x2: cx2, y2: cy2 } = clip;
-  // локальный кэш bbox для этого кадра, чтобы не вызывать entBBox дважды
+  if (boxes && boxes.length >= len * 4) {
+    for (let i = 0; i < len; i++) {
+      const k = i * 4;
+      if (boxes[k + 2] < cx1 || boxes[k] > cx2 || boxes[k + 3] < cy1 || boxes[k + 1] > cy2) continue;
+      drawEnt(ctx, v, ents[i], o);
+    }
+    return;
+  }
   for (let i = 0; i < len; i++) {
     const e = ents[i];
     const b = entBBox(e);
