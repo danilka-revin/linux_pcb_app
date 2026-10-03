@@ -7,6 +7,7 @@ import {
   type GridConf, type GridStyle, type GridUnit,
 } from '../pcb/grid';
 import { COLORS } from '../pcb/render';
+import { perfDpr } from '../perf';
 import { Modal, NI, SI } from './widgets';
 import type { Defs } from './panels';
 
@@ -258,7 +259,7 @@ export function GridDialog({ defs, setDefs, onClose, cursor }: GridDialogProps) 
     const cv = previewRef.current;
     if (!cv) return;
     const draw = (): void => {
-      const dpr = window.devicePixelRatio || 1;
+      const dpr = perfDpr();
       const w = cv.clientWidth || 320;
       const h = cv.clientHeight || 150;
       if (cv.width !== Math.round(w * dpr)) cv.width = Math.round(w * dpr);

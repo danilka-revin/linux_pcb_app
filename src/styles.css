@@ -1270,3 +1270,40 @@ canvas { display: block; }
   .cnc-depth { width: 75px; flex-basis: 75px; }
   .cnc-empty { min-height: 240px; }
 }
+
+/* ============================================================
+   Адаптивное качество (профиль устройства).
+   data-perf ставится до первой отрисовки (index.html) и уточняется
+   в src/perf.ts по реальной скорости кадров. Уровень 'low' — слабые
+   машины: убираем непрерывные анимации и размытие подложки (это самая
+   дорогая перерисовка в интерфейсе), разрешение холстов опускает
+   сам редактор. Функциональные индикаторы (полоса прогресса, мигание
+   «Теста цепи», полоса сохранения в облако) остаются на месте.
+   ============================================================ */
+html[data-perf='balanced'] .tb-btn.upd-btn.upd-fresh,
+html[data-perf='balanced'] .upd-dot.is-new,
+html[data-perf='low'] .tb-btn.upd-btn.upd-fresh,
+html[data-perf='low'] .upd-dot.is-new { animation: none; }
+html[data-perf='low'] .tool-dock { backdrop-filter: none; background: var(--surface); }
+html[data-perf='low'] { --shadow: 0 12px 30px rgba(0, 0, 0, .55); }
+html[data-perf='low'] .updp-track .updp-fill { background-image: none; }
+
+/* ---------- слой предупреждений DRC (зазор дорожек) ---------- */
+/* Отдельный холст: метки не перерисовываются на каждое движение мыши и
+   не зависят от React-перерисовок — мигание делает CSS. */
+.canvas-drc { position: absolute; inset: 0; pointer-events: none; }
+.canvas-drc.is-active { animation: drcBlink 1.1s steps(1, end) infinite; }
+@keyframes drcBlink {
+  0%, 100% { opacity: 1; }
+  50% { opacity: .35; }
+}
+@media (prefers-reduced-motion: reduce) {
+  .canvas-drc.is-active { animation: none; opacity: .8; }
+}
+
+/* ---------- панель «Качество отрисовки» ---------- */
+.perf-levels { display: flex; flex-wrap: wrap; gap: 6px; }
+.perf-hint { font-size: 11.5px; color: var(--muted); margin: 8px 0 0; }
+.perf-facts { margin: 8px 0 0; padding-left: 18px; font-size: 11.5px; color: var(--muted); }
+.perf-facts li { margin: 2px 0; }
+.perf-sect .uib-sect-title { margin-top: 14px; }

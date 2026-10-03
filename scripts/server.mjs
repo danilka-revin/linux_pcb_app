@@ -1001,9 +1001,12 @@ export async function startServer(opts = {}) {
       }
       let data, type = MIME[extname(full).toLowerCase()];
       let hashed = false;
+      let mtimeMs = 0;
       try {
+        mtimeMs = (await stat(full)).mtimeMs;
         data = await readFile(full);
-        hashed = /[\\/]assets[\\/]/.test(path); // у vite имена файлов в assets/ содержат хэш
+        // у vite имена файлов в assets/ содержат хэш — их можно кэшировать навсегда
+        hashed = /(^|[/\\])assets[/\\]/.test(path);
       } catch (e) {
         // SPA-навигация получает index.html, но отсутствующие ресурсы не маскируем HTML-ответом.
         if (extname(path) || path.startsWith('assets/')) {
@@ -1014,11 +1017,40 @@ export async function startServer(opts = {}) {
         catch { throw e; }
         type = 'text/html; charset=utf-8';
       }
-      res.writeHead(200, {
+      const fileHeaders = {
         'content-type': type || 'application/octet-stream',
         'cache-control': hashed ? 'public, max-age=31536000, immutable' : 'no-cache',
-      });
-      res.end(data);
+      };
+      // Отдаём предсжатый вариант, если он есть (его делает сборка:
+      // scripts/precompress.mjs). Сжатие на лету не используем намеренно:
+      // сервер часто крутится на том же слабом устройстве, что и редактор.
+      const accept = String(req.headers['accept-encoding'] || '');
+      const packedExt = /\bbr\b/.test(accept) ? '.br' : /\bgzip\b/.test(accept) ? '.gz' : '';
+      let body = data;
+      let encoding = '';
+      if (packedExt) {
+        try {
+          const packed = await readFile(full + packedExt);
+          if (packed.length < data.length) { body = packed; encoding = packedExt === '.br' ? 'br' : 'gzip'; }
+        } catch { /* предсжатого файла нет — отдаём обычный */ }
+      }
+      // ETag: без него «no-cache» заставлял браузер перекачивать файл целиком
+      // при каждой перезагрузке. Метка учитывает вариант сжатия, чтобы
+      // повторный ответ не подменил тело.
+      const etag = `W/"${body.length.toString(16)}-${Math.floor(mtimeMs).toString(16)}${encoding ? '-' + encoding : ''}"`;
+      const headers = {
+        ...fileHeaders,
+        etag,
+        ...(encoding ? { 'content-encoding': encoding, 'content-length': String(body.length), vary: 'accept-encoding' } : {}),
+      };
+      if (req.headers['if-none-match'] === etag) {
+        delete headers['content-length'];
+        res.writeHead(304, headers);
+        res.end();
+        return;
+      }
+      res.writeHead(200, headers);
+      res.end(body);
     } catch (e) {
       res.writeHead(500).end(String(e));
     }

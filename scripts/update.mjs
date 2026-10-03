@@ -594,6 +594,13 @@ try {
         writeFileSync(vf, JSON.stringify({ ...v, sha: latestSha, short: short(latestSha), branch }, null, 1) + '\n');
       }
     } catch { /* не критично */ }
+    // Предсжатие ассетов (brotli/gzip): сервер отдаёт готовые .br/.gz вместо
+    // сжатия каждого запроса. Не критично — если шаг не удался, файлы просто
+    // отдаются как есть.
+    const pc = join(src, 'scripts', 'precompress.mjs');
+    if (existsSync(pc)) {
+      try { await run(process.execPath, [pc], { cwd: src }); } catch { /* не критично */ }
+    }
     stats.buildMs = Date.now() - t0;
     P({ stage: 'build', state: 'done', frac: 1, msg: 'Сборка готова' });
   }

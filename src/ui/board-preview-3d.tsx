@@ -11,6 +11,7 @@ import { BOARD_2D_THEMES, drawBoard2D, type Board2DThemeId } from './board-previ
 import { collectBoardHoles, createBoardGeometry } from './board-geometry-3d';
 import { buildExportRoot, exportBaseName, exportGLB, exportOBJZip, type Model3DFormat } from './board-export-3d';
 import { download } from '../pcb/zip';
+import { noteFrame, perfProfile, subscribePerf } from '../perf';
 
 /** Без полей и растяжения: вся текстура соответствует поверхности платы. */
 export function createBoardTexture(doc: Doc, themeId: Board2DThemeId, side: 'top' | 'bottom'): THREE.CanvasTexture {
@@ -71,6 +72,9 @@ export function BoardPreview3D({ doc, height = 520 }: { doc: Doc; width?: number
   const sceneRef = useRef<THREE.Scene | null>(null);
   const componentsRef = useRef<THREE.Group | null>(null);
   const resetRef = useRef<(() => void) | null>(null);
+  // «Нарисовать кадр»: отрисовка по требованию (см. init), нужна переключателям
+  const renderRef = useRef<(() => void) | null>(null);
+  const rendererRef = useRef<THREE.WebGLRenderer | null>(null);
   const [themeId, setThemeId] = useState<Board2DThemeId>('green');
   const [thickness, setThickness] = useState(1.6);
   const [showComponents, setShowComponents] = useState(true);
@@ -99,6 +103,7 @@ export function BoardPreview3D({ doc, height = 520 }: { doc: Doc; width?: number
 
     const dispose = () => {
       cancelAnimationFrame(raf);
+      raf = 0;
       observer?.disconnect();
       observer = null;
       if (controlsRef.current === controls) controlsRef.current = null;
@@ -108,10 +113,12 @@ export function BoardPreview3D({ doc, height = 520 }: { doc: Doc; width?: number
         sceneRef.current = null;
         componentsRef.current = null;
         resetRef.current = null;
+        renderRef.current = null;
       }
       if (scene) disposePreviewScene(scene);
       scene = null;
       if (renderer) {
+        if (rendererRef.current === renderer) rendererRef.current = null;
         renderer.domElement.removeEventListener('webglcontextlost', onContextLost);
         renderer.dispose();
         renderer.forceContextLoss();
@@ -137,10 +144,14 @@ export function BoardPreview3D({ doc, height = 520 }: { doc: Doc; width?: number
           throw new Error('Для 3D нужны положительные размеры платы.');
         }
         const canvas = document.createElement('canvas');
-        const context = canvas.getContext('webgl2', { antialias: true, alpha: false });
+        // Качество берём из профиля устройства: на слабых машинах отключаем
+        // сглаживание и рисуем в меньшем разрешении (см. src/perf.ts).
+        const quality = perfProfile();
+        const context = canvas.getContext('webgl2', { antialias: quality.antialias, alpha: false });
         if (!context) throw new Error('WebGL 2 недоступен. Включите аппаратное ускорение в браузере или откройте плату в браузере с поддержкой WebGL 2.');
-        renderer = new THREE.WebGLRenderer({ canvas, context, antialias: true, alpha: false });
-        renderer.setPixelRatio(Math.min(window.devicePixelRatio || 1, 2));
+        renderer = new THREE.WebGLRenderer({ canvas, context, antialias: quality.antialias, alpha: false });
+        renderer.setPixelRatio(Math.min(window.devicePixelRatio || 1, quality.dpr));
+        rendererRef.current = renderer;
         renderer.domElement.setAttribute('aria-label', 'Объёмная модель платы');
         renderer.domElement.addEventListener('webglcontextlost', onContextLost);
         mount!.appendChild(renderer.domElement);
@@ -224,24 +235,40 @@ export function BoardPreview3D({ doc, height = 520 }: { doc: Doc; width?: number
         };
         resize();
         fit();
-        observer = new ResizeObserver(() => { resize(); fit(); });
+        observer = new ResizeObserver(() => { resize(); fit(); schedule(); });
         observer.observe(mount!);
+        // Отрисовка по требованию. Постоянная петля requestAnimationFrame
+        // рисовала бы 60 кадров в секунду даже у неподвижной платы — на слабых
+        // машинах это лишний нагрев и разряд батареи. Кадр запрашивается, когда
+        // камера реально меняется: перетаскивание, инерция после отпускания,
+        // авто-вращение, изменение размеров или переключателей.
         let lastTime = performance.now();
-        const animate = (time: number) => {
+        const schedule = () => {
+          if (!raf && !cancelled) raf = requestAnimationFrame(frame);
+        };
+        const frame = (time: number) => {
+          raf = 0;
           if (cancelled || !renderer || !scene || !controls) return;
           try {
             controls.update(Math.min((time - lastTime) / 1000, 0.1));
             lastTime = time;
+            const t0 = performance.now();
             renderer.render(scene, camera);
-            raf = requestAnimationFrame(animate);
+            noteFrame(performance.now() - t0);
+            // Авто-вращение — единственный режим, где кадры нужны постоянно.
+            if (controls.autoRotate) schedule();
           } catch {
             fail('Не удалось отрисовать 3D. Попробуйте запустить просмотр ещё раз.');
           }
         };
+        // Любое движение камеры (в том числе инерция OrbitControls) просит кадр.
+        const onChange = () => schedule();
+        controls.addEventListener('change', onChange);
+        renderRef.current = schedule;
         // Проверяем первый кадр до снятия индикатора загрузки.
         renderer.render(scene, camera);
         setReady(true);
-        raf = requestAnimationFrame(animate);
+        schedule();
       } catch (cause) {
         if (!cancelled) fail(cause instanceof Error ? cause.message : 'Не удалось запустить 3D-просмотр.');
       }
@@ -250,7 +277,17 @@ export function BoardPreview3D({ doc, height = 520 }: { doc: Doc; width?: number
     return () => { cancelled = true; dispose(); };
   }, [doc, themeId, thickness, attempt, theme.bg, theme.boardEdge]);
 
+  // Смена профиля качества (в том числе автоматическая) меняет разрешение
+  // отрисовки без пересоздания WebGL-контекста.
+  useEffect(() => subscribePerf(() => {
+    const r = rendererRef.current;
+    if (!r) return;
+    r.setPixelRatio(Math.min(window.devicePixelRatio || 1, perfProfile().dpr));
+    renderRef.current?.();
+  }), []);
+
   // Эти переключатели не пересоздают WebGL-контекст и не сбрасывают камеру.
+  // Кадр запрашиваем сами: постоянной петли отрисовки больше нет.
   useEffect(() => {
     if (controlsRef.current) controlsRef.current.autoRotate = autoRotate;
     if (componentsRef.current) componentsRef.current.visible = showComponents;
@@ -260,6 +297,7 @@ export function BoardPreview3D({ doc, height = 520 }: { doc: Doc; width?: number
         if (material instanceof THREE.MeshStandardMaterial) material.wireframe = wireframe;
       }
     });
+    renderRef.current?.();
   }, [autoRotate, showComponents, wireframe]);
 
   // Экспорт того, что на экране: плата, текстуры и (если включены) детали.

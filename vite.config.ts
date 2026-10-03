@@ -111,6 +111,22 @@ const footprintProxy: ProxyOptions = {
 
 export default defineConfig({
   plugins: [react(), partReelSearch, offlineCloud],
+  build: {
+    // Разделяем библиотеки и код приложения: при обновлении версии браузер
+    // загружает заново только изменившуюся часть (ассеты отдаются с
+    // immutable-кэшем), а разбор идёт параллельно несколькими меньшими файлами.
+    rollupOptions: {
+      output: {
+        manualChunks(id: string) {
+          if (!id.includes('node_modules')) return undefined;
+          if (id.includes('/three/')) return 'three';
+          if (id.includes('/react') || id.includes('/scheduler/')) return 'react';
+          return 'vendor';
+        },
+      },
+    },
+    chunkSizeWarningLimit: 900,
+  },
   server: {
     host: true,
     port: 5173,
