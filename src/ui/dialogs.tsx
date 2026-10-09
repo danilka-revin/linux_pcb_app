@@ -12,14 +12,16 @@ export interface ExportPngOpts {
 }
 
 export function NewBoardDialog({
-  onOk, onClose,
+  onOk, onClose, defaults,
 }: {
   onOk: (name: string, w: number, h: number) => void;
   onClose: () => void;
+  /** начальные значения — настройки «Новая плата» (окно настроек) */
+  defaults?: { name: string; w: number; h: number };
 }) {
-  const [name, setName] = useState('Плата');
-  const [w, setW] = useState(100);
-  const [h, setH] = useState(80);
+  const [name, setName] = useState(defaults?.name ?? 'Плата');
+  const [w, setW] = useState(defaults?.w ?? 100);
+  const [h, setH] = useState(defaults?.h ?? 80);
   return (
     <Modal
       title="Новая плата"
@@ -40,18 +42,20 @@ export function NewBoardDialog({
 }
 
 export function ExportDialog({
-  onGerber, onPng, onLay6, onCnc, onClose,
+  onGerber, onPng, onLay6, onCnc, onClose, defaults,
 }: {
   onGerber: () => void;
   onPng: (o: ExportPngOpts) => void;
   onLay6: () => void;
   onCnc: () => void;
   onClose: () => void;
+  /** начальные значения печати 1:1 — настройки «Файлы и экспорт» */
+  defaults?: ExportPngOpts;
 }) {
-  const [layer, setLayer] = useState<ExportPngOpts['layer']>('k2');
-  const [mirror, setMirror] = useState(true);
-  const [drill, setDrill] = useState(true);
-  const [dpi, setDpi] = useState(600);
+  const [layer, setLayer] = useState<ExportPngOpts['layer']>(defaults?.layer ?? 'k2');
+  const [mirror, setMirror] = useState(defaults?.mirror ?? true);
+  const [drill, setDrill] = useState(defaults?.drill ?? true);
+  const [dpi, setDpi] = useState(defaults?.dpi ?? 600);
   return (
     <Modal
       title="Экспорт"
@@ -288,6 +292,7 @@ export function AboutDialog({ version, onClose }: { version: string | null; onCl
         <span className="kbd">Ctrl+C</span>/<span className="kbd">Ctrl+V</span> копировать/вставить,
         <span className="kbd"> F</span> показать всё, <span className="kbd">Esc</span> отмена действия,
         <span className="kbd"> G</span>/<span className="kbd"> Shift+G</span> следующий/предыдущий шаг сетки,
+        <span className="kbd">Ctrl+,</span> все настройки отдельным окном,
         <span className="kbd">Ctrl+G</span> настройки сетки,
         <span className="kbd"> Alt</span> — временно без привязки к сетке.
       </p>

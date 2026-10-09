@@ -200,6 +200,38 @@ export function Modal({
   );
 }
 
+/**
+ * Небольшое подтверждение опасного действия (удаление, сброс настроек).
+ * Отдельный от Modal заголовок и акцент на кнопке подтверждения.
+ */
+export function ConfirmDialog({
+  title, text, ok = 'Да', cancel = 'Отмена', onOk, onClose, danger = false,
+}: {
+  title: string;
+  text: string;
+  ok?: string;
+  cancel?: string;
+  onOk: () => void;
+  onClose: () => void;
+  danger?: boolean;
+}) {
+  return (
+    <Modal
+      title={title}
+      className="confirm-modal"
+      onClose={onClose}
+      foot={
+        <>
+          <button className="btn" onClick={onClose}>{cancel}</button>
+          <button className={'btn ' + (danger ? 'danger' : 'primary')} autoFocus onClick={onOk}>{ok}</button>
+        </>
+      }
+    >
+      <p style={{ margin: 0 }}>{text}</p>
+    </Modal>
+  );
+}
+
 /** Пункт выпадающего меню тулбара (sep — разделитель) */
 export interface MenuEntry {
   icon?: string;
