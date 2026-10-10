@@ -5,8 +5,10 @@
 // Всё хранится в localStorage под ключом psbees.prefs и читается один раз
 // при старте: правка любой настройки применяется сразу, перезапуск не нужен.
 import { useCallback, useState } from 'react';
+import { DEFAULT_HOTKEYS, normalizeHotkeys, type HotkeyMap } from './hotkeys';
 
 export const PREFS_KEY = 'psbees.prefs';
+export type { HotkeyMap };
 
 /** Слой для печати 1:1 (совпадает с ExportPngOpts в src/ui/dialogs.tsx). */
 export type PrintLayer = 'k1' | 'k2' | 's1' | 's2' | 'outline';
@@ -63,6 +65,10 @@ export interface Prefs {
   /** проверять обновления при запуске */
   checkUpdates: boolean;
 
+  // ---------------- горячие клавиши ----------------
+  /** действие → список сочетаний (см. src/ui/hotkeys.ts) */
+  hotkeys: HotkeyMap;
+
   // ---------------- окно настроек ----------------
   /** последний открытый раздел */
   setSection: string;
@@ -104,6 +110,8 @@ export const DEFAULT_PREFS: Prefs = {
   pngDrill: true,
 
   checkUpdates: true,
+
+  hotkeys: DEFAULT_HOTKEYS,
 
   setSection: 'general',
   setW: 900,
@@ -157,6 +165,8 @@ export const normalizePrefs = (p?: Partial<Prefs> | null): Prefs => {
     pngDrill: bool(s.pngDrill, DEFAULT_PREFS.pngDrill),
 
     checkUpdates: bool(s.checkUpdates, DEFAULT_PREFS.checkUpdates),
+
+    hotkeys: normalizeHotkeys(s.hotkeys),
 
     setSection: typeof s.setSection === 'string' ? s.setSection : DEFAULT_PREFS.setSection,
     setW: num(s.setW, DEFAULT_PREFS.setW, 520, 2400),

@@ -296,6 +296,11 @@ export function AboutDialog({ version, onClose }: { version: string | null; onCl
         <span className="kbd">Ctrl+G</span> настройки сетки,
         <span className="kbd"> Alt</span> — временно без привязки к сетке.
       </p>
+      <p style={{ fontSize: 12, opacity: 0.85 }}>
+        Любую клавишу можно переназначить: <span className="kbd">Ctrl+,</span> → раздел
+        «Горячие клавиши» — там у каждого действия своё сочетание (или несколько),
+        а занятая другим действием клавиша снимается с него автоматически.
+      </p>
     </Modal>
   );
 }

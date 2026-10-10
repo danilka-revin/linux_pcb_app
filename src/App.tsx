@@ -55,6 +55,8 @@ import {
 import { SettingsWindow } from './ui/settings';
 // Общие настройки программы (автосохранение, вид, экспорт) и конфигурация интерфейса.
 import { DEFAULT_PREFS, usePrefs } from './ui/prefs';
+// Горячие клавиши настраиваются пользователем (окно настроек → «Горячие клавиши»).
+import { comboOf, reverseHotkeys } from './ui/hotkeys';
 import {
   DEFAULT_SIDES, LEFT_TAB_NAMES, LEFT_TABS, clampW, loadUi, normalizeSides, saveUi,
   type LeftTabId, type UiState,
@@ -2076,6 +2078,12 @@ export default function App({ cloudUser, onLogout }: { cloudUser?: CloudUser; on
   };
 
   // ---------------- клавиатура ----------------
+  /**
+   * «сочетание → действие» из настроек. Пересобирается при смене привязок:
+   * пользователь назначает клавишу в окне настроек — и она сразу работает.
+   */
+  const hotkeyIndex = useMemo(() => reverseHotkeys(prefs.hotkeys), [prefs.hotkeys]);
+
   const keyHandler = useCallback((e: KeyboardEvent) => {
     if (routeWorker.current) {
       if (e.code === 'Escape') { routeWorker.current.terminate(); routeWorker.current = null; setRouting(null); setRouteMsg({ msg: 'Трассировка отменена. Плата не изменена.', ok: null }); }
@@ -2084,52 +2092,70 @@ export default function App({ cloudUser, onLogout }: { cloudUser?: CloudUser; on
     if (dialog || preview || routeVariants) return;   // окно открыто — плату не трогаем
     const t = e.target as HTMLElement;
     if (t && (t.tagName === 'INPUT' || t.tagName === 'TEXTAREA' || t.tagName === 'SELECT' || t.isContentEditable)) return;
-    const ctrl = e.ctrlKey || e.metaKey;
 
-    if (ctrl) {
-      switch (e.code) {
-        case 'KeyZ': if (e.shiftKey) redo(); else undo(); e.preventDefault(); return;
-        case 'KeyY': redo(); e.preventDefault(); return;
-        case 'KeyS': savePrimary(); e.preventDefault(); return;
-        case 'KeyO': fileRef.current?.click(); e.preventDefault(); return;
-        case 'KeyA': setSel(new Set(doc.entities.map((en) => en.id))); e.preventDefault(); return;
-        case 'KeyC': copySel(); e.preventDefault(); return;
-        case 'KeyV': startPaste(); e.preventDefault(); return;
-        case 'KeyD': duplicateSel(); e.preventDefault(); return;
-        case 'KeyE': setDialog('export'); e.preventDefault(); return;
-        // Ctrl+G — настройки сетки, Ctrl+Shift+G — сгруппировать выделенное
-        case 'KeyG': if (e.shiftKey) groupSel(); else setDialog('grid'); e.preventDefault(); return;
-        // Ctrl+, — окно настроек (отдельное окно, как в обычных программах)
-        case 'Comma': setDialog('settings'); e.preventDefault(); return;
-        case 'KeyU': if (e.shiftKey) { ungroupSel(); e.preventDefault(); } return;
-        default: return;
-      }
+    // Какое действие стоит за нажатым сочетанием — решает настройка
+    // «Горячие клавиши» (окно настроек), а не жёстко прописанный switch.
+    const combo = comboOf(e);
+    if (!combo) return;
+    const action = hotkeyIndex.get(combo);
+    if (!action) return;
+    e.preventDefault();
+
+    // Инструменты: действие вида tool.<id> — просто переключает инструмент
+    if (action.startsWith('tool.')) {
+      const id = action.slice(5) as ToolId2;
+      if (TOOLS.some((x) => x.id === id)) setTool(id);
+      return;
     }
+
     // сдвиг стрелками: шаг сетки, Shift — в 10 раз больше, Alt — в 10 раз меньше
     const stepNudge = defs.grid * (e.shiftKey ? 10 : e.altKey ? 0.1 : 1);
-    switch (e.code) {
-      case 'Escape': finishOrCancel(); break;
-      case 'Delete': case 'Backspace':
+    // шаг масштабирования — общая настройка (колесо мыши и клавиши ±)
+    const zoomStep = prefsRef.current.zoomStep > 1.01 ? prefsRef.current.zoomStep : 1.3;
+    const zoomBy = (f: number) => zoomAt(size.w / 2, size.h / 2, f);
+
+    switch (action) {
+      // ---------------- файл ----------------
+      case 'file.new': setDialog('new'); return;
+      case 'file.open': fileRef.current?.click(); return;
+      case 'file.save': savePrimary(); return;
+      case 'file.export': setDialog('export'); return;
+      case 'file.panelize': setDialog('panelize'); return;
+      case 'file.autoplace': setDialog('autoplace'); return;
+      case 'file.cnc': setDialog('cnc'); return;
+      case 'file.inventory': setDialog('inventory'); return;
+
+      // ---------------- правка ----------------
+      case 'edit.undo': undo(); return;
+      case 'edit.redo': redo(); return;
+      case 'edit.selectAll': setSel(new Set(doc.entities.map((en) => en.id))); return;
+      case 'edit.copy': copySel(); return;
+      case 'edit.paste': startPaste(); return;
+      case 'edit.duplicate': duplicateSel(); return;
+      case 'edit.delete':
         // В «Выборе» Del удаляет узел, если он выбран, иначе — элементы.
         if (tool === 'select' && editNode != null && editEnt) deleteEditNode(editEnt.id, editNode);
         else deleteSel();
-        break;
-      case 'KeyR':
+        return;
+      case 'edit.rotate':
         if (place) setPlaceRot((r) => (r + 90) % 360);
         else rotateSel();
-        break;
-      case 'KeyM': mirrorSel(); break;
-      case 'KeyQ': if (place) setPlaceSide((s) => (s === 'top' ? 'bottom' : 'top')); break;
-      // I — строка генератора: создать/поправить деталь, не снимая рук с клавиатуры
-      case 'KeyI':
-        if (!e.ctrlKey && !e.metaKey && !e.altKey && tool !== 'route') {
-          setLeftTab('lib'); setLibTab('gen');
-          const el = document.getElementById('gen-query') as HTMLInputElement | null;
-          el?.focus(); el?.select();
-          e.preventDefault();
-        }
-        break;
-      case 'KeyL': {
+        return;
+      case 'edit.mirror': mirrorSel(); return;
+      case 'edit.side': if (place) setPlaceSide((s) => (s === 'top' ? 'bottom' : 'top')); return;
+      case 'edit.group': groupSel(); return;
+      case 'edit.ungroup': ungroupSel(); return;
+      case 'edit.nudgeLeft': nudge(-stepNudge, 0); return;
+      case 'edit.nudgeRight': nudge(stepNudge, 0); return;
+      case 'edit.nudgeUp': nudge(0, stepNudge); return;
+      case 'edit.nudgeDown': nudge(0, -stepNudge); return;
+
+      // ---------------- вид ----------------
+      case 'view.fit': fit(); return;
+      case 'view.zoomIn': zoomBy(zoomStep); return;
+      case 'view.zoomOut': zoomBy(1 / zoomStep); return;
+      case 'view.mirrorView': setView((v) => ({ ...v, mir: !v.mir })); return;
+      case 'view.layer': {
         const other: 'k1' | 'k2' = activeCu === 'k1' ? 'k2' : 'k1';
         if (draft?.t === 'track') {
           // точка смены слоя на текущей позиции курсора
@@ -2139,42 +2165,39 @@ export default function App({ cloudUser, onLogout }: { cloudUser?: CloudUser; on
           });
         }
         setActiveCu(other);
-        break;
+        return;
       }
-      case 'KeyF': fit(); break;
-      case 'Equal': case 'NumpadAdd': zoomAt(size.w / 2, size.h / 2, 1.3); break;
-      case 'Minus': case 'NumpadSubtract': zoomAt(size.w / 2, size.h / 2, 1 / 1.3); break;
-      case 'Digit1': setTool('select'); break;
-      case 'Digit2': setTool('track'); break;
-      case 'Digit3': setTool('pad'); break;
-      case 'Digit4': setTool('via'); break;
-      case 'Digit5': setTool('hole'); break;
-      case 'Digit6': setTool('line'); break;
-      case 'Digit7': setTool('text'); break;
-      case 'Digit8': setTool('ruler'); break;
-      case 'Digit9': setTool('route'); break;
-      case 'Digit0': setTool('probe'); break;
-      case 'KeyX': setTool('cut'); break;
-      case 'KeyS': setTool('solder'); break;
-      case 'ArrowLeft': nudge(-stepNudge, 0); e.preventDefault(); break;
-      case 'ArrowRight': nudge(stepNudge, 0); e.preventDefault(); break;
-      case 'ArrowUp': nudge(0, stepNudge); e.preventDefault(); break;
-      case 'ArrowDown': nudge(0, -stepNudge); e.preventDefault(); break;
-      // сетка: G — следующий шаг, Shift+G — привязка, H — предыдущий шаг
-      case 'KeyG':
-        if (e.ctrlKey || e.metaKey) setDialog('grid');
-        else if (e.shiftKey) setDefs({ snapOn: !defs.snapOn });
-        else setDefs({ grid: cycleGrid(defs.grid, 1), gridUnit: defs.gridUnit });
-        e.preventDefault();
-        break;
-      case 'KeyH': setDefs({ grid: cycleGrid(defs.grid, -1) }); e.preventDefault(); break;
-      default: break;
+      case 'view.gridNext': setDefs({ grid: cycleGrid(defs.grid, 1), gridUnit: defs.gridUnit }); return;
+      case 'view.gridPrev': setDefs({ grid: cycleGrid(defs.grid, -1) }); return;
+      case 'view.snapToggle': setDefs({ snapOn: !defs.snapOn }); return;
+      case 'view.drc': setDefs({ drcEnabled: !defs.drcEnabled }); return;
+
+      // ---------------- окна и программа ----------------
+      // I — строка генератора: создать/поправить деталь, не снимая рук с клавиатуры
+      case 'gen.focus':
+        if (tool !== 'route') {
+          setLeftTab('lib'); setLibTab('gen');
+          const el = document.getElementById('gen-query') as HTMLInputElement | null;
+          el?.focus(); el?.select();
+        }
+        return;
+      case 'app.preview': setDialog('board-preview'); return;
+      case 'app.preview2d': setBoardPreviewTab('2d'); setDialog('board-preview'); return;
+      case 'app.preview3d': setBoardPreviewTab('3d'); setDialog('board-preview'); return;
+      case 'app.theme': setTheme((t) => (t === 'dark' ? 'light' : 'dark')); return;
+      case 'app.colors': setDialog('colors'); return;
+      case 'app.uib': setDialog('uib'); return;
+      case 'app.about': setDialog('about'); return;
+      case 'app.settings': setDialog('settings'); return;
+      case 'app.cancel': finishOrCancel(); return;
+      default: return;
     }
   }, [
-    dialog, routeVariants, doc, undo, redo, savePrimary, copySel, startPaste, duplicateSel, finishOrCancel,
-    deleteSel, place, preview, rotateSel, mirrorSel, draft, activeCu, mouse.wx, mouse.wy, fit,
-    zoomAt, size, nudge, defs.grid, defs.gridUnit, defs.snapOn, setDefs, setTool, groupSel, ungroupSel,
-    tool, editEnt, editNode, deleteEditNode,
+    hotkeyIndex, dialog, routeVariants, doc, undo, redo, savePrimary, copySel, startPaste,
+    duplicateSel, finishOrCancel, deleteSel, place, preview, rotateSel, mirrorSel, draft,
+    activeCu, mouse.wx, mouse.wy, fit, zoomAt, size, nudge, defs.grid, defs.gridUnit,
+    defs.snapOn, defs.drcEnabled, setDefs, setTool, groupSel, ungroupSel, tool, editEnt,
+    editNode, deleteEditNode, setTheme,
   ]);
 
   const keyRef = useRef(keyHandler);

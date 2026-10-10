@@ -172,6 +172,66 @@ assert.ok(depth, 'поле глубины истории');
 await type(depth!, '7');
 assert.equal(prefs().historyDepth, 7, 'глубина истории сохранена');
 
+// ---------------------------------------------------------------- свои горячие клавиши
+const hkRow = (title: string): Element | undefined =>
+  [...doc.querySelectorAll('.set-hk')].find((r) => (r.querySelector('.set-hk-name')?.textContent ?? '').includes(title));
+const hkKeys = (title: string): string[] =>
+  [...(hkRow(title)?.querySelectorAll('.hk-chip') ?? [])].map((c) => (c.textContent ?? '').replace('×', '').trim());
+const hkBtn = (title: string, name: string): Element | undefined =>
+  [...(hkRow(title)?.querySelectorAll('button') ?? [])].find((b) => (b.textContent ?? '').includes(name));
+
+await click(byText('.set-nav-item', 'Горячие клавиши'));
+assert.ok(doc.querySelector('.set-rec'), 'редактор горячих клавиш');
+assert.ok(hkRow('Настройки (это окно)'), 'строка действия «Настройки»');
+assert.ok(hkKeys('Настройки (это окно)').includes('Ctrl+,'), 'стандартная клавиша Ctrl+,');
+assert.ok(hkRow('Дублировать'), 'строка действия «Дублировать»');
+
+// назначаем Ctrl+J на открытие настроек
+await click(hkBtn('Настройки (это окно)', 'Назначить'));
+assert.ok(doc.querySelector('.set-rec.on'), 'режим записи включён');
+await key('KeyJ', true);
+assert.ok(hkKeys('Настройки (это окно)').includes('Ctrl+J'), 'новая клавиша показана в строке');
+assert.equal((prefs().hotkeys as Record<string, string[]>)['app.settings'].join('|'), 'Ctrl+J',
+  'привязка записана в настройки');
+
+// новая клавиша работает, а старая — уже нет
+await click(byText('.set-foot .btn', 'Готово'));
+assert.equal(doc.querySelector('.set-win'), null, 'окно закрыто');
+await key('Comma', true);
+assert.equal(doc.querySelector('.set-win'), null, 'Ctrl+, больше не открывает настройки');
+await key('KeyJ', true);
+assert.ok(doc.querySelector('.set-win'), 'Ctrl+J открывает настройки');
+
+// занятое сочетание снимается с предыдущего действия
+await click(byText('.set-nav-item', 'Горячие клавиши'));
+await click(hkBtn('Дублировать', 'Назначить'));
+await key('KeyJ', true);
+assert.ok(hkKeys('Дублировать').includes('Ctrl+J'), 'Ctrl+J перешло действию «Дублировать»');
+assert.ok(!hkKeys('Настройки (это окно)').includes('Ctrl+J'), 'с предыдущего действия клавиша снята');
+
+// сброс возвращает стандартные клавиши
+await click(byText('.set-content .btn', 'Сбросить все клавиши'));
+assert.ok(hkKeys('Настройки (это окно)').includes('Ctrl+,'), 'после сброса снова Ctrl+,');
+assert.equal((prefs().hotkeys as Record<string, string[]>)['app.settings'].join('|'), 'Ctrl+,',
+  'сброс записан в настройки');
+
+// второе сочетание добавляется кнопкой «＋», а чип × его снимает
+await click(hkBtn('Настройки (это окно)', '＋'));
+await key('KeyJ', true);
+assert.deepEqual((prefs().hotkeys as Record<string, string[]>)['app.settings'].sort(), ['Ctrl+,', 'Ctrl+J'].sort(),
+  'второе сочетание добавлено');
+await click(hkRow('Настройки (это окно)')?.querySelectorAll('.hk-chip')[1]?.querySelector('.hk-del'));
+assert.equal((prefs().hotkeys as Record<string, string[]>)['app.settings'].join('|'), 'Ctrl+,',
+  'чип × снимает одно сочетание');
+await click(byText('.set-foot .btn', 'Готово'));
+
+// стандартные клавиши инструментов работают через ту же карту
+await key('Digit2');
+const dockActive = () => (doc.querySelector('.tool-dock .tb-btn.active')?.getAttribute('title') ?? '');
+assert.ok(dockActive().startsWith('Дорожка'), 'цифра 2 включает инструмент «Дорожка»: ' + dockActive());
+await key('Digit1');
+assert.ok(dockActive().startsWith('Выбор'), 'цифра 1 возвращает «Выбор»: ' + dockActive());
+
 await act(async () => { root.unmount(); });
 dom.window.close();
-process.stdout.write('SETTINGS DOM OK: окно, разделы, поиск, сетка, привязка, перекрестие, трассировка, Ctrl+, и Esc\n', () => process.exit(0));
+process.stdout.write('SETTINGS DOM OK: окно, разделы, поиск, сетка, привязка, перекрестие, трассировка, свои горячие клавиши, Ctrl+, и Esc\n', () => process.exit(0));

@@ -6,7 +6,7 @@
 //   • src/ui/panels.ts — Defs: инструменты, сетка, трассировка (ключ lauaut.defs);
 //   • src/ui/uiconf.ts — состав и порядок кнопок и панелей (ключ lauaut.ui).
 // Окно только меняет эти значения: вся логика применения — в редакторе.
-import { useEffect, useMemo, useRef, useState, type ReactNode } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from 'react';
 import { createPortal } from 'react-dom';
 import { Ic } from './icons';
 import { NI, SI, TI } from './widgets';
@@ -22,6 +22,10 @@ import type { ThemeId } from '../pcb/render';
 import { LAYERS, fmt, type LayerId } from '../pcb/model';
 import type { SidesConf } from './uiconf';
 import type { Prefs, PrintLayer } from './prefs';
+import {
+  DEFAULT_HOTKEYS, HOTKEYS, HOTKEY_BY_ID, HOTKEY_GROUP_ORDER, addHotkey, assignHotkey,
+  clearHotkey, comboLabel, comboOf, hotkeyOwners, isReservedCombo, removeHotkey, type HotkeyMap,
+} from './hotkeys';
 
 export type { PrintLayer };
 
@@ -44,7 +48,7 @@ const SECTIONS: Section[] = [
   { id: 'routing', icon: 'route', title: 'Автотрассировка', hint: 'Зазоры, шаг сетки, цена перехода', keys: 'трассировка автотрассировка зазор переход шаг цена вариант' },
   { id: 'drc', icon: 'probe', title: 'Контроль зазоров', hint: 'Подсветка слишком близких дорожек', keys: 'drc зазор контроль проверка нарушения подсветка' },
   { id: 'files', icon: 'save', title: 'Файлы и экспорт', hint: 'Новая плата, печать 1:1, Gerber', keys: 'файлы экспорт png gerber печать лут новая плата dpi' },
-  { id: 'hotkeys', icon: 'keyboard', title: 'Горячие клавиши', hint: 'Все сочетания редактора', keys: 'горячие клавиши shortcuts ctrl alt shift del r m f g' },
+  { id: 'hotkeys', icon: 'keyboard', title: 'Горячие клавиши', hint: 'Свои сочетания для любых действий', keys: 'горячие клавиши shortcuts назначить привязка ctrl alt shift del r m f g' },
   { id: 'data', icon: 'cloud', title: 'Данные и сброс', hint: 'Перенос настроек, черновик, сброс', keys: 'данные сброс импорт экспорт настроек черновик очистить хранилище' },
 ];
 
@@ -53,35 +57,6 @@ const PRINT_LAYER_NAME: Record<PrintLayer, string> = {
   k1: 'Верхняя медь (K1)', k2: 'Нижняя медь (K2)', s1: 'Шелкография верх',
   s2: 'Шелкография низ', outline: 'Контур платы',
 };
-
-/** Горячие клавиши: один список на окно настроек и справку. */
-const HOTKEYS: [string, string][] = [
-  ['1…0, X, S', 'выбор инструмента (1 — выбор, 2 — дорожка, 9 — трассировка, 0 — тест цепи, X — разрыв, S — пайка)'],
-  ['Ctrl+,', 'открыть это окно настроек'],
-  ['Ctrl+G', 'настройки сетки'],
-  ['G / Shift+G', 'следующий / предыдущий шаг сетки'],
-  ['H', 'предыдущий шаг сетки'],
-  ['L', 'сменить слой меди (с переходом посреди дорожки)'],
-  ['F', 'показать всю плату'],
-  ['+ / −', 'приблизить / отдалить (или колесо мыши)'],
-  ['Ctrl+Z / Ctrl+Y', 'отменить / повторить'],
-  ['Ctrl+Shift+Z', 'повторить'],
-  ['Ctrl+A', 'выделить всё'],
-  ['Ctrl+C / Ctrl+V', 'копировать / вставить'],
-  ['Ctrl+D', 'дублировать выделенное'],
-  ['Delete', 'удалить выделенное (или узел дорожки)'],
-  ['R', 'повернуть выделенное (или деталь при установке)'],
-  ['M', 'перенести на другую сторону платы'],
-  ['Q', 'сторона детали при установке'],
-  ['I', 'строка генератора деталей'],
-  ['Ctrl+S', 'сохранить (в облаке — отправить на сервер)'],
-  ['Ctrl+O', 'открыть файл проекта'],
-  ['Ctrl+E', 'экспорт Gerber / PNG / ЧПУ'],
-  ['Ctrl+Shift+G / U', 'сгруппировать / разгруппировать'],
-  ['Стрелки', 'сдвинуть выделенное на шаг сетки (Shift — ×10, Alt — ÷10)'],
-  ['Alt', 'временно без привязки к сетке'],
-  ['Esc', 'отменить текущее действие, снять выбор'],
-];
 
 // ------------------------------------------------------------------ мелочи
 
@@ -294,9 +269,19 @@ export function SettingsWindow(props: SettingsWindowProps) {
   };
 
   const q = query.trim().toLowerCase();
+  const hotkeyHaystack = useMemo(
+    () => HOTKEYS.map((h) => `${h.title} ${(prefs.hotkeys[h.id] ?? []).join(' ')}`).join(' ').toLowerCase(),
+    [prefs.hotkeys],
+  );
+  /** Строка поиска показывает только подходящие действия (раздел «Горячие клавиши»). */
+  const hkMatch = (h: { id: string; title: string }): boolean =>
+    !q || `${h.title} ${(prefs.hotkeys[h.id] ?? []).join(' ')}`.toLowerCase().includes(q);
   const visible = useMemo(
-    () => (q ? SECTIONS.filter((s) => (s.title + ' ' + s.hint + ' ' + s.keys).toLowerCase().includes(q)) : SECTIONS),
-    [q],
+    () => (q
+      ? SECTIONS.filter((s) => (s.title + ' ' + s.hint + ' ' + s.keys + ' '
+        + (s.id === 'hotkeys' ? hotkeyHaystack : '')).toLowerCase().includes(q))
+      : SECTIONS),
+    [q, hotkeyHaystack],
   );
 
   const grid: GridConf = {
@@ -313,6 +298,59 @@ export function SettingsWindow(props: SettingsWindowProps) {
     }
     return [...m.entries()];
   }, [presets]);
+
+  // ---------------- горячие клавиши ----------------
+  // recFor — действие, для которого идёт запись сочетания; пока запись идёт,
+  // слушаем клавиатуру сами и не пускаем события в редактор.
+  const [recFor, setRecFor] = useState<string | null>(null);
+  const [addMode, setAddMode] = useState(false);
+  const [hkMsg, setHkMsg] = useState('');
+
+  const putHotkeys = (map: HotkeyMap, msg: string) => {
+    setPrefs({ hotkeys: map });
+    setHkMsg(msg);
+    setRecFor(null);
+  };
+  const assignBinding = useCallback((id: string, combo: string | null, add = false) => {
+    if (combo === null) { putHotkeys(clearHotkey(prefs.hotkeys, id), 'Клавиша снята.'); return; }
+    const owners = hotkeyOwners(prefs.hotkeys, combo).filter((x) => x !== id);
+    const taken = owners.length
+      ? ` Снято с: ${owners.map((o) => HOTKEY_BY_ID[o]?.title ?? o).join(', ')}.`
+      : (isReservedCombo(combo) ? ' Браузер или система могут перехватить его раньше программы.' : '');
+    putHotkeys(
+      add ? addHotkey(prefs.hotkeys, id, combo) : assignHotkey(prefs.hotkeys, id, combo),
+      `Назначено: ${comboLabel(combo)}.${taken}`,
+    );
+  }, [prefs.hotkeys, setPrefs]);
+  /** Войти в режим записи: полоса записи — сверху, поэтому прокручиваем к ней. */
+  const startRec = (id: string, add: boolean) => {
+    setAddMode(add);
+    setRecFor(id);
+    setHkMsg('');
+    if (bodyRef.current) bodyRef.current.scrollTop = 0;
+  };
+  const removeBinding = (id: string, combo: string) => {
+    putHotkeys(removeHotkey(prefs.hotkeys, id, combo), `Снято: ${comboLabel(combo)}.`);
+  };
+  const resetBinding = (id: string) => {
+    let next = clearHotkey(prefs.hotkeys, id);
+    for (const c of HOTKEY_BY_ID[id]?.def ?? []) next = addHotkey(next, id, c);
+    putHotkeys(next, 'Возвращены стандартные клавиши.');
+  };
+
+  useEffect(() => {
+    if (!recFor) return;
+    const h = (e: KeyboardEvent) => {
+      e.preventDefault();
+      e.stopImmediatePropagation();
+      if (e.key === 'Escape') { setRecFor(null); setHkMsg('Запись отменена.'); return; }
+      if (e.key === 'Backspace' || e.key === 'Delete') { assignBinding(recFor, null); return; }
+      const c = comboOf(e);
+      if (c) assignBinding(recFor, c, addMode);
+    };
+    window.addEventListener('keydown', h, true);
+    return () => window.removeEventListener('keydown', h, true);
+  }, [recFor, assignBinding, addMode]);
 
   const setGridStep = (mm: number) => {
     const v = toMm(mm, grid.unit);
@@ -936,16 +974,88 @@ export function SettingsWindow(props: SettingsWindowProps) {
       // ---------------- Горячие клавиши ----------------
       case 'hotkeys':
         return (
-          <Block title="Горячие клавиши" note="Сочетания действуют, когда фокус не в поле ввода и не открыто окно.">
-            <div className="set-keys">
-              {HOTKEYS.map(([k, d]) => (
-                <div className="set-key-row" key={k}>
-                  <span className="kbd">{k}</span>
-                  <span className="set-key-desc">{d}</span>
-                </div>
-              ))}
-            </div>
-          </Block>
+          <>
+            <Block
+              title="Горячие клавиши"
+              note={'Нажмите «Назначить» у нужного действия и сразу нажмите сочетание — оно начнёт работать тут же. '
+                + 'Backspace во время записи снимает клавишу, Esc — отменяет запись. У одного действия может быть '
+                + 'несколько сочетаний; если сочетание занято другим действием, оно снимается с него. '
+                + 'Клавиши действуют, когда фокус не в поле ввода и не открыто окно.'}
+            >
+              <div className={'set-rec' + (recFor ? ' on' : '')}>
+                {recFor
+                  ? (
+                    <>
+                      <span className="set-rec-dot" />
+                      {addMode ? 'Добавить сочетание' : 'Новое сочетание'} для «{HOTKEY_BY_ID[recFor]?.title ?? recFor}»…
+                      <button type="button" className="btn tiny" onClick={() => { setRecFor(null); setHkMsg('Запись отменена.'); }}>
+                        Отмена (Esc)
+                      </button>
+                    </>
+                  )
+                  : 'Нажмите «Назначить» у любого действия — окно перейдёт в режим записи.'}
+              </div>
+              {hkMsg && <p className="set-note">{hkMsg}</p>}
+              <div className="row" style={{ gap: 6, flexWrap: 'wrap' }}>
+                <button
+                  type="button" className="btn tiny"
+                  onClick={() => { setPrefs({ hotkeys: DEFAULT_HOTKEYS }); setHkMsg('Все клавиши сброшены на стандартные.'); }}
+                >
+                  Сбросить все клавиши
+                </button>
+              </div>
+            </Block>
+            {HOTKEY_GROUP_ORDER.map((g) => {
+              const rows = HOTKEYS.filter((h) => h.group === g && hkMatch(h));
+              if (!rows.length) return null;
+              return (
+                <Block key={g} title={g}>
+                  {rows.map((h) => {
+                    const list = prefs.hotkeys[h.id] ?? [];
+                    const isDef = list.join('|') === h.def.join('|');
+                    return (
+                      <div className={'set-hk' + (recFor === h.id ? ' is-rec' : '')} key={h.id}>
+                        <span className="set-hk-name" title={h.hint}>{h.title}</span>
+                        <span className="set-hk-keys">
+                          {list.map((c) => (
+                            <span className="kbd hk-chip" key={c}>
+                              {comboLabel(c)}
+                              <button
+                                type="button" className="hk-del"
+                                title="Снять это сочетание" onClick={() => removeBinding(h.id, c)}
+                              >×</button>
+                            </span>
+                          ))}
+                          {!list.length && <span className="set-hk-none">не назначено</span>}
+                        </span>
+                        <span className="set-hk-act">
+                          <button
+                            type="button" className={'btn tiny' + (recFor === h.id ? ' primary' : '')}
+                            title="Заменить клавиши этого действия"
+                            onClick={() => startRec(h.id, false)}
+                          >{recFor === h.id && !addMode ? 'Жму…' : 'Назначить'}</button>
+                          {list.length > 0 && (
+                            <button
+                              type="button" className={'btn tiny' + (recFor === h.id && addMode ? ' primary' : '')}
+                              title="Добавить ещё одно сочетание (прежние остаются)"
+                              onClick={() => startRec(h.id, true)}
+                            >{recFor === h.id && addMode ? 'Жму…' : '＋'}</button>
+                          )}
+                          {!isDef && (
+                            <button
+                              type="button" className="btn tiny"
+                              title="Вернуть стандартные клавиши этого действия"
+                              onClick={() => resetBinding(h.id)}
+                            >по умолчанию</button>
+                          )}
+                        </span>
+                      </div>
+                    );
+                  })}
+                </Block>
+              );
+            })}
+          </>
         );
 
       // ---------------- Данные и сброс ----------------
