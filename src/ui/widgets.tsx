@@ -240,6 +240,11 @@ export interface MenuEntry {
   onClick?: () => void;
   disabled?: boolean;
   sep?: boolean;
+  /**
+   * Метка для подсветки в практических уроках (src/ui/coach.tsx):
+   * пункт ищется на экране как [data-learn="…"].
+   */
+  learn?: string;
 }
 
 /** Позиция всплывающего меню: портал к <body>, координаты фиксированные */
@@ -314,6 +319,7 @@ function PopMenu({ items, pos, attach, onPick }: {
           type="button"
           role="menuitem"
           className="tb-pop-item"
+          data-learn={it.learn}
           disabled={it.disabled}
           onClick={() => { onPick(); it.onClick?.(); }}
         >
@@ -334,13 +340,15 @@ function PopMenu({ items, pos, attach, onPick }: {
  * с overflow:hidden его не обрезает.
  */
 export function MenuBtn({
-  icon = 'more', title, items, align = 'left', active = false,
+  icon = 'more', title, items, align = 'left', active = false, learn,
 }: {
   icon?: string;
   title: string;
   items: MenuEntry[];
   align?: 'left' | 'right';
   active?: boolean;
+  /** метка для подсветки в практических уроках (src/ui/coach.tsx) */
+  learn?: string;
 }) {
   const menu = useMenuPos();
   const { open } = menu;
@@ -351,6 +359,7 @@ export function MenuBtn({
         type="button"
         className={'tb-btn' + (open || active ? ' active' : '')}
         title={title}
+        data-learn={learn}
         aria-haspopup="menu"
         aria-expanded={open}
         onClick={() => menu.place(align)}
@@ -369,7 +378,7 @@ export function MenuBtn({
  * за один клик, как и раньше двумя отдельными кнопками.
  */
 export function SplitBtn({
-  icon, title, menuTitle, onClick, items, active = false,
+  icon, title, menuTitle, onClick, items, active = false, learn,
 }: {
   icon: string;
   title: string;
@@ -377,6 +386,8 @@ export function SplitBtn({
   onClick: () => void;
   items: MenuEntry[];
   active?: boolean;
+  /** метка для подсветки в практических уроках (src/ui/coach.tsx) */
+  learn?: string;
 }) {
   const menu = useMenuPos();
   const { open } = menu;
@@ -387,6 +398,7 @@ export function SplitBtn({
         type="button"
         className={'tb-btn split-main' + (active ? ' active' : '')}
         title={title}
+        data-learn={learn}
         onClick={onClick}
       >
         <Ic n={icon} />

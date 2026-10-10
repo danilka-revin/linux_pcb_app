@@ -150,7 +150,7 @@ export function GenPanel({
           )}
 
           <div className="gen-acts">
-            <button type="button" className="btn primary" onClick={onPlace} title="Поставить на плату (ЛКМ по плате, R — поворот, Q — сторона)">
+            <button type="button" className="btn primary" data-learn="gen-place" onClick={onPlace} title="Поставить на плату (ЛКМ по плате, R — поворот, Q — сторона)">
               Поставить на плату
             </button>
             <button type="button" className="btn" onClick={onPreview} title="Крупный предпросмотр">

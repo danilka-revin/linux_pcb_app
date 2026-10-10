@@ -3,6 +3,10 @@
 import { useCallback, useEffect, useRef, useState, type ReactNode } from 'react';
 import { Modal } from './widgets';
 import { Ic } from './icons';
+import {
+  PRACTICES, PracticeList, practiceById, practiceDone, resetPractices,
+  type LearnOfferMode, type PracticeId,
+} from './coach';
 
 export type TourId = 'quickstart' | 'overview' | 'autoroute' | 'cnc' | 'generator' | 'layers';
 
@@ -16,6 +20,20 @@ interface TourStep {
   highlight?: string;
   kbd?: string[];
 }
+
+/**
+ * У каждого тура есть свой практический урок: прочитал — тут же сделал
+ * на живой плате подсветкой (см. src/ui/coach.tsx). Уроки необязательны:
+ * любой шаг и весь урок пропускаются.
+ */
+const PRACTICE_OF: Record<TourId, PracticeId> = {
+  quickstart: 'track',
+  overview: 'nav',
+  generator: 'parts',
+  autoroute: 'route',
+  cnc: 'files',
+  layers: 'layers',
+};
 
 interface Tour {
   id: TourId;
@@ -1005,6 +1023,7 @@ export function TourCardList({
   completed: Set<TourId>;
   onStart: (id: TourId) => void;
 }) {
+  // у каждого тура свой практический урок — честно говорим об этом на карточке
   return (
     <div className="tour-list">
       {TOURS.map((t) => (
@@ -1017,7 +1036,10 @@ export function TourCardList({
               <span className="tour-minutes">{t.minutes} мин</span>
             </span>
             <small>{t.description}</small>
-            <span className="tour-steps-count">{t.steps.length} шагов</span>
+            <span className="tour-steps-count">
+              {t.steps.length} шагов
+              <span className="tour-practice-chip">🎯 практика: {practiceById(PRACTICE_OF[t.id]).title}</span>
+            </span>
           </span>
           {completed.has(t.id) && <span className="tour-card-badge">✓</span>}
         </button>
@@ -1032,14 +1054,19 @@ export function TourPlayer({
   tourId,
   onExit,
   onComplete,
+  onPractice,
   embedded = false,
 }: {
   tourId: TourId;
   onExit: () => void;
   onComplete?: (id: TourId) => void;
+  /** запустить практический урок этого тура поверх редактора (необязательно) */
+  onPractice?: (id: PracticeId) => void;
   embedded?: boolean;
 }) {
   const tour = TOURS.find((t) => t.id === tourId)!;
+  const practiceId = PRACTICE_OF[tourId];
+  const practice = practiceId ? practiceById(practiceId) : null;
   const [step, setStep] = useState(0);
   const highlightRef = useRef<HTMLElement | null>(null);
 
@@ -1108,8 +1135,17 @@ export function TourPlayer({
       </div>
 
       <div className="tour-footer">
-        <button className="btn" onClick={skip}>Выйти</button>
+        <button className="btn" onClick={skip} title="Закрыть тур — обучение добровольное">Выйти</button>
         <div className="tour-nav">
+          {practice && onPractice && (
+            <button
+              className="btn tour-practice-btn"
+              onClick={() => { onComplete?.(tour.id); onPractice(practice.id); }}
+              title={`Не читать, а сделать: ${practice.title} — подсветка на интерфейсе, ${practice.steps.length} шага`}
+            >
+              {practice.emoji} Практика ▶
+            </button>
+          )}
           <button className="btn" onClick={goPrev} disabled={step === 0}>← Назад</button>
           <button className="btn primary" onClick={goNext}>{step < tour.steps.length - 1 ? 'Далее →' : 'Завершить ✓'}</button>
         </div>
@@ -1128,7 +1164,12 @@ export function TourPlayer({
 
 // ---------- главный диалог (список или плеер) ----------
 
-export function TourDialog({ onClose, initialTour }: { onClose: () => void; initialTour?: TourId }) {
+export function TourDialog({ onClose, initialTour, onPractice }: {
+  onClose: () => void;
+  initialTour?: TourId;
+  /** запуск практического урока поверх редактора (заодно закрывает модалку) */
+  onPractice?: (id: PracticeId) => void;
+}) {
   const [active, setActive] = useState<TourId | null>(initialTour ?? null);
   const [completed, setCompleted] = useState<Set<TourId>>(loadCompleted);
 
@@ -1137,12 +1178,23 @@ export function TourDialog({ onClose, initialTour }: { onClose: () => void; init
   }, [completed]);
 
   if (active) {
-    return <TourPlayer tourId={active} onExit={() => setActive(null)} onComplete={handleComplete} />;
+    return (
+      <TourPlayer
+        tourId={active}
+        onExit={() => setActive(null)}
+        onComplete={handleComplete}
+        onPractice={onPractice}
+      />
+    );
   }
 
   return (
     <Modal title="🎓 Обучение — выберите тур" className="tour-modal" onClose={onClose} foot={<button className="btn primary" onClick={onClose}>Закрыть</button>}>
-      <p>Обучение теперь живёт в <b>Настройки → Обучение</b>. Здесь — быстрый доступ ко всем турам с демонстрациями для новичков.</p>
+      <p>
+        Обучение — в <b>Настройки → Обучение</b>: здесь быстрый доступ к турам с демонстрациями,
+        а рядом с каждым туром — короткий практический урок прямо в редакторе.
+        Всё добровольно: любой тур и любой шаг урока закрывается <kbd>Esc</kbd>.
+      </p>
       <TourCardList completed={completed} onStart={(id) => setActive(id)} />
       {completed.size > 0 && (
         <div className="tour-reset-row">
@@ -1168,48 +1220,103 @@ export function TourDialog({ onClose, initialTour }: { onClose: () => void; init
 
 // ---------- встроенный в настройки раздел обучения ----------
 
-export function LearnSettingsPanel({ onStartPractice }: { onStartPractice?: () => void }) {
+/**
+ * Раздел «Настройки → Обучение». Два уровня: короткие практические уроки
+ * прямо в редакторе (подсветка + настоящее действие, как в «Первой дорожке»)
+ * и теоретические туры с демонстрациями. Всё добровольно: уроки можно
+ * пропускать по шагу, а напоминание при запуске — выключить совсем.
+ */
+export function LearnSettingsPanel({
+  onStartPractice, offerMode, onOfferMode,
+}: {
+  /** запустить практический урок поверх редактора */
+  onStartPractice?: (id: PracticeId) => void;
+  /** режим напоминания об обучении при запуске (см. prefs.learnOnStart) */
+  offerMode?: LearnOfferMode;
+  onOfferMode?: (m: LearnOfferMode) => void;
+}) {
   const [active, setActive] = useState<TourId | null>(null);
   const [completed, setCompleted] = useState<Set<TourId>>(loadCompleted);
+  const [doneP, setDoneP] = useState<Set<PracticeId>>(() => new Set(PRACTICES.filter((p) => practiceDone(p.id)).map((p) => p.id)));
 
   const handleComplete = useCallback((id: TourId) => {
     const next = new Set(completed); next.add(id); setCompleted(next); saveCompleted(next);
   }, [completed]);
 
+  const resetPractice = useCallback(() => {
+    resetPractices();
+    setDoneP(new Set());
+  }, []);
+
   if (active) {
     return (
-      <TourPlayer tourId={active} onExit={() => setActive(null)} onComplete={handleComplete} embedded />
+      <TourPlayer
+        tourId={active}
+        onExit={() => setActive(null)}
+        onComplete={handleComplete}
+        onPractice={onStartPractice}
+        embedded
+      />
     );
   }
 
   return (
     <div className="learn-settings">
-      {onStartPractice && (
-        <button type="button" className="learn-practice" onClick={onStartPractice}>
-          <span className="learn-practice-ico" aria-hidden="true">👆</span>
-          <span className="learn-practice-body">
-            <b>Твоя первая дорожка — практика</b>
-            <small>30 секунд, без текста: показываем прямо на интерфейсе, куда нажимать</small>
-          </span>
-          <span className="learn-practice-go">Начать ▶</span>
-        </button>
-      )}
-
       <div className="learn-hero">
         <div className="learn-hero-icon">🎓</div>
         <div>
-          <h3>Обучение для новичков</h3>
-          <p>Начните с «Быстрого старта» — за 5 минут сделаете первую плату. Каждый тур — с демонстрацией и подсказками.</p>
+          <h3>Обучение по делу — и только если хотите</h3>
+          <p>
+            Урок подсвечивает нужную кнопку и ждёт вашего действия на живой плате.
+            Ничего не блокируется, всё отменяется Ctrl+Z, любой шаг и весь урок
+            пропускаются. Пройденное запоминается, напоминания больше не будет.
+          </p>
         </div>
       </div>
 
+      <h4 className="learn-h">🎯 Практика в редакторе — {PRACTICES.length} коротких урока</h4>
+      <PracticeList
+        onStart={(id) => onStartPractice?.(id)}
+        done={doneP}
+      />
+      <div className="learn-reset-row">
+        <span className="tour-reset-info">Пройдено: {doneP.size} из {PRACTICES.length}</span>
+        {doneP.size > 0 && (
+          <button type="button" className="btn tiny tour-reset" onClick={resetPractice}>Сбросить</button>
+        )}
+      </div>
+
+      {onOfferMode && (
+        <div className="learn-offer-set">
+          <span className="learn-offer-set-label" title="Обучение никогда не запускается само: можно только попросить">
+            Напоминание при запуске
+          </span>
+          <div className="set-choice" role="group">
+            {([['ask', 'Спросить'], ['auto', 'Сразу показывать'], ['off', 'Не показывать']] as [LearnOfferMode, string][]).map(([v, t]) => (
+              <button
+                key={v}
+                type="button"
+                className={'btn tiny' + (offerMode === v ? ' on' : '')}
+                onClick={() => onOfferMode(v)}
+                title={v === 'ask' ? 'Маленькая карточка в углу: показать урок или закрыть'
+                  : v === 'auto' ? 'Первый урок стартует сам, если вы его ещё не проходили'
+                  : 'Никаких карточек и подсказок при запуске'}
+              >{t}</button>
+            ))}
+          </div>
+        </div>
+      )}
+
+      <h4 className="learn-h">📚 Сначала прочитать — туры с демонстрациями</h4>
       <div className="learn-quick">
         <h4>🚀 Быстрый старт за 5 шагов</h4>
         <DemoFirstBoard />
-        <p className="set-note">Этот путь — в туре «Быстрый старт». Нажмите карточку ниже, чтобы пройти с подсветкой интерфейса.</p>
+        <p className="set-note">
+          Тот же путь — в туре «Быстрый старт» ниже: он объясняет, а практика выше
+          показывает руками. Начинать можно с любого места и в любой момент закрыть.
+        </p>
       </div>
 
-      <h4 style={{ marginTop: 18 }}>Выберите тур</h4>
       <TourCardList completed={completed} onStart={(id) => setActive(id)} />
 
       <div className="tour-reset-row" style={{ marginTop: 12 }}>

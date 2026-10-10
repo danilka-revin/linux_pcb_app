@@ -78,7 +78,10 @@ import {
 } from './ui/presets';
 import { UiBuilderDialog, useUpdater } from './ui/updater';
 import { TourDialog } from './ui/tour';
-import { FirstTrackCoach, firstTrackDone, markFirstTrackDone } from './ui/first-track';
+import {
+  CoachOverlay, LearnOffer, learnAsked, markLearnAsked, markPracticeDone, practiceDone,
+  type CoachInput, type PracticeId,
+} from './ui/coach';
 import { ConfirmDialog, MenuBtn, Modal, SplitBtn } from './ui/widgets';
 import { ProgressBar } from './ui/progress';
 import { cloudApi, cloudError, CloudError, type CloudProject, type CloudProjectDetail, type CloudUser } from './cloud/api';
@@ -398,34 +401,14 @@ export default function App({ cloudUser, onLogout }: { cloudUser?: CloudUser; on
   // сообщения правки узлов / инструментов «Разрыв» и «Пайка» (показываются справа)
   const [trackMsg, setTrackMsg] = useState<{ msg: string; ok: boolean | null }>({ msg: '', ok: null });
   const [draft, setDraft] = useState<Draft | null>(null);
-  // Практика «Твоя первая дорожка»: >0 — оверлей активен, рост числа — перезапуск.
-  // Само запускается один раз для новичков; повторно — из Настройки → Обучение.
-  const [coachRun, setCoachRun] = useState(0);
-  /** Точек в черновике дорожки (для практики новичка). */
-  const coachDraftPts = draft && draft.t === 'track' ? draft.pts.length : 0;
-  /** Сколько дорожек уже на плате (для практики новичка). */
-  const coachTrackCount = useMemo(
-    () => doc.entities.reduce((n, e) => (e.kind === 'track' ? n + 1 : n), 0),
-    [doc.entities],
-  );
-  // Первый запуск практики: один раз, если пользователь её ещё не проходил
-  // и мы не в отдельном «окне настроек». Даём интерфейсу отрисоваться.
-  useEffect(() => {
-    if (firstTrackDone()) return;
-    if (typeof location !== 'undefined' && location.hash === '#settings') return;
-    const t = setTimeout(() => setCoachRun(1), 900);
-    return () => clearTimeout(t);
-  }, []);
-  // Пропустившему больше не навязываемся — повторный запуск всегда есть в настройках.
-  const closeCoach = useCallback((_done: boolean) => {
-    markFirstTrackDone();
-    setCoachRun(0);
-  }, []);
-  /** Запуск практики из настроек: закрываем окно и перезапускаем оверлей. */
-  const startPractice = useCallback(() => {
-    setDialog(null);
-    setCoachRun((n) => n + 1);
-  }, []);
+  // ---------------- практическое обучение (src/ui/coach.tsx) ----------------
+  // Обучение добровольное: сам редактор урок не запускает — при первом старте
+  // появляется карточка «показать?». run — перезапуск того же урока (рост числа).
+  const [practice, setPractice] = useState<{ id: PracticeId; run: number } | null>(null);
+  /** карточка-предложение урока (видна, пока пользователь не ответил) */
+  const [learnAsk, setLearnAsk] = useState(false);
+  /** сколько раз плату сохраняли: урок «сохрани и экспортируй» ждёт именно это */
+  const [savedTick, setSavedTick] = useState(0);
   const [view, setView] = useState<View>({ s: 8, ox: 80, oy: 500, mir: false });
   const [defs, setDefsState] = useState<Defs>(loadDefs);
   const [hidden, setHidden] = useState<Set<M.LayerId>>(new Set());
@@ -1269,6 +1252,7 @@ export default function App({ cloudUser, onLogout }: { cloudUser?: CloudUser; on
     const snapshot = docRef.current;
     const blob = new Blob([JSON.stringify(snapshot, null, 1)], { type: 'application/json' });
     download(`${snapshot.name || 'board'}.laypcb.json`, blob);
+    setSavedTick((n) => n + 1);   // урок «сохрани плату» ждёт именно этого
   }, []);
 
   // На общем сервере локальный файл остаётся резервной копией. Новая плата,
@@ -3067,6 +3051,115 @@ export default function App({ cloudUser, onLogout }: { cloudUser?: CloudUser; on
     return c;
   }, [doc]);
 
+  // ---------------- чем «дышит» обучение ----------------
+  // Снимок редактора для практических уроков (src/ui/coach.tsx): шаги не знают
+  // внутренностей App, они сравнивают «до» и «после» в этом объекте. Считается
+  // только пока открыт оверлей — в обычном режиме редактор не платит за это ничем.
+  const coachOpen = practice !== null;
+  /**
+   * «Отпечаток» геометрии: любое движение, поворот, удаление или отмена его меняют.
+   * Хеш (FNV-подобный) по всем числовым координатам — точнее, чем сумма, и не
+   * зависит от порядка слагаемых. Считается только пока открыт урок.
+   */
+  const coachSig = useMemo(() => {
+    if (!coachOpen) return '';
+    let h = 2166136261;
+    const mix = (v: number) => { h = ((h ^ Math.round(v * 1000)) * 16777619) % 4294967296; };
+    for (const e of doc.entities) {
+      mix(e.id.length);
+      mix(e.kind.length);
+      const ent = e as unknown as Record<string, unknown>;
+      for (const k of ['x', 'y', 'x1', 'y1', 'x2', 'y2', 'w', 'h', 'r', 'rot', 'size', 'drill']) {
+        const v = ent[k];
+        if (typeof v === 'number') mix(v);
+      }
+      // точки полилинии — не больше 16 на элемент: сигнал «плату тронули»
+      // должен оставаться дешёвым на больших платах
+      const pts = ent.pts;
+      if (Array.isArray(pts)) {
+        for (let i = 0; i < pts.length && i < 16; i++) {
+          const q = pts[i] as { x?: number; y?: number };
+          mix(typeof q.x === 'number' ? q.x : 0);
+          mix(typeof q.y === 'number' ? q.y : 0);
+        }
+      }
+    }
+    mix(doc.w); mix(doc.h); mix(doc.entities.length);
+    return `${doc.entities.length}:${h >>> 0}`;
+  }, [doc, coachOpen]);
+  const coachCounts = useMemo(() => {
+    const c = { tracks: 0, vias: 0, comps: 0 };
+    if (!coachOpen) return c;
+    for (const e of doc.entities) {
+      if (e.kind === 'track') c.tracks++;
+      else if (e.kind === 'via') c.vias++;
+      else if (e.kind === 'comp') c.comps++;
+    }
+    return c;
+  }, [doc.entities, coachOpen]);
+  const coachState = useMemo<CoachInput>(() => ({
+    tool,
+    draftT: draft ? draft.t : null,
+    draftPts: draft && 'pts' in draft ? draft.pts.length : 0,
+    ...coachCounts,
+    docSig: coachSig,
+    activeCu,
+    hidden: hidden.size,
+    sel: sel.size,
+    placing: place !== null,
+    viewS: view.s,
+    viewX: view.ox,
+    viewY: view.oy,
+    mir: view.mir,
+    grid: defs.grid,
+    snapOn: defs.snapOn,
+    routeA: routeA !== null,
+    probe: probe !== null,
+    query,
+    genOk: !!gen.ok,
+    // панель генератора реально видна: левая колонка на вкладке «Детали» и вкладка «Генератор»
+    genVisible: libTab === 'gen' && leftTab === 'lib',
+    dialog,
+    previewTab: boardPreviewTab,
+    saved: savedTick,
+  }), [
+    tool, draft, doc.entities.length, coachCounts, coachSig, activeCu, hidden, sel, place,
+    view, defs.grid, defs.snapOn, routeA, probe, query, gen, libTab, leftTab,
+    dialog, boardPreviewTab, savedTick,
+  ]);
+
+  /** Старт урока: настройки закрываем, подсказку-предложение убираем совсем. */
+  const startPractice = useCallback((id: PracticeId) => {
+    setDialog(null);
+    setLearnAsk(false);
+    markLearnAsked();
+    setPractice((prev) => ({ id, run: (prev?.id === id ? prev.run : 0) + 1 }));
+  }, []);
+  /** Выход из урока: и пройденный, и пропущенный больше не предлагаем. */
+  const exitPractice = useCallback((id: PracticeId) => {
+    markPracticeDone(id);
+    setPractice(null);
+  }, []);
+
+  // Первый запуск: не навязываемся — спрашиваем. «auto» — как раньше, сразу урок;
+  // «off» — не показываем ничего. Ответ запоминается, второй раз не тревожим.
+  // Плату уже разбирали (на плате есть медь) — в роли новичка человек не ходит,
+  // поэтому карточку не показываем ни в каком режиме.
+  useEffect(() => {
+    const mode = prefsRef.current.learnOnStart;
+    if (mode === 'off') return;
+    if (typeof location !== 'undefined' && location.hash === '#settings') return;
+    if (practiceDone('track') || learnAsked()) return;
+    const busy = docRef.current.entities.some(
+      (e) => e.kind === 'track' || e.kind === 'pad' || e.kind === 'smd' || e.kind === 'comp' || e.kind === 'via',
+    );
+    if (busy && mode !== 'auto') return;
+    const t = setTimeout(() => {
+      if (mode === 'auto') { markLearnAsked(); setPractice({ id: 'track', run: 1 }); }
+      else setLearnAsk(true);
+    }, 900);
+    return () => clearTimeout(t);
+  }, []);
   const selEnts = useMemo(() => doc.entities.filter((e) => sel.has(e.id)), [doc, sel]);
   const toolMeta = TOOLS.find((t) => t.id === tool)!;
   /** Координата в строке состояния: мм, mil или обе системы (настройка «Единицы координат»). */
@@ -3126,8 +3219,9 @@ export default function App({ cloudUser, onLogout }: { cloudUser?: CloudUser; on
     const tb = (
       n: string, title: string, onClick: () => void, opts?: { active?: boolean; disabled?: boolean },
     ) => (
+      // data-learn — якорь для подсветки в практических уроках (src/ui/coach.tsx)
       <button key={n} type="button" className={'tb-btn' + (opts?.active ? ' active' : '')} title={title}
-        onClick={onClick} disabled={opts?.disabled}>
+        data-learn={'tb-' + n} onClick={onClick} disabled={opts?.disabled}>
         <Ic n={n} />
       </button>
     );
@@ -3140,6 +3234,7 @@ export default function App({ cloudUser, onLogout }: { cloudUser?: CloudUser; on
           {tb('save', cloudUser ? 'Сохранить на сервере (Ctrl+S)' : 'Скачать проект (Ctrl+S)', savePrimary)}
           <MenuBtn
             title="Экспорт и операции с платой"
+            learn="tb-export"
             items={[
               { icon: 'save', label: 'Скачать проект файлом (.laypcb.json)', onClick: saveFile },
               ...(cloudUser ? [{ icon: 'cloud', label: 'Мои облачные проекты…', onClick: () => setDialog('cloud') }] : []),
@@ -3164,6 +3259,7 @@ export default function App({ cloudUser, onLogout }: { cloudUser?: CloudUser; on
             type="button"
             className="tb-btn"
             title="Генератор деталей (I): опишите корпус словами — шаг, размер, крепёж, подписи"
+            data-learn="tb-gen"
             onClick={() => {
               setLeftTab('lib');
               setLibTab('gen');
@@ -3215,9 +3311,11 @@ export default function App({ cloudUser, onLogout }: { cloudUser?: CloudUser; on
       layer: (
         <div className="tb-group" key="layer">
           <button type="button" className={'tb-btn cu' + (activeCu === 'k1' ? ' active' : '')}
+            data-learn="cu-k1"
             style={{ borderColor: COLORS.k1, color: activeCu === 'k1' ? 'var(--text)' : COLORS.k1 }}
             title="Активный слой: верхняя медь (L)" onClick={() => setActiveCu('k1')}>K1</button>
           <button type="button" className={'tb-btn cu' + (activeCu === 'k2' ? ' active' : '')}
+            data-learn="cu-k2"
             style={{ borderColor: COLORS.k2, color: activeCu === 'k2' ? 'var(--text)' : COLORS.k2 }}
             title="Активный слой: нижняя медь (L)" onClick={() => setActiveCu('k2')}>K2</button>
         </div>
@@ -3237,6 +3335,7 @@ export default function App({ cloudUser, onLogout }: { cloudUser?: CloudUser; on
         <div className="tb-group" key="preview">
           <SplitBtn
             icon="preview"
+            learn="tb-preview"
             title={boardPreviewTab === '3d'
               ? 'Предпросмотр платы: 3D — объёмная плата'
               : 'Предпросмотр платы: 2D — Sprint Layout'}
@@ -3821,7 +3920,7 @@ export default function App({ cloudUser, onLogout }: { cloudUser?: CloudUser; on
         />
       )}
       {dialog === 'about' && <AboutDialog version={appVer} onClose={() => setDialog(null)} />}
-      {dialog === 'tour' && <TourDialog onClose={() => setDialog(null)} />}
+      {dialog === 'tour' && <TourDialog onClose={() => setDialog(null)} onPractice={startPractice} />}
       {cloudUser && dialog === 'cloud' && <CloudProjectsDialog
         current={activeCloud} docName={doc.name} status={cloudStatus} statusMessage={cloudMessage}
         onClose={() => setDialog(null)} onCreate={createCloud} onOpen={loadCloud} onSave={saveCloud}
@@ -3889,17 +3988,25 @@ export default function App({ cloudUser, onLogout }: { cloudUser?: CloudUser; on
           onExport={exportSettings}
           onImport={importSettings}
           onClearDraft={clearDraft}
-          onPracticeFirstTrack={startPractice}
+          onPractice={startPractice}
         />
       )}
-      {coachRun > 0 && (
-        <FirstTrackCoach
-          run={coachRun}
-          tool={tool}
-          draftPts={coachDraftPts}
-          trackCount={coachTrackCount}
+      {practice && (
+        <CoachOverlay
+          practice={practice.id}
+          run={practice.run}
+          state={coachState}
           paused={dialog !== null}
-          onExit={closeCoach}
+          onExit={exitPractice}
+          onNext={startPractice}
+        />
+      )}
+      {learnAsk && (
+        <LearnOffer
+          practice="track"
+          onGo={() => startPractice('track')}
+          onLater={() => { markLearnAsked(); setLearnAsk(false); }}
+          onNever={() => { markLearnAsked(); setLearnAsk(false); setPrefs({ learnOnStart: 'off' }); }}
         />
       )}
       {confirmAsk && (

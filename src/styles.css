@@ -1651,6 +1651,8 @@ html[data-compact='1'] .set-head { padding: 5px 8px 5px 10px; }
    Оверлей не перехватывает мышь (кроме собственных кнопок) —
    пользователь учится на настоящем редакторе. */
 .coach-root { position: fixed; inset: 0; z-index: 96; pointer-events: none; }
+/* шаг «внутри диалога»: подсказка и затемнение — над модалкой (.modal-bg = 100) */
+.coach-root.is-over { z-index: 150; }
 .coach-spot {
   position: fixed; border-radius: 12px;
   box-shadow: 0 0 0 100vmax rgba(4, 7, 12, .62);
@@ -1732,20 +1734,76 @@ html[data-compact='1'] .set-head { padding: 5px 8px 5px 10px; }
   to { transform: translateY(108vh) rotate(560deg); }
 }
 
-/* крупная кнопка практики в Настройки → Обучение */
-.learn-practice {
-  display: flex; align-items: center; gap: 14px; width: 100%;
-  margin-bottom: 16px; padding: 14px 16px; text-align: left; cursor: pointer;
-  background: var(--accent-soft); border: 1.5px solid var(--accent-line); border-radius: 14px;
-  transition: transform .15s ease, box-shadow .15s ease;
+/* подпись урока и «пропустить» внутри подсказки */
+.coach-lesson { font-size: 11px; font-weight: 700; letter-spacing: .3px; color: var(--accent-text); text-transform: uppercase; margin-bottom: 4px; }
+.coach-foot { display: flex; align-items: center; justify-content: space-between; gap: 10px; margin-top: 10px; }
+.coach-links { display: flex; align-items: center; gap: 8px; }
+.coach-next {
+  border: none; background: none; padding: 0; cursor: pointer;
+  font-size: 11.5px; color: var(--muted); text-decoration: underline dotted;
 }
-.learn-practice:hover { transform: translateY(-1px); box-shadow: 0 6px 18px rgba(0, 0, 0, .18); border-color: var(--accent); }
-.learn-practice-ico { font-size: 30px; line-height: 1; }
-.learn-practice-body { flex: 1; min-width: 0; }
-.learn-practice-body b { display: block; font-size: 14.5px; color: var(--text); }
-.learn-practice-body small { display: block; margin-top: 2px; font-size: 12px; color: var(--muted); }
-.learn-practice-go { flex-shrink: 0; font-size: 13px; font-weight: 700; color: var(--accent-text); white-space: nowrap; }
+.coach-next:hover { color: var(--accent-text); }
+.coach-esc { font-size: 10.5px; color: var(--muted); opacity: .8; white-space: nowrap; }
+
+/* карточки практических уроков в Настройки → Обучение */
+.practice-list { display: flex; flex-direction: column; gap: 8px; }
+.practice-card {
+  display: flex; align-items: center; gap: 12px; width: 100%;
+  padding: 11px 14px; text-align: left; cursor: pointer;
+  background: var(--surface-2); border: 1.5px solid var(--line); border-radius: 12px;
+  transition: transform .15s ease, border-color .15s ease, box-shadow .15s ease;
+}
+.practice-card:hover { transform: translateY(-1px); border-color: var(--accent); box-shadow: 0 6px 18px rgba(0, 0, 0, .18); }
+.practice-card.done { border-color: var(--ok-line, var(--line)); background: var(--surface); }
+.practice-emoji { font-size: 24px; line-height: 1; flex: none; }
+.practice-body { flex: 1; min-width: 0; }
+.practice-body b { display: block; font-size: 13.5px; color: var(--text); }
+.practice-body small { display: block; margin-top: 2px; font-size: 12px; color: var(--muted); line-height: 1.45; }
+.practice-meta { display: block; margin-top: 3px; font-size: 10.5px; color: var(--muted); opacity: .9; }
+.practice-go { flex: none; font-size: 12.5px; font-weight: 700; color: var(--accent-text); white-space: nowrap; }
+.practice-card.done .practice-go { color: var(--ok); }
+
+/* мягкое предложение пройти урок: ничего не блокирует, живёт до ответа */
+.learn-offer {
+  position: fixed; right: 18px; bottom: 18px; z-index: 95;
+  display: flex; align-items: flex-start; gap: 12px;
+  width: 372px; max-width: calc(100vw - 28px);
+  padding: 14px 34px 14px 14px;
+  background: var(--surface); border: 1.5px solid var(--accent-line); border-radius: 16px;
+  box-shadow: 0 18px 54px rgba(0, 0, 0, .45);
+  animation: coach-pop .25s ease;
+}
+.learn-offer-emoji { font-size: 26px; line-height: 1; flex: none; margin-top: 2px; }
+.learn-offer-body { flex: 1; min-width: 0; }
+.learn-offer-body b { display: block; font-size: 14px; color: var(--text); }
+.learn-offer-body small { display: block; margin: 4px 0 0; font-size: 12px; color: var(--muted); line-height: 1.5; }
+.learn-offer-btns { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 10px; }
+.learn-offer-btns .btn { font-size: 12.5px; padding: 6px 12px; }
+.learn-offer .coach-skip { top: 8px; right: 8px; }
+
+/* заголовки блоков и строки сброса в разделе «Обучение» */
+.learn-h { margin: 6px 0 0; font-size: 13.5px; color: var(--text); }
+.learn-reset-row, .learn-offer-set {
+  display: flex; align-items: center; justify-content: space-between; gap: 10px;
+  padding: 6px 2px; font-size: 12px; color: var(--muted);
+}
+.learn-offer-set { padding-top: 10px; margin-top: 2px; border-top: 1px dashed var(--line); }
+.learn-offer-set-label { font-size: 12.5px; color: var(--text-2, var(--text)); }
+
+/* связка «тур → практика» */
+.tour-practice-chip {
+  display: inline-block; margin-left: 8px; padding: 1px 7px; border-radius: 999px;
+  background: var(--accent-soft); border: 1px solid var(--accent-line);
+  color: var(--accent-text); font-size: 10.5px; font-weight: 600;
+}
+.tour-practice-btn { border-color: var(--accent-line); color: var(--accent-text); }
+
+@media (max-width: 760px) {
+  .learn-offer { right: 10px; bottom: 10px; }
+  .learn-offer-set { flex-direction: column; align-items: flex-start; }
+  .tour-practice-chip { display: block; margin: 4px 0 0; }
+}
 
 @media (prefers-reduced-motion: reduce) {
-  .coach-marker-ring, .coach-confetti i { animation: none; }
+  .coach-marker-ring, .coach-confetti i, .learn-offer { animation: none; }
 }

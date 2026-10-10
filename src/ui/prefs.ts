@@ -6,6 +6,7 @@
 // при старте: правка любой настройки применяется сразу, перезапуск не нужен.
 import { useCallback, useState } from 'react';
 import { DEFAULT_HOTKEYS, normalizeHotkeys, type HotkeyMap } from './hotkeys';
+import type { LearnOfferMode } from './coach';
 
 export const PREFS_KEY = 'psbees.prefs';
 export type { HotkeyMap };
@@ -65,6 +66,14 @@ export interface Prefs {
   /** проверять обновления при запуске */
   checkUpdates: boolean;
 
+  // ---------------- обучение ----------------
+  /**
+   * Как вести себя с практическими уроками при запуске: «спросить» — показать
+   * карточку с предложением (по умолчанию), «auto» — сразу запустить первый урок,
+   * «off» — ничего не показывать. Обучение добровольное: любой шаг пропускается.
+   */
+  learnOnStart: LearnOfferMode;
+
   // ---------------- горячие клавиши ----------------
   /** действие → список сочетаний (см. src/ui/hotkeys.ts) */
   hotkeys: HotkeyMap;
@@ -110,6 +119,8 @@ export const DEFAULT_PREFS: Prefs = {
   pngDrill: true,
 
   checkUpdates: true,
+
+  learnOnStart: 'ask',
 
   hotkeys: DEFAULT_HOTKEYS,
 
@@ -165,6 +176,8 @@ export const normalizePrefs = (p?: Partial<Prefs> | null): Prefs => {
     pngDrill: bool(s.pngDrill, DEFAULT_PREFS.pngDrill),
 
     checkUpdates: bool(s.checkUpdates, DEFAULT_PREFS.checkUpdates),
+
+    learnOnStart: pick(s.learnOnStart, ['ask', 'auto', 'off'] as LearnOfferMode[], DEFAULT_PREFS.learnOnStart),
 
     hotkeys: normalizeHotkeys(s.hotkeys),
 

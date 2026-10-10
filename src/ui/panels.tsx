@@ -121,6 +121,7 @@ export function LayersPanel({
           <div
             key={l.id}
             className={'layer' + (active ? ' active' : '')}
+            data-learn={'layer-' + l.id}
             onClick={() => { if (isCu) setActiveCu(l.id as 'k1' | 'k2'); }}
             title={isCu ? 'Сделать активным слоем меди' : undefined}
           >
@@ -130,6 +131,7 @@ export function LayersPanel({
             </span>
             <button
               className={'eye' + (hidden.has(l.id) ? ' off' : '')}
+              data-learn={'layer-eye-' + l.id}
               title={hidden.has(l.id) ? 'Показать слой' : 'Скрыть слой'}
               onClick={(e) => { e.stopPropagation(); toggleHidden(l.id); }}
             >

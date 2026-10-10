@@ -20,8 +20,8 @@ export function BoardPreviewDialog({ doc, initialTab = '2d', onTab, onClose }: {
     foot={<><span className="muted">Только просмотр · Исходная плата не изменяется</span><button className="btn" onClick={onClose}>Закрыть</button></>}>
     <div className="preview-tabs">
       <div className="bp2d-segments" role="group" aria-label="Режим предпросмотра">
-        <button className={'btn' + (tab === '2d' ? ' primary' : '')} aria-pressed={tab === '2d'} onClick={() => pick('2d')}>2D · Sprint Layout</button>
-        <button className={'btn' + (tab === '3d' ? ' primary' : '')} aria-pressed={tab === '3d'} onClick={() => pick('3d')}>3D · Объёмный вид</button>
+        <button className={'btn' + (tab === '2d' ? ' primary' : '')} data-learn="preview-2d" aria-pressed={tab === '2d'} onClick={() => pick('2d')}>2D · Sprint Layout</button>
+        <button className={'btn' + (tab === '3d' ? ' primary' : '')} data-learn="preview-3d" aria-pressed={tab === '3d'} onClick={() => pick('3d')}>3D · Объёмный вид</button>
       </div>
       <span className="preview-document"><strong>{doc.name}</strong><span>{Number((x1 - x0).toFixed(3))} × {Number((y1 - y0).toFixed(3))} мм · {doc.entities.length} эл.</span></span>
     </div>
