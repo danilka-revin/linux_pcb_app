@@ -31,6 +31,7 @@ import {
   DEFAULT_HOTKEYS, HOTKEYS, HOTKEY_BY_ID, HOTKEY_GROUP_ORDER, addHotkey, assignHotkey,
   clearHotkey, comboLabel, comboOf, hotkeyOwners, isReservedCombo, removeHotkey, type HotkeyMap,
 } from './hotkeys';
+import { LearnSettingsPanel } from './tour';
 
 export type { PrintLayer };
 
@@ -44,6 +45,7 @@ interface Section {
 }
 
 const SECTIONS: Section[] = [
+  { id: 'learn', icon: 'learn', title: 'Обучение', hint: 'Туры, быстрый старт и подсказки для новичков', keys: 'обучение тур туры новичок старт помощь подсказка демо демонстрация первая плата' },
   { id: 'general', icon: 'gear', title: 'Общие', hint: 'Тема, цвета, автосохранение, отмена', keys: 'тема цвет акцент автосохранение история отмена обновления запуск' },
   { id: 'presets', icon: 'palette', title: 'Пресеты', hint: 'Темы оформления, технология, сетка, вид, свои профили', keys: 'пресет пресеты шаблон тема темы оформление цвет nord dracula solarized monokai профиль профили технология лут фоторезист чпу завод smd силовая сетка печать размер платы' },
   { id: 'interface', icon: 'uib', title: 'Интерфейс', hint: 'Панели, кнопки, строка состояния', keys: 'интерфейс панель кнопки тулбар док вкладки ширина компактный статус' },
@@ -298,7 +300,7 @@ export function SettingsWindow(props: SettingsWindowProps) {
   } = props;
 
   const [section, setSection] = useState<string>(() =>
-    SECTIONS.some((s) => s.id === prefs.setSection) ? prefs.setSection : 'general');
+    SECTIONS.some((s) => s.id === prefs.setSection) ? prefs.setSection : 'learn');
   const [geom, setGeom] = useState<Geom>(() => startGeom(prefs));
   const [maxed, setMaxed] = useState<boolean>(prefs.setMax);
   const [drag, setDrag] = useState<'move' | 'size' | null>(null);
@@ -576,6 +578,8 @@ export function SettingsWindow(props: SettingsWindowProps) {
 
   const renderSection = (): ReactNode => {
     switch (section) {
+      case 'learn':
+        return <LearnSettingsPanel />;
       // ---------------- Общие ----------------
       case 'general':
         return (

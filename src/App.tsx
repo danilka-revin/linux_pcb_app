@@ -2253,7 +2253,7 @@ export default function App({ cloudUser, onLogout }: { cloudUser?: CloudUser; on
       case 'app.colors': setDialog('colors'); return;
       case 'app.uib': setDialog('uib'); return;
       case 'app.about': setDialog('about'); return;
-      case 'app.tour': setDialog('tour'); return;
+      case 'app.tour': setPrefs({ setSection: 'learn' }); setDialog('settings'); return;
       case 'app.settings': setDialog('settings'); return;
       case 'app.cancel': finishOrCancel(); return;
       default: return;
@@ -2263,7 +2263,7 @@ export default function App({ cloudUser, onLogout }: { cloudUser?: CloudUser; on
     duplicateSel, finishOrCancel, deleteSel, place, preview, rotateSel, mirrorSel, draft,
     activeCu, mouse.wx, mouse.wy, fit, zoomAt, size, nudge, defs.grid, defs.gridUnit,
     defs.snapOn, defs.drcEnabled, setDefs, setTool, groupSel, ungroupSel, tool, editEnt,
-    editNode, deleteEditNode, setTheme,
+    editNode, deleteEditNode, setTheme, setPrefs,
   ]);
 
   const keyRef = useRef(keyHandler);
@@ -3124,7 +3124,6 @@ export default function App({ cloudUser, onLogout }: { cloudUser?: CloudUser; on
               { icon: 'inventory', label: 'Статистика платы…', onClick: () => setDialog('stats') },
               { icon: 'png', label: 'Изображение → шелкография…', onClick: () => setDialog('imgimport') },
               { sep: true },
-              { icon: 'gear', label: '🎓 Обучение — туры по функциям…', onClick: () => setDialog('tour') },
               { icon: 'gear', label: 'Настройки…', kbd: 'Ctrl+,', onClick: () => setDialog('settings') },
             ]}
           />
@@ -3227,7 +3226,6 @@ export default function App({ cloudUser, onLogout }: { cloudUser?: CloudUser; on
             theme === 'dark' ? 'Включить светлую тему' : 'Включить тёмную тему',
             () => setTheme(theme === 'dark' ? 'light' : 'dark'))}
           {tb('about', 'О программе', () => setDialog('about'))}
-          <button type="button" className="tb-btn tour-launch-btn" title="Обучение — короткие туры по функциям приложения" onClick={() => setDialog('tour')}>Обучение</button>
         </div>
       ),
     };
