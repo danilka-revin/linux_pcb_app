@@ -78,6 +78,7 @@ import {
 } from './ui/presets';
 import { UiBuilderDialog, useUpdater } from './ui/updater';
 import { TourDialog } from './ui/tour';
+import { FirstTrackCoach, firstTrackDone, markFirstTrackDone } from './ui/first-track';
 import { ConfirmDialog, MenuBtn, Modal, SplitBtn } from './ui/widgets';
 import { ProgressBar } from './ui/progress';
 import { cloudApi, cloudError, CloudError, type CloudProject, type CloudProjectDetail, type CloudUser } from './cloud/api';
@@ -397,6 +398,34 @@ export default function App({ cloudUser, onLogout }: { cloudUser?: CloudUser; on
   // сообщения правки узлов / инструментов «Разрыв» и «Пайка» (показываются справа)
   const [trackMsg, setTrackMsg] = useState<{ msg: string; ok: boolean | null }>({ msg: '', ok: null });
   const [draft, setDraft] = useState<Draft | null>(null);
+  // Практика «Твоя первая дорожка»: >0 — оверлей активен, рост числа — перезапуск.
+  // Само запускается один раз для новичков; повторно — из Настройки → Обучение.
+  const [coachRun, setCoachRun] = useState(0);
+  /** Точек в черновике дорожки (для практики новичка). */
+  const coachDraftPts = draft && draft.t === 'track' ? draft.pts.length : 0;
+  /** Сколько дорожек уже на плате (для практики новичка). */
+  const coachTrackCount = useMemo(
+    () => doc.entities.reduce((n, e) => (e.kind === 'track' ? n + 1 : n), 0),
+    [doc.entities],
+  );
+  // Первый запуск практики: один раз, если пользователь её ещё не проходил
+  // и мы не в отдельном «окне настроек». Даём интерфейсу отрисоваться.
+  useEffect(() => {
+    if (firstTrackDone()) return;
+    if (typeof location !== 'undefined' && location.hash === '#settings') return;
+    const t = setTimeout(() => setCoachRun(1), 900);
+    return () => clearTimeout(t);
+  }, []);
+  // Пропустившему больше не навязываемся — повторный запуск всегда есть в настройках.
+  const closeCoach = useCallback((_done: boolean) => {
+    markFirstTrackDone();
+    setCoachRun(0);
+  }, []);
+  /** Запуск практики из настроек: закрываем окно и перезапускаем оверлей. */
+  const startPractice = useCallback(() => {
+    setDialog(null);
+    setCoachRun((n) => n + 1);
+  }, []);
   const [view, setView] = useState<View>({ s: 8, ox: 80, oy: 500, mir: false });
   const [defs, setDefsState] = useState<Defs>(loadDefs);
   const [hidden, setHidden] = useState<Set<M.LayerId>>(new Set());
@@ -3295,6 +3324,7 @@ export default function App({ cloudUser, onLogout }: { cloudUser?: CloudUser; on
               <button
                 key={id}
                 type="button"
+                data-tool-id={id}
                 className={'tb-btn dock-btn' + (tool === id && !(id === 'comp' && !place) ? ' active' : '')}
                 title={`${t.name}${k ? ` (${k})` : ''} — ${t.hint}`}
                 onClick={() => setTool(id)}
@@ -3859,6 +3889,17 @@ export default function App({ cloudUser, onLogout }: { cloudUser?: CloudUser; on
           onExport={exportSettings}
           onImport={importSettings}
           onClearDraft={clearDraft}
+          onPracticeFirstTrack={startPractice}
+        />
+      )}
+      {coachRun > 0 && (
+        <FirstTrackCoach
+          run={coachRun}
+          tool={tool}
+          draftPts={coachDraftPts}
+          trackCount={coachTrackCount}
+          paused={dialog !== null}
+          onExit={closeCoach}
         />
       )}
       {confirmAsk && (
