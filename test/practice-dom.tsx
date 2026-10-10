@@ -1,7 +1,8 @@
 // Практическое обучение: добровольные уроки поверх редактора (полный путь в App, jsdom).
-// Проверяем главное: редактор сам урок не навязывает — он спрашивает; Дальше
-// оверлей ведёт за руку по реальному интерфейсу, ждёт настоящих действий,
-// отмечает прохождение и предлагает следующий урок. Canvas-отрисовка заглушена.
+// Проверяем главное: редактор сам урок не навязывает — внизу висит полоса
+// «Пройти обучение / Пропустить». Дальше оверлей ведёт за руку по настоящему
+// интерфейсу, ждёт реальных действий, отмечает прохождение и предлагает
+// следующий урок. Canvas-отрисовка заглушена.
 import assert from 'node:assert/strict';
 import { JSDOM } from 'jsdom';
 
@@ -32,7 +33,7 @@ const { createRoot } = await import('react-dom/client');
 const { act } = await import('react');
 const App = (await import('../src/App')).default;
 const coach = await import('../src/ui/coach');
-const { PRACTICE_KEY, FIRST_TRACK_KEY, LEARN_ASKED_KEY } = coach;
+const { PRACTICE_KEY, LEARN_ASKED_KEY } = coach;
 const { PREFS_KEY } = await import('../src/ui/prefs');
 
 const doc = win.document;
@@ -50,6 +51,9 @@ const canvasClick = async (x: number, y: number, button = 0) => {
     );
   });
 };
+const esc = () => act(async () => {
+  win.dispatchEvent(new win.KeyboardEvent('keydown', { key: 'Escape', bubbles: true }));
+});
 const mount = async () => {
   const root = createRoot(doc.getElementById('root')!);
   await act(async () => { root.render(React.createElement(App)); });
@@ -58,41 +62,30 @@ const mount = async () => {
 const doneList = (): string[] => {
   try { return JSON.parse(win.localStorage.getItem(PRACTICE_KEY) ?? '[]'); } catch { return []; }
 };
+const openSettings = async () => {
+  const btn = [...doc.querySelectorAll('.toolbar button')]
+    .find((b) => (b.getAttribute('title') ?? '').startsWith('Настройки программы')) as HTMLButtonElement;
+  await click(btn, 'кнопка настроек');
+  assert.ok($('.set-win'), 'окно настроек открылось');
+};
 
-// ---------- 1. Новичку НЕ навязываемся: сначала только вопрос ----------
 assert.equal(coach.practiceDone('track'), false, 'до обучения отметки нет');
-let root = await mount();
+assert.equal(coach.nextPracticeId(), 'track', 'первый непройденный урок — про дорожку');
 
-assert.equal($('.coach-root'), null, 'сразу после старта оверлея нет');
+// ---------- 1. Полоса внизу, а не урок поверх редактора ----------
+let root = await mount();
+assert.equal($('.coach-root'), null, 'сразу после старта урока нет');
+assert.ok($('.learn-bar'), 'под холстом появилась полоса про обучение');
+assert.ok($('.learn-bar')!.parentElement === doc.getElementById('root'), 'полоса — часть макета, она ничего не перекрывает');
+assert.ok(txt('.learn-bar').includes('Пройти обучение'), 'на полосе кнопка «Пройти обучение»');
+assert.ok(txt('.learn-bar').includes('Пропустить'), 'и кнопка «Пропустить»');
+assert.ok(txt('.learn-bar').includes('6 уроков'), 'полоса говорит, сколько уроков осталось');
 assert.ok($('[data-tool-id="track"]'), 'кнопка «Дорожка» размечена для подсветки');
 assert.ok($('[data-learn="cu-k2"]'), 'кнопки слоёв размечены для подсветки');
 
-await sleep(1000);
-assert.ok($('.learn-offer'), 'появилась карточка-предложение урока');
-assert.equal($('.coach-root'), null, 'без согласия пользователя урок не начинается');
-assert.ok(txt('.learn-offer').includes('дорожку'), 'в карточке — про первую дорожку');
-
-// «Не сейчас» — карточка уходит и больше не возвращается
-await click(doc.querySelectorAll('.learn-offer-btns .btn')[1], '«Не сейчас»');
-assert.equal($('.learn-offer'), null, 'карточка закрыта');
-assert.equal(win.localStorage.getItem(LEARN_ASKED_KEY), '1', 'больше не спрашиваем');
-assert.deepEqual(doneList(), [], 'прохождение не выставлено — урок просто отложили');
-
-await act(async () => { root.unmount(); });
-root = await mount();
-await sleep(1000);
-assert.equal($('.learn-offer'), null, 'после «не сейчас» не напоминаем');
-assert.equal($('.coach-root'), null, 'и урок сами не запускаем');
-
-// ---------- 2. Явно попросили: урок ведёт по «Дорожке» и кликам ----------
-const settingsBtn = [...doc.querySelectorAll('.toolbar button')]
-  .find((b) => (b.getAttribute('title') ?? '').startsWith('Настройки программы')) as HTMLButtonElement;
-await click(settingsBtn, 'кнопка настроек');
-assert.ok($('.set-win'), 'окно настроек открылось');
-assert.ok(doc.querySelectorAll('.practice-card').length >= 6, 'в разделе «Обучение» — список уроков');
-assert.ok(txt('.learn-settings').includes('только если хотите'), 'раздел объясняет, что обучение добровольное');
-await click(doc.querySelectorAll('.practice-card')[0], 'карточка урока «Дорожка»');
-assert.equal($('.set-win'), null, 'настройки закрылись при запуске урока');
+// ---------- 2. «Пройти обучение» → урок ведёт по «Дорожке» и кликам ----------
+await click($('.learn-bar-go'), '«Пройти обучение»');
+assert.equal($('.learn-bar'), null, 'пока урок идёт, полоса не мешает');
 assert.ok($('.coach-root'), 'оверлей запущен');
 assert.ok(txt('.coach-bubble').includes('Нажми «Дорожка»'), 'указываем на инструмент');
 assert.ok($('.coach-spot'), 'цель подсвечена');
@@ -130,21 +123,36 @@ assert.ok($('.coach-bubble'), 'после пропуска шага подска
 await click($('.coach-skip'), 'крестик');
 assert.equal($('.coach-root'), null, 'урок закрыт');
 assert.ok(doneList().includes('parts'), 'пропущенный урок больше не предлагается');
+assert.equal(coach.nextPracticeId(), 'nav', 'следующий непройденный — про мышь и зум');
 
-// ---------- 4. Esc — быстрый выход ----------
-await click([...doc.querySelectorAll('.toolbar button')]
-  .find((b) => (b.getAttribute('title') ?? '').startsWith('Настройки программы')) as HTMLButtonElement, 'снова настройки');
-await click(doc.querySelectorAll('.practice-card')[2], 'карточка урока «Мышь, зум»');
-assert.ok(txt('.coach-bubble').includes('колесо'), 'урок про навигацию ждёт колесо мыши');
-await act(async () => {
-  win.dispatchEvent(new win.KeyboardEvent('keydown', { key: 'Escape', bubbles: true }));
-});
-assert.equal($('.coach-root'), null, 'Esc закрыл урок');
+// полоса больше не возвращается: на неё уже ответили
+await act(async () => { root.unmount(); });
+root = await mount();
+await sleep(30);
+assert.equal($('.learn-bar'), null, 'после «Пройти обучение» полосу не показываем');
+assert.equal($('.coach-root'), null, 'и урок сами не запускаем');
 
-// ---------- 4b. Урок про слои: указываем на настоящие кнопки шапки и панели ----------
-await click([...doc.querySelectorAll('.toolbar button')]
-  .find((b) => (b.getAttribute('title') ?? '').startsWith('Настройки программы')) as HTMLButtonElement, 'настройки ради урока «Слои»');
+// ---------- 4. «Пропустить» убирает полосу навсегда ----------
+win.localStorage.removeItem(LEARN_ASKED_KEY);
+win.localStorage.removeItem(PRACTICE_KEY);
+await act(async () => { root.unmount(); });
+root = await mount();
+assert.ok($('.learn-bar'), 'без ответа полоса снова видна');
+await click($('.learn-bar-skip'), '«Пропустить»');
+assert.equal($('.learn-bar'), null, 'полоса скрыта');
+assert.equal(win.localStorage.getItem(LEARN_ASKED_KEY), '1', 'запомнили: человек отказался');
+assert.deepEqual(doneList(), [], 'отметок о прохождении нет — обучение просто отвергли');
+await act(async () => { root.unmount(); });
+root = await mount();
+await sleep(30);
+assert.equal($('.learn-bar'), null, 'и при следующем запуске не напоминаем');
+
+// ---------- 5. Настройки: список уроков, пропуски, диалог ----------
+await openSettings();
+assert.ok(doc.querySelectorAll('.practice-card').length >= 6, 'в разделе «Обучение» — список уроков');
+assert.ok(txt('.learn-settings').includes('Полоса «пройти обучение» внизу окна'), 'там же переключатель самой полосы');
 await click(doc.querySelectorAll('.practice-card')[3], 'карточка урока «Слои»');
+assert.equal($('.set-win'), null, 'настройки закрылись при запуске урока');
 assert.ok(txt('.coach-bubble').includes('K2'), 'первый шаг — переключить слой');
 await click($('[data-learn="cu-k2"]'), 'кнопка K2');
 await sleep(40);
@@ -152,29 +160,22 @@ assert.ok(txt('.coach-bubble').includes('шелкографию'), 'следую
 await click($('[data-learn="layer-eye-s1"]'), 'глазик');
 await sleep(40);
 assert.ok(txt('.coach-bubble').includes('вернётся'), 'просим вернуть слой обратно');
-await click($('.coach-next'), 'пропустить шаг');
 await click($('.coach-skip'), 'крестик');
 assert.ok(doneList().includes('layers'), 'урок про слои отмечен пройденным');
 
-// ---------- 4c. Открытый диалог: урок засыпает, но не закрывается ----------
-await click([...doc.querySelectorAll('.toolbar button')]
-  .find((b) => (b.getAttribute('title') ?? '').startsWith('Настройки программы')) as HTMLButtonElement, 'открыть настройки');
+// открытый диалог: урок засыпает, но не закрывается; Esc — про диалог
+await openSettings();
 await click(doc.querySelectorAll('.practice-card')[2], 'урок «Мышь, зум»');
 assert.ok($('.coach-root'), 'урок идёт');
-await click([...doc.querySelectorAll('.toolbar button')]
-  .find((b) => (b.getAttribute('title') ?? '').startsWith('Настройки программы')) as HTMLButtonElement, 'снова настройки поверх урока');
-assert.ok($('.set-win'), 'настройки открылись');
+await openSettings();
 assert.equal($('.coach-root'), null, 'пока открыт диалог — оверлей прячется');
-await act(async () => {
-  win.dispatchEvent(new win.KeyboardEvent('keydown', { key: 'Escape', bubbles: true }));
-});
+await esc();
 assert.equal($('.set-win'), null, 'Esc закрыл настройки');
 assert.ok($('.coach-root'), 'и не тронул урок');
-await click($('.coach-skip'), 'крестик');
+await esc();
+assert.equal($('.coach-root'), null, 'а без диалога Esc пропускает урок');
 
-// ---------- 4d. Тур → практика одной кнопкой ----------
-const openSettings = async () => click([...doc.querySelectorAll('.toolbar button')]
-  .find((b) => (b.getAttribute('title') ?? '').startsWith('Настройки программы')) as HTMLButtonElement, 'настройки');
+// тур → практика одной кнопкой
 await openSettings();
 assert.ok(txt('.tour-practice-chip').includes('дорожка'), 'на карточке тура видно, что к нему есть практика');
 await click(doc.querySelector('.tour-card'), 'карточка тура');
@@ -183,41 +184,50 @@ assert.ok($('.tour-practice-btn'), 'внизу тура — кнопка пра�
 await click($('.tour-practice-btn'), '«Практика ▶»');
 assert.equal($('.set-win'), null, 'настройки закрылись');
 assert.ok($('.coach-root'), 'урок из тура стартовал');
-assert.ok(txt('.coach-lesson').includes('дорожка'), 'подпись урока — про первую дорожку');
 await click($('.coach-skip'), 'крестик');
 
-// ---------- 5. Пройденное помнится и в старом ключе (совместимость) ----------
-assert.ok(win.localStorage.getItem(FIRST_TRACK_KEY) === '1' || doneList().includes('track'),
-  'отметка «дорожку прошёл» стоит');
+// сброс прогресса убирает и ответ «не напоминать» — полоса вернётся
+await openSettings();
+assert.ok(
+  txt('.learn-reset-row').includes(`Пройдено: ${doneList().length} из ${6}`),
+  'в настройках видно, сколько уроков пройдено',
+);
+await click($('.learn-reset-row .tour-reset'), '«Сбросить» прогресс уроков');
+assert.deepEqual(doneList(), [], 'отметки о прохождении стёрты');
+assert.equal(win.localStorage.getItem(LEARN_ASKED_KEY), null, 'и отказ стёрт — полоса снова имеет право появиться');
+await click($('.set-head-close'), 'закрыть настройки');
 
-// ---------- 6. Настройки напоминания: off — тишина, auto — урок сам ----------
-await click([...doc.querySelectorAll('.toolbar button')]
-  .find((b) => (b.getAttribute('title') ?? '').startsWith('Настройки программы')) as HTMLButtonElement, 'настройки');
+// ---------- 6. Режимы полосы: off — тишина, auto — урок сразу ----------
+await openSettings();
 const offBtn = [...(doc.querySelectorAll('.learn-offer-set .btn') as NodeListOf<HTMLButtonElement>)]
   .find((b) => b.textContent === 'Не показывать');
 await click(offBtn!, 'режим «Не показывать»');
 const saved = JSON.parse(win.localStorage.getItem(PREFS_KEY) ?? '{}');
 assert.equal(saved.learnOnStart, 'off', 'настройка уехала в localStorage');
 await click($('.set-head-close'), 'закрыть настройки');
-await act(async () => { root.unmount(); });
 win.localStorage.removeItem(PRACTICE_KEY);
-win.localStorage.removeItem(FIRST_TRACK_KEY);
 win.localStorage.removeItem(LEARN_ASKED_KEY);
+await act(async () => { root.unmount(); });
 root = await mount();
-await sleep(1000);
-assert.equal($('.learn-offer'), null, 'в режиме off не предлагаем');
+await sleep(30);
+assert.equal($('.learn-bar'), null, 'в режиме off полосы нет');
 assert.equal($('.coach-root'), null, 'в режиме off не учим насильно');
 
-win.localStorage.setItem(PREFS_KEY, JSON.stringify({ ...saved, learnOnStart: 'auto' }));
+await openSettings();
+const autoBtn = [...(doc.querySelectorAll('.learn-offer-set .btn') as NodeListOf<HTMLButtonElement>)]
+  .find((b) => b.textContent === 'Сразу показывать');
+await click(autoBtn!, 'режим «Сразу показывать»');
+await click($('.set-head-close'), 'закрыть настройки');
 await act(async () => { root.unmount(); });
 root = await mount();
 await sleep(1000);
 assert.ok($('.coach-root'), 'в режиме auto урок стартует сам');
+assert.equal($('.learn-bar'), null, 'и полоса не нужна');
 await click($('.coach-skip'), 'крестик');
-
 await act(async () => { root.unmount(); });
+
 process.stdout.write(
-  'PRACTICE DOM OK: обучение добровольное (карточка-вопрос, «не сейчас», off/auto), '
+  'PRACTICE DOM OK: полоса «Пройти обучение / Пропустить» внизу, добровольность и режимы off/auto, '
   + 'уроки ведут по реальному интерфейсу, шаг и урок пропускаются, прогресс в localStorage\n',
   () => process.exit(0),
 );

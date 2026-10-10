@@ -6,10 +6,10 @@
 // оверлей не перехватывает мышь (кроме собственных кнопок), учимся на
 // настоящей плате, всё отменяется Ctrl+Z.
 //
-// Обучение добровольное: при запуске оно только спрашивает, показывать ли
-// урок (Настройки → Обучение умеет «спросить» / «сразу показывать» /
-// «не показывать»). Любой шаг и весь урок пропускаются, пропущенное
-// не навязывается.
+// Обучение добровольное: пока есть непройденные уроки, под холстом висит
+// полоса «Пройти обучение / Пропустить» (Настройки → Обучение: «показывать» /
+// «сразу показывать» / «не показывать»). Любой шаг и весь урок пропускаются,
+// пропущенное не навязывается.
 import { useEffect, useLayoutEffect, useMemo, useRef, useState, type ReactNode } from 'react';
 import { createPortal } from 'react-dom';
 
@@ -117,7 +117,7 @@ export interface Practice {
   title: string;
   emoji: string;
   blurb: string;
-  /** строка карточки-предложения при запуске (вопросик добавится сам) */
+  /** строка в полосе «пройти обучение» (вопросик добавится сам) */
   offer?: string;
   minutes: number;
   /** следующий урок — предлагаем на карточке успеха */
@@ -507,16 +507,11 @@ export function donePracticeIds(): PracticeId[] {
   return PRACTICES.map((p) => p.id).filter((id) => set.has(id));
 }
 
-export function resetPractices(): void {
-  writeStore(new Set());
-  try { globalThis.localStorage?.removeItem(FIRST_TRACK_KEY); } catch { /* ignore */ }
-}
-
 /**
- * Предлагать ли обучение при запуске. По умолчанию «спросить»: урок
- * необязательный, поэтому мы не лезем в редактор, а показываем карточку,
- * которую можно закрыть. «auto» — сразу запускать первую практику,
- * «off» — не напоминать вовсе.
+ * Как напоминать об обучении. По умолчанию «ask» — полоса «Пройти обучение /
+ * Пропустить» под холстом: урок необязательный, поэтому мы не лезем в
+ * редактор, а только предлагаем. «auto» — сразу запускать первый непройденный
+ * урок, «off» — не напоминать вовсе.
  */
 export type LearnOfferMode = 'ask' | 'auto' | 'off';
 export const LEARN_ASKED_KEY = 'psbees.learn.asked';
@@ -527,6 +522,13 @@ export function learnAsked(): boolean {
 
 export function markLearnAsked(): void {
   try { globalThis.localStorage?.setItem(LEARN_ASKED_KEY, '1'); } catch { /* ignore */ }
+}
+
+export function resetPractices(): void {
+  writeStore(new Set());
+  try { globalThis.localStorage?.removeItem(FIRST_TRACK_KEY); } catch { /* ignore */ }
+  // сбросили прогресс — значит, согласие «не напоминать» тоже в силу
+  try { globalThis.localStorage?.removeItem(LEARN_ASKED_KEY); } catch { /* ignore */ }
 }
 
 // -------------------------------------------------------------- оверлей-движок
@@ -784,41 +786,56 @@ export function CoachOverlay(props: CoachProps) {
   );
 }
 
-// ------------------------------------------------- карточка-предложение урока
+// ----------------------------------------------------- полоса «пройти обучение»
+
+/** Первый непройденный урок — с него и предлагаем продолжить. */
+export function nextPracticeId(): PracticeId | null {
+  const next = PRACTICES.find((p) => !practiceDone(p.id));
+  return next ? next.id : null;
+}
+
+/** Русское склонение: 1 урок, 2 урока, 5 уроков. */
+function plural(n: number, one: string, few: string, many: string): string {
+  const m10 = n % 10, m100 = n % 100;
+  if (m10 === 1 && m100 !== 11) return one;
+  if (m10 >= 2 && m10 <= 4 && (m100 < 12 || m100 > 14)) return few;
+  return many;
+}
 
 /**
- * Мягкое предложение пройти обучение: маленькая карточка в углу, она ничего
- * не блокирует и живёт до первого «не сейчас». Именно это приходит на смену
- * автозапуску: новичок сам решает, нужен ли ему урок.
+ * Полоса внизу окна, пока обучение не пройдено: «Пройти обучение» и
+ * «Пропустить». Она не перекрывает редактор и не прыгает перед курсором —
+ * стоит себе под холстом. «Пропустить» убирает её навсегда (уроки остаются
+ * в Настройки → Обучение), «Пройти» запускает первый непройденный урок.
  */
-export function LearnOffer({
-  practice, onGo, onLater, onNever,
-}: {
-  practice: PracticeId;
-  onGo: () => void;
-  onLater: () => void;
-  onNever: () => void;
+export function LearnBar({ onStart, onSkip }: {
+  /** запустить урок (обычно первый непройденный) */
+  onStart: (id: PracticeId) => void;
+  /** отказаться — больше не напоминаем */
+  onSkip: () => void;
 }) {
-  if (typeof document === 'undefined') return null;
-  const p = practiceById(practice);
-  return createPortal(
-    <div className="learn-offer" role="status" aria-label="Предложение обучения">
-      <div className="learn-offer-emoji" aria-hidden="true">🐝</div>
-      <div className="learn-offer-body">
-        <b>{p.offer ?? `Пройти урок «${p.title}»`}?</b>
+  const left = PRACTICES.filter((p) => !practiceDone(p.id));
+  if (!left.length) return null;
+  const next = left[0];
+  const passed = PRACTICES.length - left.length;
+  return (
+    <div className="learn-bar" aria-label="Обучение">
+      <span className="learn-bar-ico" aria-hidden="true">🐝</span>
+      <span className="learn-bar-text">
+        <b>{next.offer ?? `Урок «${next.title}»`}</b>
         <small>
-          {p.steps.length} шага прямо на интерфейсе, {p.minutes} мин. Ничего не сломаешь:
-          всё отменяется <kbd>Ctrl+Z</kbd>.
+          {left.length} {plural(left.length, 'урок', 'урока', 'уроков')} по минуте, прямо на вашей плате ·
+          подсвечиваем, куда нажать, и ждём действия
+          {passed > 0 ? ` · пройдено ${passed} из ${PRACTICES.length}` : ''}
         </small>
-        <div className="learn-offer-btns">
-          <button type="button" className="btn primary" onClick={onGo}>Показать ▶</button>
-          <button type="button" className="btn" onClick={onLater}>Не сейчас</button>
-          <button type="button" className="btn tiny" onClick={onNever}>Больше не предлагать</button>
-        </div>
-      </div>
-      <button type="button" className="coach-skip" title="Не сейчас" onClick={onLater}>✕</button>
-    </div>,
-    document.body,
+      </span>
+      <button type="button" className="btn primary learn-bar-go" onClick={() => onStart(next.id)}>
+        Пройти обучение
+      </button>
+      <button type="button" className="btn learn-bar-skip" onClick={onSkip} title="Скрыть навсегда — уроки останутся в Настройки → Обучение">
+        Пропустить
+      </button>
+    </div>
   );
 }
 

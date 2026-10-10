@@ -79,7 +79,7 @@ import {
 import { UiBuilderDialog, useUpdater } from './ui/updater';
 import { TourDialog } from './ui/tour';
 import {
-  CoachOverlay, LearnOffer, learnAsked, markLearnAsked, markPracticeDone, practiceDone,
+  CoachOverlay, LearnBar, learnAsked, markLearnAsked, markPracticeDone, nextPracticeId,
   type CoachInput, type PracticeId,
 } from './ui/coach';
 import { ConfirmDialog, MenuBtn, Modal, SplitBtn } from './ui/widgets';
@@ -402,10 +402,11 @@ export default function App({ cloudUser, onLogout }: { cloudUser?: CloudUser; on
   const [trackMsg, setTrackMsg] = useState<{ msg: string; ok: boolean | null }>({ msg: '', ok: null });
   const [draft, setDraft] = useState<Draft | null>(null);
   // ---------------- практическое обучение (src/ui/coach.tsx) ----------------
-  // Обучение добровольное: сам редактор урок не запускает — при первом старте
-  // появляется карточка «показать?». run — перезапуск того же урока (рост числа).
+  // Обучение добровольное: сам редактор урок не запускает — пока уроки не
+  // пройдены, под холстом висит полоса «Пройти обучение / Пропустить».
+  // run — перезапуск того же урока (рост числа).
   const [practice, setPractice] = useState<{ id: PracticeId; run: number } | null>(null);
-  /** карточка-предложение урока (видна, пока пользователь не ответил) */
+  /** полоса «пройти обучение» внизу окна (видна, пока пользователь не ответил) */
   const [learnAsk, setLearnAsk] = useState(false);
   /** сколько раз плату сохраняли: урок «сохрани и экспортируй» ждёт именно это */
   const [savedTick, setSavedTick] = useState(0);
@@ -3135,31 +3136,46 @@ export default function App({ cloudUser, onLogout }: { cloudUser?: CloudUser; on
     markLearnAsked();
     setPractice((prev) => ({ id, run: (prev?.id === id ? prev.run : 0) + 1 }));
   }, []);
+  /** Пересчитать, висит ли полоса «пройти обучение». Её показывают, только если
+   * человек ещё не отвечал, режим «ask» и остались непройденные уроки. Плату уже
+   * разбирали (на ней есть медь) — в роли новичка этот человек не ходит, полосу
+   * не показываем. Нужна и после настроек: там можно сбросить прогресс, и
+   * предложение должно вернуться. */
+  const syncLearnAsk = useCallback(() => {
+    if (prefsRef.current.learnOnStart !== 'ask' || learnAsked() || !nextPracticeId()) {
+      setLearnAsk(false);
+      return;
+    }
+    const busy = docRef.current.entities.some(
+      (e) => e.kind === 'track' || e.kind === 'pad' || e.kind === 'smd' || e.kind === 'comp' || e.kind === 'via',
+    );
+    setLearnAsk(!busy);
+  }, []);
+
   /** Выход из урока: и пройденный, и пропущенный больше не предлагаем. */
   const exitPractice = useCallback((id: PracticeId) => {
     markPracticeDone(id);
     setPractice(null);
   }, []);
 
-  // Первый запуск: не навязываемся — спрашиваем. «auto» — как раньше, сразу урок;
-  // «off» — не показываем ничего. Ответ запоминается, второй раз не тревожим.
-  // Плату уже разбирали (на плате есть медь) — в роли новичка человек не ходит,
-  // поэтому карточку не показываем ни в каком режиме.
+  // Полоса «пройти обучение» внизу окна, пока уроки не пройдены. Она ничего не
+  // блокирует, «Пропустить» убирает её навсегда, а режим «auto» (Настройки →
+  // Обучение) запускает урок сразу, без полосы — ему даём дорисоваться первому
+  // кадру, чтобы подсветка встала по реальным координатам.
   useEffect(() => {
-    const mode = prefsRef.current.learnOnStart;
-    if (mode === 'off') return;
     if (typeof location !== 'undefined' && location.hash === '#settings') return;
-    if (practiceDone('track') || learnAsked()) return;
-    const busy = docRef.current.entities.some(
-      (e) => e.kind === 'track' || e.kind === 'pad' || e.kind === 'smd' || e.kind === 'comp' || e.kind === 'via',
-    );
-    if (busy && mode !== 'auto') return;
-    const t = setTimeout(() => {
-      if (mode === 'auto') { markLearnAsked(); setPractice({ id: 'track', run: 1 }); }
-      else setLearnAsk(true);
-    }, 900);
-    return () => clearTimeout(t);
-  }, []);
+    if (prefsRef.current.learnOnStart === 'auto') {
+      const next = nextPracticeId();
+      if (!next) return () => undefined;
+      const t = setTimeout(() => {
+        markLearnAsked();
+        setPractice((prev) => ({ id: next, run: (prev?.id === next ? prev.run : 0) + 1 }));
+      }, 900);
+      return () => clearTimeout(t);
+    }
+    syncLearnAsk();
+    return () => undefined;
+  }, [syncLearnAsk]);
   const selEnts = useMemo(() => doc.entities.filter((e) => sel.has(e.id)), [doc, sel]);
   const toolMeta = TOOLS.find((t) => t.id === tool)!;
   /** Координата в строке состояния: мм, mil или обе системы (настройка «Единицы координат»). */
@@ -3791,6 +3807,12 @@ export default function App({ cloudUser, onLogout }: { cloudUser?: CloudUser; on
         {sidesConf.showRight && rightColumn}
       </div>
 
+      {learnAsk && !practice && (
+        <LearnBar
+          onStart={startPractice}
+          onSkip={() => { markLearnAsked(); setLearnAsk(false); }}
+        />
+      )}
       {prefs.statusBar && <div className="status">
         <span>X {statusCoord(mouse.wx)}</span>
         <span>Y {statusCoord(mouse.wy)}</span>
@@ -3982,7 +4004,7 @@ export default function App({ cloudUser, onLogout }: { cloudUser?: CloudUser; on
             violations: clearanceMarks.length,
           }}
           version={appVer}
-          onClose={() => setDialog(null)}
+          onClose={() => { setDialog(null); syncLearnAsk(); }}
           onDetach={openSettingsWindow}
           onReset={resetSettings}
           onExport={exportSettings}
@@ -3999,14 +4021,6 @@ export default function App({ cloudUser, onLogout }: { cloudUser?: CloudUser; on
           paused={dialog !== null}
           onExit={exitPractice}
           onNext={startPractice}
-        />
-      )}
-      {learnAsk && (
-        <LearnOffer
-          practice="track"
-          onGo={() => startPractice('track')}
-          onLater={() => { markLearnAsked(); setLearnAsk(false); }}
-          onNever={() => { markLearnAsked(); setLearnAsk(false); setPrefs({ learnOnStart: 'off' }); }}
         />
       )}
       {confirmAsk && (

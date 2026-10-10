@@ -1763,23 +1763,23 @@ html[data-compact='1'] .set-head { padding: 5px 8px 5px 10px; }
 .practice-go { flex: none; font-size: 12.5px; font-weight: 700; color: var(--accent-text); white-space: nowrap; }
 .practice-card.done .practice-go { color: var(--ok); }
 
-/* мягкое предложение пройти урок: ничего не блокирует, живёт до ответа */
-.learn-offer {
-  position: fixed; right: 18px; bottom: 18px; z-index: 95;
-  display: flex; align-items: flex-start; gap: 12px;
-  width: 372px; max-width: calc(100vw - 28px);
-  padding: 14px 34px 14px 14px;
-  background: var(--surface); border: 1.5px solid var(--accent-line); border-radius: 16px;
-  box-shadow: 0 18px 54px rgba(0, 0, 0, .45);
-  animation: coach-pop .25s ease;
+/* полоса «пройти обучение» под холстом: не перекрывает редактор,
+   «Пропустить» убирает её навсегда, уроки остаются в настройках */
+.learn-bar {
+  display: flex; align-items: center; gap: 12px; flex: none;
+  padding: 8px 14px;
+  background: linear-gradient(180deg, var(--accent-soft), var(--surface));
+  border-top: 1px solid var(--accent-line);
+  animation: learn-bar-in .28s ease;
 }
-.learn-offer-emoji { font-size: 26px; line-height: 1; flex: none; margin-top: 2px; }
-.learn-offer-body { flex: 1; min-width: 0; }
-.learn-offer-body b { display: block; font-size: 14px; color: var(--text); }
-.learn-offer-body small { display: block; margin: 4px 0 0; font-size: 12px; color: var(--muted); line-height: 1.5; }
-.learn-offer-btns { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 10px; }
-.learn-offer-btns .btn { font-size: 12.5px; padding: 6px 12px; }
-.learn-offer .coach-skip { top: 8px; right: 8px; }
+@keyframes learn-bar-in { from { opacity: 0; transform: translateY(6px); } to { opacity: 1; transform: none; } }
+.learn-bar-ico { font-size: 20px; line-height: 1; flex: none; }
+.learn-bar-text { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 1px; }
+.learn-bar-text b { font-size: 13px; color: var(--text); }
+.learn-bar-text small { font-size: 11.5px; color: var(--muted); line-height: 1.4; overflow: hidden; text-overflow: ellipsis; }
+.learn-bar .btn { font-size: 12.5px; padding: 6px 14px; flex: none; }
+.learn-bar-skip { color: var(--muted); }
+.learn-bar-skip:hover { color: var(--text); }
 
 /* заголовки блоков и строки сброса в разделе «Обучение» */
 .learn-h { margin: 6px 0 0; font-size: 13.5px; color: var(--text); }
@@ -1799,11 +1799,12 @@ html[data-compact='1'] .set-head { padding: 5px 8px 5px 10px; }
 .tour-practice-btn { border-color: var(--accent-line); color: var(--accent-text); }
 
 @media (max-width: 760px) {
-  .learn-offer { right: 10px; bottom: 10px; }
+  .learn-bar { flex-wrap: wrap; }
+  .learn-bar-text small { display: none; }
   .learn-offer-set { flex-direction: column; align-items: flex-start; }
   .tour-practice-chip { display: block; margin: 4px 0 0; }
 }
 
 @media (prefers-reduced-motion: reduce) {
-  .coach-marker-ring, .coach-confetti i, .learn-offer { animation: none; }
+  .coach-marker-ring, .coach-confetti i, .learn-bar { animation: none; }
 }
