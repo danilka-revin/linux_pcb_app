@@ -1646,3 +1646,106 @@ html[data-compact='1'] .set-head { padding: 5px 8px 5px 10px; }
   .tour-glossary dl { grid-template-columns: 1fr; }
   .modal.tour-active-modal { width: 96vw; }
 }
+
+/* ---------- практическое обучение «Твоя первая дорожка» ----------
+   Оверлей не перехватывает мышь (кроме собственных кнопок) —
+   пользователь учится на настоящем редакторе. */
+.coach-root { position: fixed; inset: 0; z-index: 96; pointer-events: none; }
+.coach-spot {
+  position: fixed; border-radius: 12px;
+  box-shadow: 0 0 0 100vmax rgba(4, 7, 12, .62);
+  transition: left .25s ease, top .25s ease, width .25s ease, height .25s ease;
+}
+.coach-spot-round { border-radius: 50%; }
+.coach-marker { position: fixed; width: 0; height: 0; }
+.coach-marker-ring {
+  position: absolute; left: -15px; top: -15px; width: 30px; height: 30px;
+  border-radius: 50%; border: 2px solid var(--accent);
+  animation: coach-pulse 1.2s ease-out infinite;
+}
+.coach-marker-core {
+  position: absolute; left: -4px; top: -4px; width: 8px; height: 8px;
+  border-radius: 50%; background: var(--accent);
+  box-shadow: 0 0 14px 2px var(--accent);
+}
+@keyframes coach-pulse {
+  0% { transform: scale(.55); opacity: 1; }
+  100% { transform: scale(1.9); opacity: 0; }
+}
+
+/* короткая подсказка у цели */
+.coach-bubble {
+  position: fixed; max-width: 300px; pointer-events: auto;
+  background: var(--surface); border: 2px solid var(--accent); border-radius: 14px;
+  padding: 12px 34px 12px 16px;
+  box-shadow: 0 12px 36px rgba(0, 0, 0, .45);
+  animation: coach-pop .22s ease;
+}
+.coach-bubble.arrow-left::before, .coach-bubble.arrow-right::before {
+  content: ''; position: absolute; top: 50%; margin-top: -9px;
+  border: 9px solid transparent;
+}
+.coach-bubble.arrow-left::before { left: -20px; border-right-color: var(--accent); }
+.coach-bubble.arrow-right::before { right: -20px; border-left-color: var(--accent); }
+.coach-big { font-size: 16.5px; font-weight: 700; color: var(--text); line-height: 1.35; }
+.coach-small { margin-top: 4px; font-size: 12.5px; color: var(--muted); line-height: 1.45; }
+.coach-bubble kbd, .coach-card kbd {
+  display: inline-block; min-width: 16px; text-align: center;
+  padding: 0 4px; border-radius: 4px; font-size: 11px; font-family: inherit;
+  background: var(--surface-2); border: 1px solid var(--line); border-bottom-width: 2px; color: var(--text);
+}
+.coach-skip {
+  position: absolute; right: 6px; top: 6px; width: 22px; height: 22px;
+  display: grid; place-items: center; border: none; border-radius: 6px;
+  background: transparent; color: var(--muted); font-size: 12px; cursor: pointer;
+}
+.coach-skip:hover { background: var(--hover); color: var(--text); }
+.coach-dots { display: flex; gap: 5px; margin-top: 10px; }
+.coach-dot { width: 7px; height: 7px; border-radius: 50%; background: var(--line); transition: background .2s, transform .2s; }
+.coach-dot.on { background: var(--accent); transform: scale(1.25); }
+.coach-dot.done { background: var(--ok); }
+
+/* карточки «поехали» и «готово» */
+.coach-card {
+  position: fixed; transform: translate(-50%, -50%);
+  width: 330px; max-width: calc(100vw - 32px);
+  background: var(--surface); border: 1.5px solid var(--line); border-radius: 18px;
+  padding: 22px 22px 18px; text-align: center; pointer-events: auto;
+  box-shadow: 0 18px 54px rgba(0, 0, 0, .5);
+  animation: coach-pop .25s ease;
+}
+.coach-card h3 { margin: 10px 0 4px; font-size: 19px; color: var(--text); }
+.coach-card p { margin: 0; font-size: 13px; color: var(--muted); line-height: 1.5; }
+.coach-card-btns { display: flex; gap: 8px; justify-content: center; margin-top: 14px; }
+.coach-card-btns .btn { font-size: 13px; padding: 7px 16px; }
+.coach-card-emoji { font-size: 40px; line-height: 1; }
+.coach-card-hint { display: block; margin-top: 10px; font-size: 11px; color: var(--muted); }
+@keyframes coach-pop { from { opacity: 0; } to { opacity: 1; } }
+
+/* конфетти на финише */
+.coach-confetti { position: fixed; inset: 0; overflow: hidden; }
+.coach-confetti i {
+  position: absolute; top: -18px; border-radius: 2px;
+  animation: coach-fall linear infinite;
+}
+@keyframes coach-fall {
+  to { transform: translateY(108vh) rotate(560deg); }
+}
+
+/* крупная кнопка практики в Настройки → Обучение */
+.learn-practice {
+  display: flex; align-items: center; gap: 14px; width: 100%;
+  margin-bottom: 16px; padding: 14px 16px; text-align: left; cursor: pointer;
+  background: var(--accent-soft); border: 1.5px solid var(--accent-line); border-radius: 14px;
+  transition: transform .15s ease, box-shadow .15s ease;
+}
+.learn-practice:hover { transform: translateY(-1px); box-shadow: 0 6px 18px rgba(0, 0, 0, .18); border-color: var(--accent); }
+.learn-practice-ico { font-size: 30px; line-height: 1; }
+.learn-practice-body { flex: 1; min-width: 0; }
+.learn-practice-body b { display: block; font-size: 14.5px; color: var(--text); }
+.learn-practice-body small { display: block; margin-top: 2px; font-size: 12px; color: var(--muted); }
+.learn-practice-go { flex-shrink: 0; font-size: 13px; font-weight: 700; color: var(--accent-text); white-space: nowrap; }
+
+@media (prefers-reduced-motion: reduce) {
+  .coach-marker-ring, .coach-confetti i { animation: none; }
+}

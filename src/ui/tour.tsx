@@ -1168,7 +1168,7 @@ export function TourDialog({ onClose, initialTour }: { onClose: () => void; init
 
 // ---------- встроенный в настройки раздел обучения ----------
 
-export function LearnSettingsPanel() {
+export function LearnSettingsPanel({ onStartPractice }: { onStartPractice?: () => void }) {
   const [active, setActive] = useState<TourId | null>(null);
   const [completed, setCompleted] = useState<Set<TourId>>(loadCompleted);
 
@@ -1184,6 +1184,17 @@ export function LearnSettingsPanel() {
 
   return (
     <div className="learn-settings">
+      {onStartPractice && (
+        <button type="button" className="learn-practice" onClick={onStartPractice}>
+          <span className="learn-practice-ico" aria-hidden="true">👆</span>
+          <span className="learn-practice-body">
+            <b>Твоя первая дорожка — практика</b>
+            <small>30 секунд, без текста: показываем прямо на интерфейсе, куда нажимать</small>
+          </span>
+          <span className="learn-practice-go">Начать ▶</span>
+        </button>
+      )}
+
       <div className="learn-hero">
         <div className="learn-hero-icon">🎓</div>
         <div>

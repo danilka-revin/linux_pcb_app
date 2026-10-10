@@ -290,13 +290,15 @@ export interface SettingsWindowProps {
   onExport: () => void;
   onImport: (f: File) => void;
   onClearDraft: () => void;
+  /** Запустить практику «Твоя первая дорожка» поверх редактора (если задано). */
+  onPracticeFirstTrack?: () => void;
 }
 
 export function SettingsWindow(props: SettingsWindowProps) {
   const {
     prefs, setPrefs, defs, setDefs, theme, setTheme, colors, setColors, presets: userPresets, setPresets,
     ui, onUi, onSides, onUiAll, activeCu, setActiveCu, hiddenLayers, toggleLayer, layerCounts, board, version,
-    onClose, onDetach, onReset, onExport, onImport, onClearDraft,
+    onClose, onDetach, onReset, onExport, onImport, onClearDraft, onPracticeFirstTrack,
   } = props;
 
   const [section, setSection] = useState<string>(() =>
@@ -579,7 +581,7 @@ export function SettingsWindow(props: SettingsWindowProps) {
   const renderSection = (): ReactNode => {
     switch (section) {
       case 'learn':
-        return <LearnSettingsPanel />;
+        return <LearnSettingsPanel onStartPractice={onPracticeFirstTrack} />;
       // ---------------- Общие ----------------
       case 'general':
         return (
