@@ -77,6 +77,7 @@ import {
   loadUserPresets, mergeUserPresets, normalizeUserPresets, saveUserPresets, type UserPresets,
 } from './ui/presets';
 import { UiBuilderDialog, useUpdater } from './ui/updater';
+import { TourDialog } from './ui/tour';
 import { ConfirmDialog, MenuBtn, Modal, SplitBtn } from './ui/widgets';
 import { ProgressBar } from './ui/progress';
 import { cloudApi, cloudError, CloudError, type CloudProject, type CloudProjectDetail, type CloudUser } from './cloud/api';
@@ -497,7 +498,7 @@ export default function App({ cloudUser, onLogout }: { cloudUser?: CloudUser; on
   }, [expanded, doc.entities, tool, routeMode]);
   const [routeA, setRouteA] = useState<RouteEnd | null>(null);
   const [routeMsg, setRouteMsg] = useState<{ msg: string; ok: boolean | null }>({ msg: '', ok: null });
-  const [dialog, setDialog] = useState<'new' | 'export' | 'cnc' | 'panelize' | 'about' | 'inventory' | 'stats' | 'imgimport' | 'uib' | 'colors' | 'grid' | 'close' | 'cloud' | 'account' | 'board-preview' | 'autoplace' | 'settings' | null>(null);
+  const [dialog, setDialog] = useState<'new' | 'export' | 'cnc' | 'panelize' | 'about' | 'inventory' | 'stats' | 'imgimport' | 'uib' | 'colors' | 'grid' | 'close' | 'cloud' | 'account' | 'board-preview' | 'autoplace' | 'settings' | 'tour' | null>(null);
   // подтверждение опасного действия (удаление по настройке «Подтверждать удаление»)
   const [confirmAsk, setConfirmAsk] = useState<{ title: string; text: string; ok: string; onOk: () => void } | null>(null);
   const [boardPreviewTab, setBoardPreviewTab] = useState<'2d' | '3d'>('2d');
@@ -2252,6 +2253,7 @@ export default function App({ cloudUser, onLogout }: { cloudUser?: CloudUser; on
       case 'app.colors': setDialog('colors'); return;
       case 'app.uib': setDialog('uib'); return;
       case 'app.about': setDialog('about'); return;
+      case 'app.tour': setDialog('tour'); return;
       case 'app.settings': setDialog('settings'); return;
       case 'app.cancel': finishOrCancel(); return;
       default: return;
@@ -3122,6 +3124,7 @@ export default function App({ cloudUser, onLogout }: { cloudUser?: CloudUser; on
               { icon: 'inventory', label: 'Статистика платы…', onClick: () => setDialog('stats') },
               { icon: 'png', label: 'Изображение → шелкография…', onClick: () => setDialog('imgimport') },
               { sep: true },
+              { icon: 'gear', label: '🎓 Обучение — туры по функциям…', onClick: () => setDialog('tour') },
               { icon: 'gear', label: 'Настройки…', kbd: 'Ctrl+,', onClick: () => setDialog('settings') },
             ]}
           />
@@ -3224,6 +3227,7 @@ export default function App({ cloudUser, onLogout }: { cloudUser?: CloudUser; on
             theme === 'dark' ? 'Включить светлую тему' : 'Включить тёмную тему',
             () => setTheme(theme === 'dark' ? 'light' : 'dark'))}
           {tb('about', 'О программе', () => setDialog('about'))}
+          <button type="button" className="tb-btn tour-launch-btn" title="Обучение — короткие туры по функциям приложения" onClick={() => setDialog('tour')}>Обучение</button>
         </div>
       ),
     };
@@ -3789,6 +3793,7 @@ export default function App({ cloudUser, onLogout }: { cloudUser?: CloudUser; on
         />
       )}
       {dialog === 'about' && <AboutDialog version={appVer} onClose={() => setDialog(null)} />}
+      {dialog === 'tour' && <TourDialog onClose={() => setDialog(null)} />}
       {cloudUser && dialog === 'cloud' && <CloudProjectsDialog
         current={activeCloud} docName={doc.name} status={cloudStatus} statusMessage={cloudMessage}
         onClose={() => setDialog(null)} onCreate={createCloud} onOpen={loadCloud} onSave={saveCloud}
