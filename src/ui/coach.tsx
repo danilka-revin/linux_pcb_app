@@ -822,10 +822,9 @@ export function LearnBar({ onStart, onSkip }: {
     <div className="learn-bar" aria-label="Обучение">
       <span className="learn-bar-ico" aria-hidden="true">🐝</span>
       <span className="learn-bar-text">
-        <b>{next.offer ?? `Урок «${next.title}»`}</b>
+        <b>{next.offer ? `${next.offer}?` : `Следующий урок: «${next.title}»`}</b>
         <small>
-          {left.length} {plural(left.length, 'урок', 'урока', 'уроков')} по минуте, прямо на вашей плате ·
-          подсвечиваем, куда нажать, и ждём действия
+          {next.blurb} · {left.length} {plural(left.length, 'урок', 'урока', 'уроков')}
           {passed > 0 ? ` · пройдено ${passed} из ${PRACTICES.length}` : ''}
         </small>
       </span>
