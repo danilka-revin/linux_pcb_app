@@ -51,6 +51,16 @@ import {
   LayersPanel, PropsPanel, TOOLS,
   type Defs, type ToolId,
 } from './ui/panels';
+// Окно настроек: отдельное (перемещаемое) окно со всеми параметрами программы.
+import { SettingsWindow } from './ui/settings';
+// Общие настройки программы (автосохранение, вид, экспорт) и конфигурация интерфейса.
+import { DEFAULT_PREFS, usePrefs } from './ui/prefs';
+// Горячие клавиши настраиваются пользователем (окно настроек → «Горячие клавиши»).
+import { comboOf, reverseHotkeys } from './ui/hotkeys';
+import {
+  DEFAULT_SIDES, LEFT_TAB_NAMES, LEFT_TABS, clampW, loadUi, normalizeSides, saveUi,
+  type LeftTabId, type UiState,
+} from './ui/uiconf';
 import { GenPanel, MacroTree, genSpecText } from './ui/genpanel';
 import { GroupsPanel } from './ui/groups';
 import { FootprintCatalog, type CatalogSelection } from './ui/catalog';
@@ -61,7 +71,7 @@ import { GridDialog, GridQuickPanel, GridToolbar, gridOf } from './ui/grid';
 import { LibPreviewDialog } from './ui/libpreview';
 import { applyCustomColors, loadCustomColors, saveCustomColors, type CustomColors } from './ui/palette';
 import { UiBuilderDialog, useUpdater } from './ui/updater';
-import { MenuBtn, Modal, SplitBtn } from './ui/widgets';
+import { ConfirmDialog, MenuBtn, Modal, SplitBtn } from './ui/widgets';
 import { ProgressBar } from './ui/progress';
 import { cloudApi, cloudError, CloudError, type CloudProject, type CloudProjectDetail, type CloudUser } from './cloud/api';
 import { CloudAccountDialog, CloudProjectsDialog, cloudSaveLabel, type CloudSaveState } from './cloud/projects';
@@ -133,8 +143,10 @@ const EMPTY_MARKS: TrackClearanceViolation[] = [];
  * поэтому на очень крупных платах (тысячи примитивов) сто копий съедали память
  * и роняли слабые устройства. Мелкие платы получают полные 100 шагов, крупные —
  * меньше (не ниже 12), чтобы отмена всегда работала и редактор не падал.
+ * Значение из настроек («Шагов отмены») перекрывает расчёт; 0 — автоматически.
  */
-function historyLimit(doc: M.Doc): number {
+function historyLimit(doc: M.Doc, depth = 0): number {
+  if (depth > 0) return depth;
   const n = doc.entities.length;
   if (n <= 800) return 100;
   return Math.max(12, Math.round(80_000 / n));
@@ -214,7 +226,6 @@ interface Detail {
   macroId?: string;
 }
 const DEFS_KEY = 'lauaut.defs';
-const UI_KEY = 'lauaut.ui';
 
 /** Группы кнопок тулбара, настраиваемые конструктором интерфейса. */
 const GROUP_DEFS: { id: string; label: string }[] = [
@@ -257,71 +268,6 @@ const TOOL_KEYS: Partial<Record<ToolId2, string>> = {
   line: '6', text: '7', ruler: '8', route: '9', probe: '0',
   cut: 'X', solder: 'S',
 };
-
-/** Вкладки левой колонки: «Слои», «Детали» (генератор + личная библиотека) и «Группы». */
-const LEFT_TABS: { id: LeftTabId; label: string }[] = [
-  { id: 'layers', label: 'Слои' },
-  { id: 'lib', label: 'Детали' },
-  { id: 'groups', label: 'Группы' },
-];
-type LeftTabId = 'layers' | 'lib' | 'groups';
-const LEFT_TAB_NAMES: Record<string, string> = Object.fromEntries(LEFT_TABS.map((t) => [t.id, t.label]));
-
-/** Настройки боковых колонок. */
-interface SidesConf {
-  /** ширина левой колонки, px */
-  leftW: number;
-  /** ширина правой колонки, px */
-  rightW: number;
-  /** какие вкладки есть в левой колонке (порядок = порядок вкладок) */
-  leftTabs: LeftTabId[];
-  /** показывать ли правую колонку («Свойства») */
-  showRight: boolean;
-}
-
-/** Сохранённая конфигурация интерфейса. */
-interface UiState {
-  /** порядок групп тулбара */
-  ids: string[];
-  /** скрытые группы тулбара */
-  hidden: string[];
-  /** боковые панели */
-  sides?: SidesConf;
-}
-
-const DEFAULT_SIDES: SidesConf = { leftW: 250, rightW: 274, leftTabs: ['layers', 'lib', 'groups'], showRight: true };
-const normalizeSides = (s?: Partial<SidesConf>): SidesConf => ({
-  leftW: s?.leftW ?? DEFAULT_SIDES.leftW,
-  rightW: s?.rightW ?? DEFAULT_SIDES.rightW,
-  leftTabs: (s?.leftTabs ?? DEFAULT_SIDES.leftTabs).filter((t) => LEFT_TABS.some((x) => x.id === t)),
-  showRight: s?.showRight ?? DEFAULT_SIDES.showRight,
-});
-
-function loadUi(): UiState {
-  try {
-    const raw = localStorage.getItem(UI_KEY);
-    if (raw) {
-      const d = JSON.parse(raw);
-      if (d && Array.isArray(d.ids) && Array.isArray(d.hidden)) {
-        return {
-          ids: d.ids.filter((id: string) => GROUP_DEFS.some((g) => g.id === id)),
-          // закреплённые группы очищаем из сохранённого списка скрытых
-          hidden: d.hidden
-            .filter((id: string) => GROUP_DEFS.some((g) => g.id === id))
-            .filter((id: string) => !PINNED_GROUPS.includes(id)),
-          sides: normalizeSides(d.sides),
-        };
-      }
-    }
-  } catch { /* ignore */ }
-  return { ids: [], hidden: [], sides: normalizeSides() };
-}
-
-const SAVE_UI = (c: UiState) => {
-  try { localStorage.setItem(UI_KEY, JSON.stringify(c)); } catch { /* ignore */ }
-};
-
-const clampW = (w: number) => Math.max(160, Math.min(650, Math.round(w) || 250));
 
 const DEFAULT_DEFS: Defs = {
   grid: 1.27,
@@ -385,7 +331,8 @@ function rememberDraft(userId: string, document: M.Doc): void {
   try { sessionStorage.setItem(draftKey(userId), JSON.stringify(document)); } catch { /* лимит браузера */ }
 }
 
-function loadDoc(userId?: string): M.Doc {
+function loadDoc(userId?: string, restore = true): M.Doc {
+  if (!restore) return M.newBoard(100, 80, 'Плата');
   try {
     // На общем сервере не пишем приватную плату в общий localStorage компьютера:
     // черновик живёт только в этой вкладке и удаляется при выходе из аккаунта.
@@ -414,7 +361,13 @@ const baseId = (id: string): string => id.split(':')[0];
 
 export default function App({ cloudUser, onLogout }: { cloudUser?: CloudUser; onLogout?: () => Promise<void> } = {}) {
   // ---------------- состояние ----------------
-  const [doc, setDoc] = useState<M.Doc>(() => loadDoc(cloudUser?.id));
+  // Общие настройки программы читаются первыми: от них зависит, восстанавливать
+  // ли прошлую плату. Дальше к ним обращаются и обработчики мыши (через prefsRef),
+  // поэтому объект настроек не должен попадать в списки зависимостей на каждый кадр.
+  const [prefs, setPrefs] = usePrefs();
+  const prefsRef = useRef(prefs);
+  prefsRef.current = prefs;
+  const [doc, setDoc] = useState<M.Doc>(() => loadDoc(cloudUser?.id, prefs.restoreDraft));
   const [activeCloud, setActiveCloud] = useState<CloudProject | null>(null);
   const activeCloudRef = useRef<CloudProject | null>(null);
   activeCloudRef.current = activeCloud;
@@ -525,17 +478,19 @@ export default function App({ cloudUser, onLogout }: { cloudUser?: CloudUser; on
   }, [expanded, doc.entities, tool, routeMode]);
   const [routeA, setRouteA] = useState<RouteEnd | null>(null);
   const [routeMsg, setRouteMsg] = useState<{ msg: string; ok: boolean | null }>({ msg: '', ok: null });
-  const [dialog, setDialog] = useState<'new' | 'export' | 'cnc' | 'panelize' | 'about' | 'inventory' | 'uib' | 'colors' | 'grid' | 'close' | 'cloud' | 'account' | 'board-preview' | 'autoplace' | null>(null);
+  const [dialog, setDialog] = useState<'new' | 'export' | 'cnc' | 'panelize' | 'about' | 'inventory' | 'uib' | 'colors' | 'grid' | 'close' | 'cloud' | 'account' | 'board-preview' | 'autoplace' | 'settings' | null>(null);
+  // подтверждение опасного действия (удаление по настройке «Подтверждать удаление»)
+  const [confirmAsk, setConfirmAsk] = useState<{ title: string; text: string; ok: string; onOk: () => void } | null>(null);
   const [boardPreviewTab, setBoardPreviewTab] = useState<'2d' | '3d'>('2d');
-  const [uiConf, setUiConf] = useState<UiState>(loadUi);
+  const [uiConf, setUiConf] = useState<UiState>(() => loadUi(GROUP_ORDER, PINNED_GROUPS));
   // сохраняем конфигурацию интерфейса сразу (не autosave через таймаут)
   const persistUi = useCallback((c: UiState) => {
     setUiConf(c);
-    SAVE_UI(c);
+    saveUi(c);
   }, []);
   // версия сборки (сервер отдаёт /version из dist/version.json)
   const [appVer, setAppVer] = useState<string | null>(null);
-  const upd = useUpdater(appVer, !cloudUser);
+  const upd = useUpdater(appVer, !cloudUser && prefs.checkUpdates);
   // «Тест цепи»: подсвеченная электрическая цепь (все связные пятки и дорожки)
   const [probe, setProbe] = useState<{
     entId: string; ents: Set<string>;
@@ -612,7 +567,7 @@ export default function App({ cloudUser, onLogout }: { cloudUser?: CloudUser; on
   // ---------------- история ----------------
   const commit = useCallback((next: M.Doc) => {
     past.current.push(doc);
-    if (past.current.length > historyLimit(doc)) past.current.shift();
+    if (past.current.length > historyLimit(doc, prefsRef.current.historyDepth)) past.current.shift();
     future.current = [];
     setDoc(next);
   }, [doc]);
@@ -648,7 +603,10 @@ export default function App({ cloudUser, onLogout }: { cloudUser?: CloudUser; on
   }, [doc, pruneSel]);
 
   // ---------------- автосохранение ----------------
+  // Пишет черновик не сразу, а когда правки прекратились: интервал задаётся
+  // в настройках («Интервал автосохранения»), выключить — там же.
   useEffect(() => {
+    if (!prefs.autosave) return;
     const t = setTimeout(() => {
       if (docRef.current !== doc) return;
       const ric = (globalThis as any).requestIdleCallback as any;
@@ -657,9 +615,9 @@ export default function App({ cloudUser, onLogout }: { cloudUser?: CloudUser; on
       };
       if (ric) ric(save, { timeout: 1000 });
       else save();
-    }, 600);
+    }, prefs.autosaveMs);
     return () => clearTimeout(t);
-  }, [doc, cloudUser]);
+  }, [doc, cloudUser, prefs.autosave, prefs.autosaveMs]);
   useEffect(() => {
     try { localStorage.setItem(DEFS_KEY, JSON.stringify(defs)); } catch { /* ignore */ }
   }, [defs]);
@@ -667,10 +625,12 @@ export default function App({ cloudUser, onLogout }: { cloudUser?: CloudUser; on
   // применяем тему: CSS-переменные на <html> + палитра холста + пользовательские цвета
   useEffect(() => {
     document.documentElement.dataset.theme = theme;
+    // «Компактный интерфейс» — плотнее шапка, панели и поля (см. styles.css)
+    document.documentElement.dataset.compact = prefs.compactUi ? '1' : '0';
     setCanvasTheme(theme);
     applyCustomColors(colors, theme);
     try { localStorage.setItem(THEME_KEY, theme); } catch { /* ignore */ }
-  }, [theme, colors]);
+  }, [theme, colors, prefs.compactUi]);
 
   // ---------------- размер холста ----------------
   useEffect(() => {
@@ -1093,7 +1053,7 @@ export default function App({ cloudUser, onLogout }: { cloudUser?: CloudUser; on
     commit(nd);
   }, [doc, commit, selBbox]);
 
-  const deleteSel = useCallback(() => {
+  const doDeleteSel = useCallback(() => {
     if (!selRef.current.size) return;
     const nd = M.cloneDoc(doc);
     nd.entities = nd.entities.filter((e) => !selRef.current.has(e.id));
@@ -1103,6 +1063,23 @@ export default function App({ cloudUser, onLogout }: { cloudUser?: CloudUser; on
     setSel(new Set());
     setEditNode(null);
   }, [doc, commit]);
+
+  const deleteSel = useCallback(() => {
+    if (!selRef.current.size) return;
+    // Настройка «Подтверждать удаление»: сначала вопрос, плату трогаем только
+    // после ответа — история отмены не замусоривается лишними шагами.
+    if (prefsRef.current.confirmDelete) {
+      const n = selRef.current.size;
+      setConfirmAsk({
+        title: 'Удалить выделенное?',
+        text: `Будет удалено элементов: ${n}. Действие можно отменить (Ctrl+Z).`,
+        ok: 'Удалить',
+        onOk: () => { setConfirmAsk(null); doDeleteSel(); },
+      });
+      return;
+    }
+    doDeleteSel();
+  }, [doDeleteSel]);
 
   const duplicateSel = useCallback(() => {
     if (!selRef.current.size) return;
@@ -2019,7 +1996,7 @@ export default function App({ cloudUser, onLogout }: { cloudUser?: CloudUser; on
     if (!d) return;
     if (d.mode === 'move' && d.moved) {
       past.current.push(d.doc0);
-      if (past.current.length > historyLimit(d.doc0)) past.current.shift();
+      if (past.current.length > historyLimit(d.doc0, prefsRef.current.historyDepth)) past.current.shift();
       future.current = [];
       // финальный коммит — только один раз, а не каждый кадр
       const nd = M.cloneDoc(d.doc0);
@@ -2030,7 +2007,7 @@ export default function App({ cloudUser, onLogout }: { cloudUser?: CloudUser; on
       setDragTick(t => t + 1);
     } else if (d.mode === 'node' && d.moved && d.preview) {
       past.current.push(d.doc0);
-      if (past.current.length > historyLimit(d.doc0)) past.current.shift();
+      if (past.current.length > historyLimit(d.doc0, prefsRef.current.historyDepth)) past.current.shift();
       future.current = [];
       const nd = M.cloneDoc(d.doc0);
       const t = nd.entities.find((x) => x.id === d.entId);
@@ -2091,11 +2068,22 @@ export default function App({ cloudUser, onLogout }: { cloudUser?: CloudUser; on
   };
 
   const onWheel = (e: React.WheelEvent<HTMLCanvasElement>) => {
+    // Настройки: колесом можно не масштабировать, а инвертировать или сменить шаг.
+    const p = prefsRef.current;
+    if (!p.wheelZoom) return;
+    const step = p.zoomStep > 1.01 ? p.zoomStep : 1.28;
+    const up = p.invertWheel ? e.deltaY > 0 : e.deltaY < 0;
     const { px, py } = getPos(e);
-    zoomAt(px, py, e.deltaY < 0 ? 1.28 : 1 / 1.28);
+    zoomAt(px, py, up ? step : 1 / step);
   };
 
   // ---------------- клавиатура ----------------
+  /**
+   * «сочетание → действие» из настроек. Пересобирается при смене привязок:
+   * пользователь назначает клавишу в окне настроек — и она сразу работает.
+   */
+  const hotkeyIndex = useMemo(() => reverseHotkeys(prefs.hotkeys), [prefs.hotkeys]);
+
   const keyHandler = useCallback((e: KeyboardEvent) => {
     if (routeWorker.current) {
       if (e.code === 'Escape') { routeWorker.current.terminate(); routeWorker.current = null; setRouting(null); setRouteMsg({ msg: 'Трассировка отменена. Плата не изменена.', ok: null }); }
@@ -2104,50 +2092,70 @@ export default function App({ cloudUser, onLogout }: { cloudUser?: CloudUser; on
     if (dialog || preview || routeVariants) return;   // окно открыто — плату не трогаем
     const t = e.target as HTMLElement;
     if (t && (t.tagName === 'INPUT' || t.tagName === 'TEXTAREA' || t.tagName === 'SELECT' || t.isContentEditable)) return;
-    const ctrl = e.ctrlKey || e.metaKey;
 
-    if (ctrl) {
-      switch (e.code) {
-        case 'KeyZ': if (e.shiftKey) redo(); else undo(); e.preventDefault(); return;
-        case 'KeyY': redo(); e.preventDefault(); return;
-        case 'KeyS': savePrimary(); e.preventDefault(); return;
-        case 'KeyO': fileRef.current?.click(); e.preventDefault(); return;
-        case 'KeyA': setSel(new Set(doc.entities.map((en) => en.id))); e.preventDefault(); return;
-        case 'KeyC': copySel(); e.preventDefault(); return;
-        case 'KeyV': startPaste(); e.preventDefault(); return;
-        case 'KeyD': duplicateSel(); e.preventDefault(); return;
-        case 'KeyE': setDialog('export'); e.preventDefault(); return;
-        // Ctrl+G — настройки сетки, Ctrl+Shift+G — сгруппировать выделенное
-        case 'KeyG': if (e.shiftKey) groupSel(); else setDialog('grid'); e.preventDefault(); return;
-        case 'KeyU': if (e.shiftKey) { ungroupSel(); e.preventDefault(); } return;
-        default: return;
-      }
+    // Какое действие стоит за нажатым сочетанием — решает настройка
+    // «Горячие клавиши» (окно настроек), а не жёстко прописанный switch.
+    const combo = comboOf(e);
+    if (!combo) return;
+    const action = hotkeyIndex.get(combo);
+    if (!action) return;
+    e.preventDefault();
+
+    // Инструменты: действие вида tool.<id> — просто переключает инструмент
+    if (action.startsWith('tool.')) {
+      const id = action.slice(5) as ToolId2;
+      if (TOOLS.some((x) => x.id === id)) setTool(id);
+      return;
     }
+
     // сдвиг стрелками: шаг сетки, Shift — в 10 раз больше, Alt — в 10 раз меньше
     const stepNudge = defs.grid * (e.shiftKey ? 10 : e.altKey ? 0.1 : 1);
-    switch (e.code) {
-      case 'Escape': finishOrCancel(); break;
-      case 'Delete': case 'Backspace':
+    // шаг масштабирования — общая настройка (колесо мыши и клавиши ±)
+    const zoomStep = prefsRef.current.zoomStep > 1.01 ? prefsRef.current.zoomStep : 1.3;
+    const zoomBy = (f: number) => zoomAt(size.w / 2, size.h / 2, f);
+
+    switch (action) {
+      // ---------------- файл ----------------
+      case 'file.new': setDialog('new'); return;
+      case 'file.open': fileRef.current?.click(); return;
+      case 'file.save': savePrimary(); return;
+      case 'file.export': setDialog('export'); return;
+      case 'file.panelize': setDialog('panelize'); return;
+      case 'file.autoplace': setDialog('autoplace'); return;
+      case 'file.cnc': setDialog('cnc'); return;
+      case 'file.inventory': setDialog('inventory'); return;
+
+      // ---------------- правка ----------------
+      case 'edit.undo': undo(); return;
+      case 'edit.redo': redo(); return;
+      case 'edit.selectAll': setSel(new Set(doc.entities.map((en) => en.id))); return;
+      case 'edit.copy': copySel(); return;
+      case 'edit.paste': startPaste(); return;
+      case 'edit.duplicate': duplicateSel(); return;
+      case 'edit.delete':
         // В «Выборе» Del удаляет узел, если он выбран, иначе — элементы.
         if (tool === 'select' && editNode != null && editEnt) deleteEditNode(editEnt.id, editNode);
         else deleteSel();
-        break;
-      case 'KeyR':
+        return;
+      case 'edit.rotate':
         if (place) setPlaceRot((r) => (r + 90) % 360);
         else rotateSel();
-        break;
-      case 'KeyM': mirrorSel(); break;
-      case 'KeyQ': if (place) setPlaceSide((s) => (s === 'top' ? 'bottom' : 'top')); break;
-      // I — строка генератора: создать/поправить деталь, не снимая рук с клавиатуры
-      case 'KeyI':
-        if (!e.ctrlKey && !e.metaKey && !e.altKey && tool !== 'route') {
-          setLeftTab('lib'); setLibTab('gen');
-          const el = document.getElementById('gen-query') as HTMLInputElement | null;
-          el?.focus(); el?.select();
-          e.preventDefault();
-        }
-        break;
-      case 'KeyL': {
+        return;
+      case 'edit.mirror': mirrorSel(); return;
+      case 'edit.side': if (place) setPlaceSide((s) => (s === 'top' ? 'bottom' : 'top')); return;
+      case 'edit.group': groupSel(); return;
+      case 'edit.ungroup': ungroupSel(); return;
+      case 'edit.nudgeLeft': nudge(-stepNudge, 0); return;
+      case 'edit.nudgeRight': nudge(stepNudge, 0); return;
+      case 'edit.nudgeUp': nudge(0, stepNudge); return;
+      case 'edit.nudgeDown': nudge(0, -stepNudge); return;
+
+      // ---------------- вид ----------------
+      case 'view.fit': fit(); return;
+      case 'view.zoomIn': zoomBy(zoomStep); return;
+      case 'view.zoomOut': zoomBy(1 / zoomStep); return;
+      case 'view.mirrorView': setView((v) => ({ ...v, mir: !v.mir })); return;
+      case 'view.layer': {
         const other: 'k1' | 'k2' = activeCu === 'k1' ? 'k2' : 'k1';
         if (draft?.t === 'track') {
           // точка смены слоя на текущей позиции курсора
@@ -2157,42 +2165,39 @@ export default function App({ cloudUser, onLogout }: { cloudUser?: CloudUser; on
           });
         }
         setActiveCu(other);
-        break;
+        return;
       }
-      case 'KeyF': fit(); break;
-      case 'Equal': case 'NumpadAdd': zoomAt(size.w / 2, size.h / 2, 1.3); break;
-      case 'Minus': case 'NumpadSubtract': zoomAt(size.w / 2, size.h / 2, 1 / 1.3); break;
-      case 'Digit1': setTool('select'); break;
-      case 'Digit2': setTool('track'); break;
-      case 'Digit3': setTool('pad'); break;
-      case 'Digit4': setTool('via'); break;
-      case 'Digit5': setTool('hole'); break;
-      case 'Digit6': setTool('line'); break;
-      case 'Digit7': setTool('text'); break;
-      case 'Digit8': setTool('ruler'); break;
-      case 'Digit9': setTool('route'); break;
-      case 'Digit0': setTool('probe'); break;
-      case 'KeyX': setTool('cut'); break;
-      case 'KeyS': setTool('solder'); break;
-      case 'ArrowLeft': nudge(-stepNudge, 0); e.preventDefault(); break;
-      case 'ArrowRight': nudge(stepNudge, 0); e.preventDefault(); break;
-      case 'ArrowUp': nudge(0, stepNudge); e.preventDefault(); break;
-      case 'ArrowDown': nudge(0, -stepNudge); e.preventDefault(); break;
-      // сетка: G — следующий шаг, Shift+G — привязка, H — предыдущий шаг
-      case 'KeyG':
-        if (e.ctrlKey || e.metaKey) setDialog('grid');
-        else if (e.shiftKey) setDefs({ snapOn: !defs.snapOn });
-        else setDefs({ grid: cycleGrid(defs.grid, 1), gridUnit: defs.gridUnit });
-        e.preventDefault();
-        break;
-      case 'KeyH': setDefs({ grid: cycleGrid(defs.grid, -1) }); e.preventDefault(); break;
-      default: break;
+      case 'view.gridNext': setDefs({ grid: cycleGrid(defs.grid, 1), gridUnit: defs.gridUnit }); return;
+      case 'view.gridPrev': setDefs({ grid: cycleGrid(defs.grid, -1) }); return;
+      case 'view.snapToggle': setDefs({ snapOn: !defs.snapOn }); return;
+      case 'view.drc': setDefs({ drcEnabled: !defs.drcEnabled }); return;
+
+      // ---------------- окна и программа ----------------
+      // I — строка генератора: создать/поправить деталь, не снимая рук с клавиатуры
+      case 'gen.focus':
+        if (tool !== 'route') {
+          setLeftTab('lib'); setLibTab('gen');
+          const el = document.getElementById('gen-query') as HTMLInputElement | null;
+          el?.focus(); el?.select();
+        }
+        return;
+      case 'app.preview': setDialog('board-preview'); return;
+      case 'app.preview2d': setBoardPreviewTab('2d'); setDialog('board-preview'); return;
+      case 'app.preview3d': setBoardPreviewTab('3d'); setDialog('board-preview'); return;
+      case 'app.theme': setTheme((t) => (t === 'dark' ? 'light' : 'dark')); return;
+      case 'app.colors': setDialog('colors'); return;
+      case 'app.uib': setDialog('uib'); return;
+      case 'app.about': setDialog('about'); return;
+      case 'app.settings': setDialog('settings'); return;
+      case 'app.cancel': finishOrCancel(); return;
+      default: return;
     }
   }, [
-    dialog, routeVariants, doc, undo, redo, savePrimary, copySel, startPaste, duplicateSel, finishOrCancel,
-    deleteSel, place, preview, rotateSel, mirrorSel, draft, activeCu, mouse.wx, mouse.wy, fit,
-    zoomAt, size, nudge, defs.grid, defs.gridUnit, defs.snapOn, setDefs, setTool, groupSel, ungroupSel,
-    tool, editEnt, editNode, deleteEditNode,
+    hotkeyIndex, dialog, routeVariants, doc, undo, redo, savePrimary, copySel, startPaste,
+    duplicateSel, finishOrCancel, deleteSel, place, preview, rotateSel, mirrorSel, draft,
+    activeCu, mouse.wx, mouse.wy, fit, zoomAt, size, nudge, defs.grid, defs.gridUnit,
+    defs.snapOn, defs.drcEnabled, setDefs, setTool, groupSel, ungroupSel, tool, editEnt,
+    editNode, deleteEditNode, setTheme,
   ]);
 
   const keyRef = useRef(keyHandler);
@@ -2852,14 +2857,17 @@ export default function App({ cloudUser, onLogout }: { cloudUser?: CloudUser; on
         ctx.setLineDash([]);
       }
 
-      // перекрестие курсора
+      // перекрестие курсора (обе части — из настроек «Холст и курсор»)
       if (mouse.px >= 0 && mouse.px <= size.w && mouse.py >= 0 && mouse.py <= size.h) {
-        ctx.strokeStyle = CANVAS_UI.crosshair;
-        ctx.lineWidth = 1;
-        ctx.beginPath();
-        ctx.moveTo(0, mouse.py + 0.5); ctx.lineTo(size.w, mouse.py + 0.5);
-        ctx.moveTo(mouse.px + 0.5, 0); ctx.lineTo(mouse.px + 0.5, size.h);
-        ctx.stroke();
+        if (prefsRef.current.crosshair) {
+          ctx.strokeStyle = CANVAS_UI.crosshair;
+          ctx.lineWidth = 1;
+          ctx.beginPath();
+          ctx.moveTo(0, mouse.py + 0.5); ctx.lineTo(size.w, mouse.py + 0.5);
+          ctx.moveTo(mouse.px + 0.5, 0); ctx.lineTo(mouse.px + 0.5, size.h);
+          ctx.stroke();
+        }
+        if (!prefsRef.current.cursorLabel) { noteFrame(performance.now() - t0); return; }
         const lbl = `X ${M.fmt(mouse.wx)}  Y ${M.fmt(mouse.wy)}`;
         ctx.font = '10px monospace';
         ctx.fillStyle = CANVAS_UI.labelBg;
@@ -2887,6 +2895,16 @@ export default function App({ cloudUser, onLogout }: { cloudUser?: CloudUser; on
 
   const selEnts = useMemo(() => doc.entities.filter((e) => sel.has(e.id)), [doc, sel]);
   const toolMeta = TOOLS.find((t) => t.id === tool)!;
+  /** Координата в строке состояния: мм, mil или обе системы (настройка «Единицы координат»). */
+  const statusCoord = (mm: number): ReactNode => {
+    const u = prefs.statusUnits;
+    return (
+      <>
+        <b>{M.fmt(mm)}</b>{u !== 'mil' && ' мм'}
+        {u !== 'mm' && <><b> {M.fmt(M.mm2mil(mm), 1)}</b> mil</>}
+      </>
+    );
+  };
   const toggleHidden = useCallback((l: M.LayerId) =>
     setHidden((h) => { const n = new Set(h); if (n.has(l)) n.delete(l); else n.add(l); return n; }), []);
 
@@ -2913,7 +2931,7 @@ export default function App({ cloudUser, onLogout }: { cloudUser?: CloudUser; on
     try {
       (cloudUser ? sessionStorage : localStorage).setItem(draftKey(cloudUser?.id), JSON.stringify(doc));
       localStorage.setItem(DEFS_KEY, JSON.stringify(defs));
-      SAVE_UI(uiConf);
+      saveUi(uiConf);
     } catch { /* приватный режим / переполненное хранилище */ }
 
     if (window.psbees?.closeApp) {
@@ -2958,6 +2976,8 @@ export default function App({ cloudUser, onLogout }: { cloudUser?: CloudUser; on
               { icon: 'panel', label: 'Размножить плату (панелизация)…', onClick: () => setDialog('panelize') },
               { sep: true },
               { icon: 'inventory', label: 'Перечень площадок и отверстий…', onClick: () => setDialog('inventory') },
+              { sep: true },
+              { icon: 'gear', label: 'Настройки…', kbd: 'Ctrl+,', onClick: () => setDialog('settings') },
             ]}
           />
         </div>
@@ -3066,6 +3086,7 @@ export default function App({ cloudUser, onLogout }: { cloudUser?: CloudUser; on
     const quickActions = (
       <div className="tb-group toolbar-quick" key="quick-actions" aria-label="Обновление и настройки интерфейса">
         {!cloudUser && updButton}
+        {tb('gear', 'Настройки программы (Ctrl+,) — отдельным окном', () => setDialog('settings'))}
         {tb('uib', 'Конструктор интерфейса', () => setDialog('uib'))}
         {tb('palette', 'Настроить цвета интерфейса', () => setDialog('colors'))}
       </div>
@@ -3114,7 +3135,7 @@ export default function App({ cloudUser, onLogout }: { cloudUser?: CloudUser; on
 
   // ---------------- док инструментов у холста ----------------
   // Группа «Инструменты» конструктора интерфейса управляет видимостью дока.
-  const showDock = !uiConf.hidden.includes('tools');
+  const showDock = prefs.showDock && !uiConf.hidden.includes('tools');
   const toolDock = useMemo(() => (
     <div className="tool-dock" role="toolbar" aria-label="Инструменты">
       {TOOL_GROUPS.map((grp, gi) => (
@@ -3351,6 +3372,89 @@ export default function App({ cloudUser, onLogout }: { cloudUser?: CloudUser; on
     editEnt, editNode, trackMsg, patchEditNode, deleteEditNode, branchFromSelectedNode, boardClearance, commit, size,
   ]);
 
+  // ---------------- окно настроек (отдельное окно) ----------------
+  /**
+   * Настоящее отдельное окно: открываем редактор второй раз с хэшем #settings —
+   * в браузере это всплывающее окно, в Electron (Windows) — отдельное окно программы.
+   * Если всплывающие окна запрещены, настройки просто остаются в текущем окне.
+   */
+  const openSettingsWindow = useCallback(() => {
+    try {
+      const w = window.open(`${location.pathname}#settings`, 'psbees-settings', 'width=980,height=700');
+      if (w) { setDialog(null); return; }
+    } catch { /* всплывающие окна запрещены — останемся в этом окне */ }
+    setDialog('settings');
+  }, []);
+
+  // Если страницу открыли как «окно настроек» (#settings), сразу показываем их.
+  useEffect(() => {
+    if (typeof location !== 'undefined' && location.hash === '#settings') setDialog('settings');
+  }, []);
+
+  /** Все настройки одним файлом: программа, инструменты, интерфейс, цвета. */
+  const exportSettings = useCallback(() => {
+    const data = {
+      app: 'psbees', kind: 'settings', version: 1,
+      prefs, defs, colors, theme,
+      ui: { ids: uiConf.ids, hidden: uiConf.hidden, sides: sidesConf },
+    };
+    try {
+      download('psbees-settings.json', new Blob([JSON.stringify(data, null, 2)], { type: 'application/json' }));
+    } catch { alert('Не удалось сохранить файл настроек.'); }
+  }, [prefs, defs, colors, theme, uiConf, sidesConf]);
+
+  const importSettings = useCallback((file: File) => {
+    file.text().then((txt) => {
+      let ok = false;
+      try {
+        const d = JSON.parse(txt);
+        if (!d || typeof d !== 'object') throw new Error('формат');
+        if (d.prefs) { setPrefs({ ...DEFAULT_PREFS, ...d.prefs }); ok = true; }
+        if (d.defs) { setDefs({ ...DEFAULT_DEFS, ...d.defs }); ok = true; }
+        if (d.ui) {
+          persistUi({
+            ids: Array.isArray(d.ui.ids) ? d.ui.ids.filter((x: string) => GROUP_DEFS.some((g) => g.id === x)) : [],
+            hidden: Array.isArray(d.ui.hidden) ? d.ui.hidden.filter((x: string) => GROUP_DEFS.some((g) => g.id === x)) : [],
+            sides: normalizeSides(d.ui.sides),
+          });
+          ok = true;
+        }
+        if (d.colors && typeof d.colors === 'object') { setColors(d.colors); ok = true; }
+        if (d.theme === 'dark' || d.theme === 'light') { setTheme(d.theme); ok = true; }
+      } catch { /* ниже — сообщение */ }
+      if (!ok) alert('Не удалось прочитать настройки из файла.');
+    }).catch(() => alert('Не удалось прочитать файл.'));
+  }, [setPrefs, setDefs, persistUi, setColors, setTheme]);
+
+  /** Сброс всех настроек: программа, инструменты, интерфейс и цвета. */
+  const resetSettings = useCallback(() => {
+    setPrefs({ ...DEFAULT_PREFS });
+    setDefs({ ...DEFAULT_DEFS });
+    setColors({});
+    persistUi({ ids: [], hidden: [], sides: DEFAULT_SIDES });
+  }, [setPrefs, setDefs, setColors, persistUi]);
+
+  /** Удалить черновик платы из браузера и начать с чистой платы. */
+  const clearDraft = useCallback(() => {
+    setConfirmAsk({
+      title: 'Очистить черновик платы?',
+      text: 'Сохранённая копия текущей платы будет удалена из этого браузера, откроется чистая плата. '
+        + 'Если проект нужен — сначала скачайте его файлом (Ctrl+S).',
+      ok: 'Очистить',
+      onOk: () => {
+        setConfirmAsk(null);
+        try { (cloudUser ? sessionStorage : localStorage).removeItem(draftKey(cloudUser?.id)); } catch { /* ignore */ }
+        const next = M.newBoard(prefs.newW, prefs.newH, prefs.newName);
+        past.current = []; future.current = [];
+        setDoc(next);
+        setSel(new Set()); setDraft(null); setRouteA(null); setProbe(null);
+        setEditNode(null); setTrackMsg({ msg: '', ok: null }); setRouteMsg({ msg: '', ok: null });
+        setDialog(null);
+        setTimeout(() => fit(next), 50);
+      },
+    });
+  }, [cloudUser, prefs.newW, prefs.newH, prefs.newName, fit]);
+
   // ---------------- разметка ----------------
   return (
     <>
@@ -3406,9 +3510,9 @@ export default function App({ cloudUser, onLogout }: { cloudUser?: CloudUser; on
         {sidesConf.showRight && rightColumn}
       </div>
 
-      <div className="status">
-        <span>X <b>{M.fmt(mouse.wx)}</b> мм <b>{M.fmt(M.mm2mil(mouse.wx), 1)}</b> mil</span>
-        <span>Y <b>{M.fmt(mouse.wy)}</b> мм <b>{M.fmt(M.mm2mil(mouse.wy), 1)}</b> mil</span>
+      {prefs.statusBar && <div className="status">
+        <span>X {statusCoord(mouse.wx)}</span>
+        <span>Y {statusCoord(mouse.wy)}</span>
         <span title={gridSummary(gridConf, view.s)}>
           Сетка: <b>{fmtGridFull(defs.grid)}</b>
           {' · '}{defs.gridStyle === 'dots' ? 'точки' : defs.gridStyle === 'lines' ? 'линии' : defs.gridStyle === 'cross' ? 'перекрестия' : 'выкл.'}
@@ -3429,12 +3533,12 @@ export default function App({ cloudUser, onLogout }: { cloudUser?: CloudUser; on
             ⚡ цепь: {plur(probe.pads, ['площадка', 'площадки', 'площадок'])} · {plur(probe.smd, ['SMD', 'SMD', 'SMD'])} · {plur(probe.vias, ['переход', 'перехода', 'переходов'])} · {plur(probe.tracks, ['дорожка', 'дорожки', 'дорожек'])}
           </span>
         )}
-        <span>{toolMeta.name}: {toolMeta.hint}</span>
+        {prefs.statusHint && <span>{toolMeta.name}: {toolMeta.hint}</span>}
         <span className="lg" title={cloudUser ? `${activeCloud?.name ?? 'Черновик'}: ${cloudSaveLabel(cloudStatus)}${cloudMessage ? ' · ' + cloudMessage : ''}` : 'Локальный режим без сервера проектов'}>
           <span className={'pulse' + (cloudUser && (cloudStatus === 'error' || cloudStatus === 'conflict') ? ' cloud-pulse-error' : '')} />
           {cloudUser ? `Облако · ${cloudStatus === 'saved' ? 'сохранено' : cloudStatus === 'saving' ? 'сохраняем' : cloudStatus === 'error' ? 'ошибка' : cloudStatus === 'conflict' ? 'конфликт' : activeCloud ? 'изменено' : 'черновик'}` : 'локально · офлайн'}
         </span>
-      </div>
+      </div>}
 
       {dialog === 'autoplace' && <AutoPlaceDialog doc={doc} selected={sel} clearance={defs.rtClear}
         onClose={() => setDialog(null)} onApply={(r) => {
@@ -3465,9 +3569,12 @@ export default function App({ cloudUser, onLogout }: { cloudUser?: CloudUser; on
         onRot={setPlaceRot} onSide={setPlaceSide}
         ents={preview.ents} bl={preview.bl}
       />}
-      {dialog === 'new' && <NewBoardDialog onOk={newBoardDlg} onClose={() => setDialog(null)} />}
+      {dialog === 'new' && <NewBoardDialog
+        defaults={{ name: prefs.newName, w: prefs.newW, h: prefs.newH }}
+        onOk={newBoardDlg} onClose={() => setDialog(null)} />}
       {dialog === 'export' && (
         <ExportDialog
+          defaults={{ layer: prefs.pngLayer, mirror: prefs.pngMirror, drill: prefs.pngDrill, dpi: prefs.pngDpi }}
           onGerber={exportGerber} onPng={exportPng} onLay6={exportLay6}
           onCnc={() => setDialog('cnc')} onClose={() => setDialog(null)}
         />
@@ -3538,6 +3645,57 @@ export default function App({ cloudUser, onLogout }: { cloudUser?: CloudUser; on
           </p>
           <p>В установленном приложении PSBees эта кнопка закрывает окно программы.</p>
         </Modal>
+      )}
+      {dialog === 'settings' && (
+        <SettingsWindow
+          prefs={prefs}
+          setPrefs={setPrefs}
+          defs={defs}
+          setDefs={setDefs}
+          theme={theme}
+          setTheme={setTheme}
+          colors={colors}
+          setColors={setColors}
+          ui={{
+            ids: uiOrder,
+            hidden: uiConf.hidden,
+            sides: sidesConf,
+            pinned: PINNED_GROUPS,
+            names: GROUP_NAMES,
+          }}
+          onUi={(next) => persistUi({ ...uiConf, ids: next.ids, hidden: next.hidden })}
+          onSides={(next) => persistUi({ ...uiConf, sides: normalizeSides(next) })}
+          activeCu={activeCu}
+          setActiveCu={setActiveCu}
+          hiddenLayers={hidden}
+          toggleLayer={toggleHidden}
+          layerCounts={counts}
+          board={{
+            name: doc.name,
+            w: doc.w,
+            h: doc.h,
+            entities: doc.entities.length,
+            groups: groupCount,
+            violations: clearanceMarks.length,
+          }}
+          version={appVer}
+          onClose={() => setDialog(null)}
+          onDetach={openSettingsWindow}
+          onReset={resetSettings}
+          onExport={exportSettings}
+          onImport={importSettings}
+          onClearDraft={clearDraft}
+        />
+      )}
+      {confirmAsk && (
+        <ConfirmDialog
+          title={confirmAsk.title}
+          text={confirmAsk.text}
+          ok={confirmAsk.ok}
+          danger
+          onOk={confirmAsk.onOk}
+          onClose={() => setConfirmAsk(null)}
+        />
       )}
       {!cloudUser && upd.Dialog}
     </>

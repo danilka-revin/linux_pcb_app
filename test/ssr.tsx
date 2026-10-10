@@ -181,9 +181,11 @@ for (const m of ['lib-preview', 'DIP-8', '0;0']) {
     if (!html.includes(m)) throw new Error(`группировка: в шапке/колонках не найдено «${m}»`);
   }
   const app = readFileSync('src/App.tsx', 'utf8');
+  // клавиши задаются настройками (src/ui/hotkeys.ts): в редакторе осталась
+  // только привязка сочетания к действию, а не жёстко прописанный switch
   for (const m of [
-    "case 'KeyG': if (e.shiftKey) groupSel(); else setDialog('grid');",
-    "case 'KeyU': if (e.shiftKey) { ungroupSel(); e.preventDefault(); } return;",
+    "case 'edit.group': groupSel(); return;",
+    "case 'edit.ungroup': ungroupSel(); return;",
     'expandSelection(doc.groups, ns)',
     'nd.groups = pruneGroups(nd.groups',
   ]) {
