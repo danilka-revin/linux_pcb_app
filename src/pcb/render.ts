@@ -64,9 +64,15 @@ const CANVAS_THEMES: Record<ThemeId, { colors: typeof COLORS; ui: typeof CANVAS_
   },
 };
 
-export function setCanvasTheme(theme: ThemeId): void {
-  Object.assign(COLORS, CANVAS_THEMES[theme].colors);
-  Object.assign(CANVAS_UI, CANVAS_THEMES[theme].ui);
+/** Перекрытия цветов холста (свои цвета интерфейса / пресет темы, см. ui/palette). */
+export interface CanvasOverrides {
+  colors?: Partial<typeof COLORS>;
+  ui?: Partial<typeof CANVAS_UI>;
+}
+
+export function setCanvasTheme(theme: ThemeId, over?: CanvasOverrides): void {
+  Object.assign(COLORS, CANVAS_THEMES[theme].colors, over?.colors ?? {});
+  Object.assign(CANVAS_UI, CANVAS_THEMES[theme].ui, over?.ui ?? {});
   // Сигнал для мини-канвасов (предпросмотр библиотеки, сетки): перерисоваться
   // новыми цветами. Тема мутирует COLORS на месте, без этого они бы «застыли».
   try { window.dispatchEvent(new Event('psbees:theme')); } catch { /* SSR/тесты */ }

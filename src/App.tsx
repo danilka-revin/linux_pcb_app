@@ -69,7 +69,10 @@ import {
 } from './ui/dialogs';
 import { GridDialog, GridQuickPanel, GridToolbar, gridOf } from './ui/grid';
 import { LibPreviewDialog } from './ui/libpreview';
-import { applyCustomColors, loadCustomColors, saveCustomColors, type CustomColors } from './ui/palette';
+import { applyCustomColors, canvasOverrides, loadCustomColors, saveCustomColors, type CustomColors } from './ui/palette';
+import {
+  loadUserPresets, mergeUserPresets, normalizeUserPresets, saveUserPresets, type UserPresets,
+} from './ui/presets';
 import { UiBuilderDialog, useUpdater } from './ui/updater';
 import { ConfirmDialog, MenuBtn, Modal, SplitBtn } from './ui/widgets';
 import { ProgressBar } from './ui/progress';
@@ -453,6 +456,12 @@ export default function App({ cloudUser, onLogout }: { cloudUser?: CloudUser; on
     setColorsState(c);
     saveCustomColors(c);
   }, []);
+  // свои пресеты (темы и профили настроек), см. ui/presets
+  const [userPresets, setUserPresetsState] = useState<UserPresets>(loadUserPresets);
+  const setUserPresets = useCallback((p: UserPresets) => {
+    setUserPresetsState(p);
+    saveUserPresets(p);
+  }, []);
   const [routeMode, setRouteMode] = useState<'pair' | 'nets'>('pair');
   const [activeNet, setActiveNet] = useState<string | null>(null);
   const [routing, setRouting] = useState<string | null>(null);
@@ -627,7 +636,7 @@ export default function App({ cloudUser, onLogout }: { cloudUser?: CloudUser; on
     document.documentElement.dataset.theme = theme;
     // «Компактный интерфейс» — плотнее шапка, панели и поля (см. styles.css)
     document.documentElement.dataset.compact = prefs.compactUi ? '1' : '0';
-    setCanvasTheme(theme);
+    setCanvasTheme(theme, canvasOverrides(colors, theme));
     applyCustomColors(colors, theme);
     try { localStorage.setItem(THEME_KEY, theme); } catch { /* ignore */ }
   }, [theme, colors, prefs.compactUi]);
@@ -3397,11 +3406,12 @@ export default function App({ cloudUser, onLogout }: { cloudUser?: CloudUser; on
       app: 'psbees', kind: 'settings', version: 1,
       prefs, defs, colors, theme,
       ui: { ids: uiConf.ids, hidden: uiConf.hidden, sides: sidesConf },
+      presets: userPresets,
     };
     try {
       download('psbees-settings.json', new Blob([JSON.stringify(data, null, 2)], { type: 'application/json' }));
     } catch { alert('Не удалось сохранить файл настроек.'); }
-  }, [prefs, defs, colors, theme, uiConf, sidesConf]);
+  }, [prefs, defs, colors, theme, uiConf, sidesConf, userPresets]);
 
   const importSettings = useCallback((file: File) => {
     file.text().then((txt) => {
@@ -3421,10 +3431,14 @@ export default function App({ cloudUser, onLogout }: { cloudUser?: CloudUser; on
         }
         if (d.colors && typeof d.colors === 'object') { setColors(d.colors); ok = true; }
         if (d.theme === 'dark' || d.theme === 'light') { setTheme(d.theme); ok = true; }
+        if (d.presets && typeof d.presets === 'object') {
+          setUserPresets(mergeUserPresets(loadUserPresets(), normalizeUserPresets(d.presets)));
+          ok = true;
+        }
       } catch { /* ниже — сообщение */ }
       if (!ok) alert('Не удалось прочитать настройки из файла.');
     }).catch(() => alert('Не удалось прочитать файл.'));
-  }, [setPrefs, setDefs, persistUi, setColors, setTheme]);
+  }, [setPrefs, setDefs, persistUi, setColors, setTheme, setUserPresets]);
 
   /** Сброс всех настроек: программа, инструменты, интерфейс и цвета. */
   const resetSettings = useCallback(() => {
@@ -3656,6 +3670,8 @@ export default function App({ cloudUser, onLogout }: { cloudUser?: CloudUser; on
           setTheme={setTheme}
           colors={colors}
           setColors={setColors}
+          presets={userPresets}
+          setPresets={setUserPresets}
           ui={{
             ids: uiOrder,
             hidden: uiConf.hidden,
@@ -3665,6 +3681,11 @@ export default function App({ cloudUser, onLogout }: { cloudUser?: CloudUser; on
           }}
           onUi={(next) => persistUi({ ...uiConf, ids: next.ids, hidden: next.hidden })}
           onSides={(next) => persistUi({ ...uiConf, sides: normalizeSides(next) })}
+          onUiAll={(next) => persistUi({
+            ids: next.ids.filter((x) => GROUP_DEFS.some((g) => g.id === x)),
+            hidden: next.hidden.filter((x) => GROUP_DEFS.some((g) => g.id === x) && !PINNED_GROUPS.includes(x)),
+            sides: normalizeSides(next.sides),
+          })}
           activeCu={activeCu}
           setActiveCu={setActiveCu}
           hiddenLayers={hidden}

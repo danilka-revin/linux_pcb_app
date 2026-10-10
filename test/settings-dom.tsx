@@ -34,6 +34,7 @@ const React = await import('react');
 const { createRoot } = await import('react-dom/client');
 const { act } = await import('react');
 const App = (await import('../src/App')).default;
+const { COLORS } = await import('../src/pcb/render');
 
 const root = createRoot(win.document.getElementById('root')!);
 await act(async () => { root.render(React.createElement(App)); });
@@ -79,7 +80,8 @@ assert.ok(winEl, 'окно настроек открылось кнопкой ш
 assert.ok(doc.body.contains(winEl!), 'окно настроек вынесено в body (отдельное окно)');
 // разделы
 const navItems = () => [...doc.querySelectorAll('.set-nav-item')];
-assert.equal(navItems().length, 11, 'все разделы настроек на месте');
+assert.equal(navItems().length, 12, 'все разделы настроек на месте');
+assert.ok(navItems().some((b) => (b.textContent ?? '').includes('Пресеты')), 'раздел пресетов');
 assert.ok(navItems().some((b) => (b.textContent ?? '').includes('Сетка')), 'раздел сетки');
 assert.ok(navItems().some((b) => (b.textContent ?? '').includes('Горячие клавиши')), 'раздел клавиш');
 
@@ -146,6 +148,100 @@ await act(async () => {
   search.dispatchEvent(new win.Event('input', { bubbles: true }));
   await frame();
 });
+
+// ---------------------------------------------------------------- пресеты
+await click(byText('.set-nav-item', 'Пресеты'));
+assert.ok((doc.querySelector('.set-title')?.textContent ?? '').includes('Пресеты'), 'раздел «Пресеты»');
+const themeCard = (name: string) => [...doc.querySelectorAll('.tp-card')]
+  .find((c) => (c.querySelector('.tp-name')?.textContent ?? '').includes(name));
+assert.ok(doc.querySelectorAll('.tp-card').length >= 14, 'готовые темы показаны карточками');
+assert.ok(themeCard('Пчела')?.classList.contains('on'), 'по умолчанию активна тема «Пчела»');
+await click(themeCard('Nord')?.querySelector('.tp-pick'));
+const colorsLs = () => JSON.parse(win.localStorage.getItem('psbees.colors') ?? '{}');
+assert.equal(colorsLs().accent, '#88c0d0', 'тема Nord записала акцент');
+assert.equal(colorsLs().page, '#2e3440', 'тема Nord записала фон');
+assert.equal(doc.documentElement.style.getPropertyValue('--accent'), '#88c0d0', 'акцент применён к интерфейсу');
+assert.equal(COLORS.bg, '#2e3440', 'фон холста следует теме');
+assert.equal(COLORS.sel, '#88c0d0', 'выделение на холсте — цветом акцента');
+assert.ok(themeCard('Nord')?.classList.contains('on'), 'карточка Nord отмечена');
+assert.ok((doc.querySelector('.set-undo')?.textContent ?? '').includes('Nord'), 'нижняя строка предлагает вернуть');
+
+// светлая тема из пресета переключает и data-theme
+await click(themeCard('Бумага')?.querySelector('.tp-pick'));
+assert.equal(doc.documentElement.dataset.theme, 'light', 'пресет «Бумага» включил светлую тему');
+// «Вернуть как было» — снова Nord
+await click(byText('.set-undo .btn', 'Вернуть как было'));
+assert.equal(doc.documentElement.dataset.theme, 'dark', 'возврат вернул тёмную тему');
+assert.equal(colorsLs().accent, '#88c0d0', 'возврат вернул цвета Nord');
+
+// своя тема сохраняется и удаляется в два щелчка
+const presetsLs = () => JSON.parse(win.localStorage.getItem('psbees.presets') ?? '{"themes":[],"profiles":[]}');
+const themeInput = doc.querySelector('input[aria-label="Название своей темы"]') as HTMLInputElement;
+await act(async () => {
+  nativeValue.call(themeInput, 'Моя северная');
+  themeInput.dispatchEvent(new win.Event('input', { bubbles: true }));
+  await frame();
+});
+await click(byText('.set-content .btn', 'Сохранить тему'));
+assert.equal(presetsLs().themes.length, 1, 'своя тема записана');
+assert.ok(themeCard('Моя северная'), 'карточка своей темы');
+await click(themeCard('Моя северная')?.querySelector('.tp-del'));
+assert.equal(presetsLs().themes.length, 1, 'первый щелчок только спрашивает');
+await click(themeCard('Моя северная')?.querySelector('.tp-del'));
+assert.equal(presetsLs().themes.length, 0, 'второй щелчок удаляет');
+
+// технология изготовления
+const card = (name: string) => [...doc.querySelectorAll('.pc-card')]
+  .find((c) => (c.querySelector('.pc-name')?.textContent ?? '').includes(name));
+await click(card('Заводская'));
+assert.equal(defs().trackW, 0.25, 'пресет технологии задал ширину дорожки');
+assert.equal(defs().viaSize, 0.6, 'и размер перехода');
+assert.equal(defs().drcClear, 0.15, 'и зазор DRC');
+assert.ok(card('Заводская')?.classList.contains('on'), 'карточка технологии отмечена');
+await click(card('Свободно'));
+assert.equal(defs().snapOn, false, 'режим «Свободно» снял привязку к сетке');
+assert.equal(defs().angle, 'free', 'и разрешил любые углы');
+await click(card('Минимализм'));
+assert.equal(prefs().showDock, false, 'вид «Минимализм» убрал док');
+await click(card('Стандартный'));
+assert.equal(prefs().showDock, true, 'вид «Стандартный» вернул док');
+await click([...doc.querySelectorAll('.set-quick .btn')].find((b) => (b.textContent ?? '').trim() === 'Евро'));
+assert.equal(prefs().newW, 160, 'размер новой платы — Евро');
+
+// профиль: сохранить, поменять, применить
+const profInput = doc.querySelector('input[aria-label="Название профиля настроек"]') as HTMLInputElement;
+await act(async () => {
+  nativeValue.call(profInput, 'Завод');
+  profInput.dispatchEvent(new win.Event('input', { bubbles: true }));
+  await frame();
+});
+await click(byText('.set-content .btn', 'Сохранить профиль'));
+assert.equal(presetsLs().profiles.length, 1, 'профиль записан');
+assert.equal(presetsLs().profiles[0].defs.trackW, 0.25, 'в профиле — текущие инструменты');
+assert.equal(presetsLs().profiles[0].prefs.setW, undefined, 'геометрия окна в профиль не попадает');
+await click(card('Силовая'));
+assert.equal(defs().trackW, 1.5, 'другая технология');
+await click(themeCard('Пчела')?.querySelector('.tp-pick'));
+assert.equal(win.localStorage.getItem('psbees.colors'), null, 'фирменная тема без своих цветов');
+assert.notEqual(COLORS.bg, '#2e3440', 'холст вернулся к цветам темы');
+await click(byText('.pf-row .btn', 'Применить'));
+assert.equal(defs().trackW, 0.25, 'профиль вернул инструменты');
+assert.equal(colorsLs().accent, '#88c0d0', 'профиль вернул тему');
+
+// быстрые пресеты в обычных разделах
+await click(byText('.set-nav-item', 'Новые объекты'));
+await click(byText('.set-quick .btn', 'ЛУТ'));
+assert.equal(defs().trackW, 0.8, 'быстрый пресет технологии в «Новых объектах»');
+await click(byText('.set-nav-item', 'Общие'));
+const themeSel = doc.querySelector('select[aria-label="Готовая тема"]') as HTMLSelectElement;
+assert.ok(themeSel, 'выбор готовой темы в «Общих»');
+assert.equal(themeSel.value, 'nord', 'выбрана текущая тема');
+await act(async () => {
+  themeSel.value = 'bee-dark';
+  themeSel.dispatchEvent(new win.Event('change', { bubbles: true }));
+  await frame();
+});
+assert.equal(win.localStorage.getItem('psbees.colors'), null, 'тема из списка применилась');
 
 // ---------------------------------------------------------------- закрытие и Ctrl+,
 const done = byText('.set-foot .btn', 'Готово');
@@ -234,4 +330,4 @@ assert.ok(dockActive().startsWith('Выбор'), 'цифра 1 возвраща�
 
 await act(async () => { root.unmount(); });
 dom.window.close();
-process.stdout.write('SETTINGS DOM OK: окно, разделы, поиск, сетка, привязка, перекрестие, трассировка, свои горячие клавиши, Ctrl+, и Esc\n', () => process.exit(0));
+process.stdout.write('SETTINGS DOM OK: окно, разделы, пресеты (темы, технология, сетка, вид, профили), поиск, сетка, привязка, перекрестие, трассировка, свои горячие клавиши, Ctrl+, и Esc\n', () => process.exit(0));
