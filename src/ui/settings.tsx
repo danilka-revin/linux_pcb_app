@@ -32,6 +32,7 @@ import {
   clearHotkey, comboLabel, comboOf, hotkeyOwners, isReservedCombo, removeHotkey, type HotkeyMap,
 } from './hotkeys';
 import { LearnSettingsPanel } from './tour';
+import type { PracticeId } from './coach';
 
 export type { PrintLayer };
 
@@ -290,15 +291,15 @@ export interface SettingsWindowProps {
   onExport: () => void;
   onImport: (f: File) => void;
   onClearDraft: () => void;
-  /** Запустить практику «Твоя первая дорожка» поверх редактора (если задано). */
-  onPracticeFirstTrack?: () => void;
+  /** Запустить практический урок поверх редактора (см. src/ui/coach.tsx). */
+  onPractice?: (id: PracticeId) => void;
 }
 
 export function SettingsWindow(props: SettingsWindowProps) {
   const {
     prefs, setPrefs, defs, setDefs, theme, setTheme, colors, setColors, presets: userPresets, setPresets,
     ui, onUi, onSides, onUiAll, activeCu, setActiveCu, hiddenLayers, toggleLayer, layerCounts, board, version,
-    onClose, onDetach, onReset, onExport, onImport, onClearDraft, onPracticeFirstTrack,
+    onClose, onDetach, onReset, onExport, onImport, onClearDraft, onPractice,
   } = props;
 
   const [section, setSection] = useState<string>(() =>
@@ -581,7 +582,13 @@ export function SettingsWindow(props: SettingsWindowProps) {
   const renderSection = (): ReactNode => {
     switch (section) {
       case 'learn':
-        return <LearnSettingsPanel onStartPractice={onPracticeFirstTrack} />;
+        return (
+          <LearnSettingsPanel
+            onStartPractice={onPractice}
+            offerMode={prefs.learnOnStart}
+            onOfferMode={(m) => setPrefs({ learnOnStart: m })}
+          />
+        );
       // ---------------- Общие ----------------
       case 'general':
         return (
