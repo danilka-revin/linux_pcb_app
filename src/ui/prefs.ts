@@ -113,7 +113,7 @@ export const DEFAULT_PREFS: Prefs = {
 
   hotkeys: DEFAULT_HOTKEYS,
 
-  setSection: 'general',
+  setSection: 'learn',
   setW: 900,
   setH: 620,
   setX: null,

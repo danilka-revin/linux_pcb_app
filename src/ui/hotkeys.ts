@@ -98,7 +98,7 @@ export const HOTKEYS: HotkeyDef[] = [
   { id: 'app.colors', group: 'Окна и программа', title: 'Цвета интерфейса…', def: [] },
   { id: 'app.uib', group: 'Окна и программа', title: 'Конструктор интерфейса…', def: [] },
   { id: 'app.about', group: 'Окна и программа', title: 'О программе', def: [] },
-  { id: 'app.tour', group: 'Окна и программа', title: 'Обучение (туры по функциям)', def: [] },
+  { id: 'app.tour', group: 'Окна и программа', title: 'Обучение — Настройки → Обучение', def: [] },
   { id: 'app.settings', group: 'Окна и программа', title: 'Настройки (это окно)', def: ['Ctrl+,'] },
   { id: 'app.cancel', group: 'Окна и программа', title: 'Отменить действие / снять выбор', def: ['Esc'] },
 ];

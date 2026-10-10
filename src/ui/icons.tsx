@@ -144,6 +144,16 @@ export const ICONS: Record<string, ReactNode> = {
   detach: <>{R(3, 3, 13, 13, 1.5)}{P('M9 3h12v12')}{P('M21 6.5V3h-3.5')}</>,
   maximize: <>{R(3.5, 3.5, 17, 17, 1.5)}</>,
   restore: <>{R(7.5, 3.5, 13, 13, 1.5)}{P('M3.5 7.5v13h13')}</>,
+  // обучение — шапочка выпускника с кисточкой
+  learn: (
+    <>
+      {P('M12 3L2 8.5l10 5.5 10-5.5z')}
+      {P('M2 12l10 5.5L22 12')}
+      {P('M2 16l10 5.5L22 16')}
+      {P('M19 8.5v6')}
+      {C(19, 16.5, 1.2, true)}
+    </>
+  ),
 };
 
 export function Ic({ n, size = 18 }: { n: string; size?: number }) {
