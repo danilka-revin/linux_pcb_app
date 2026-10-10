@@ -2,6 +2,7 @@
 
 import { entBBox, type Doc, type Entity, type LayerId, type Pt } from './model';
 import { expandComp } from './expand';
+import { dimArrows, dimGeom, dimSegments } from './dim';
 
 export interface View {
   s: number;    // пикселей на мм
@@ -246,7 +247,15 @@ export function drawEnt(
       ctx.moveTo(sx(e.pts[0].x), sy(e.pts[0].y));
       for (let i = 1; i < e.pts.length; i++) ctx.lineTo(sx(e.pts[i].x), sy(e.pts[i].y));
       ctx.closePath();
-      ctx.fill();
+      const holes = e.holes ?? [];
+      for (const hole of holes) {
+        if (hole.length < 3) continue;
+        ctx.moveTo(sx(hole[0].x), sy(hole[0].y));
+        for (let i = 1; i < hole.length; i++) ctx.lineTo(sx(hole[i].x), sy(hole[i].y));
+        ctx.closePath();
+      }
+      // дырки (буквы О, А у векторизованного логотипа) — правило чет-нечет
+      ctx.fill(holes.length ? 'evenodd' : 'nonzero');
       // тонкий контур для видимости краёв
       ctx.strokeStyle = col;
       ctx.lineWidth = 0.1 * s > 0.5 ? 0.1 * s : 0.5;
@@ -274,6 +283,43 @@ export function drawEnt(
       ctx.scale(1 / 0.72, 1 / 0.72);
       ctx.fillText(e.text, 0, 0);
       ctx.restore();
+      break;
+    }
+    case 'dim': {
+      const g = dimGeom(e);
+      const segs = dimSegments(e);
+      ctx.strokeStyle = col;
+      ctx.lineCap = 'round';
+      ctx.lineWidth = Math.max(e.th * s, 0.7);
+      for (const [p1, p2] of segs) {
+        ctx.beginPath();
+        ctx.moveTo(sx(p1.x), sy(p1.y));
+        ctx.lineTo(sx(p2.x), sy(p2.y));
+        ctx.stroke();
+      }
+      // стрелки на концах размерной линии
+      ctx.fillStyle = col;
+      for (const tri of dimArrows(e)) {
+        ctx.beginPath();
+        ctx.moveTo(sx(tri[0].x), sy(tri[0].y));
+        for (let i = 1; i < tri.length; i++) ctx.lineTo(sx(tri[i].x), sy(tri[i].y));
+        ctx.closePath();
+        ctx.fill();
+      }
+      // подпись над размерной линией
+      if (g.label) {
+        const t = { x: g.mid.x + g.n.x * e.size * 0.5, y: g.mid.y + g.n.y * e.size * 0.5 };
+        ctx.save();
+        ctx.translate(sx(t.x), sy(t.y));
+        if (v.mir) ctx.scale(-1, 1);
+        ctx.rotate(v.mir ? (g.textAngle * Math.PI) / 180 : (-g.textAngle * Math.PI) / 180);
+        ctx.font = `${Math.max(e.size * s * 0.72, 3)}px 'Segoe UI', system-ui, sans-serif`;
+        ctx.fillStyle = col;
+        ctx.textAlign = 'center';
+        ctx.textBaseline = 'alphabetic';
+        ctx.fillText(g.label, 0, 0);
+        ctx.restore();
+      }
       break;
     }
     case 'hole': {

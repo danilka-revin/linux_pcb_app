@@ -37,6 +37,8 @@ export const HOTKEYS: HotkeyDef[] = [
   { id: 'file.autoplace', group: 'Файл', title: 'Автокомпоновка компонентов…', def: [] },
   { id: 'file.cnc', group: 'Файл', title: 'G-code для станка (ЧПУ)…', def: [] },
   { id: 'file.inventory', group: 'Файл', title: 'Перечень площадок и отверстий…', def: [] },
+  { id: 'file.stats', group: 'Файл', title: 'Статистика платы…', def: [] },
+  { id: 'file.imgimport', group: 'Файл', title: 'Изображение → шелкография…', def: [] },
 
   // ---------------- Правка ----------------
   { id: 'edit.undo', group: 'Правка', title: 'Отменить', def: ['Ctrl+Z'] },
@@ -65,6 +67,7 @@ export const HOTKEYS: HotkeyDef[] = [
   { id: 'tool.line', group: 'Инструменты', title: 'Линия', def: ['6'] },
   { id: 'tool.text', group: 'Инструменты', title: 'Текст', def: ['7'] },
   { id: 'tool.ruler', group: 'Инструменты', title: 'Линейка', def: ['8'] },
+  { id: 'tool.dim', group: 'Инструменты', title: 'Размер (размерная линия)', def: ['U'] },
   { id: 'tool.route', group: 'Инструменты', title: 'Автотрассировка', def: ['9'] },
   { id: 'tool.probe', group: 'Инструменты', title: 'Тест цепи', def: ['0'] },
   { id: 'tool.cut', group: 'Инструменты', title: 'Разрыв дорожки', def: ['X'] },

@@ -1,6 +1,8 @@
 // Модель документа печатной платы и геометрические утилиты.
 // Все координаты — миллиметры, ось Y направлена вверх (как в Gerber).
 
+import { dimGeom, dimSegments } from './dim';
+
 export type LayerId = 'k1' | 'k2' | 's1' | 's2' | 'outline';
 
 export interface Pt {
@@ -97,11 +99,26 @@ export interface TextE extends Base {
   layer: LayerId;
 }
 
-/** Залитый полигон (земляной полигон на слое меди) */
+/** Залитый полигон (земляной полигон на слое меди или векторный рисунок на шелкографии) */
 export interface Poly extends Base {
   kind: 'poly';
   pts: Pt[];
-  layer: 'k1' | 'k2';
+  /** дырки внутри полигона (например, у векторизованного логотипа); у меди не используются */
+  holes?: Pt[][];
+  layer: LayerId;
+}
+
+/** Размерная линия чертежа: две измеряемые точки, смещение размерной линии и подпись */
+export interface DimE extends Base {
+  kind: 'dim';
+  x1: number; y1: number;   // первая измеряемая точка
+  x2: number; y2: number;   // вторая измеряемая точка
+  off: number;              // смещение размерной линии, мм (знак — сторона)
+  th: number;               // толщина линий, мм
+  size: number;             // высота текста, мм
+  mode: 'aligned' | 'horiz' | 'vert';
+  text?: string;            // своя подпись (пусто/нет — число с «мм»)
+  layer: LayerId;
 }
 
 /** Компонент: деталь, поставленная на плату со своими примитивами */
@@ -117,7 +134,7 @@ export interface Comp extends Base {
 }
 
 export type Entity =
-  | Pad | Smd | Track | Via | Hole | LineE | Circ | RectE | TextE | Poly | Comp;
+  | Pad | Smd | Track | Via | Hole | LineE | Circ | RectE | TextE | Poly | DimE | Comp;
 
 /**
  * Личные правила трассировки группы соединений. Любое поле можно не задавать —
@@ -200,18 +217,32 @@ export function rotPt(x: number, y: number, cx: number, cy: number, deg: number)
   return { x: cx + dx * c - dy * s, y: cy + dx * s + dy * c };
 }
 
+/** Кэш entBBox считает примитивы неизменяемыми — мутация на месте сбрасывает запись. */
+function invalidateBBox(e: Entity): void {
+  const cache = (entBBox as unknown as { _cache?: WeakMap<Entity, [number, number, number, number]> })._cache;
+  cache?.delete(e);
+}
+
 export function translateEnt(e: Entity, dx: number, dy: number): void {
   switch (e.kind) {
     case 'pad': case 'via': case 'hole': case 'smd':
     case 'text': case 'circle': case 'comp':
       e.x += dx; e.y += dy; break;
-    case 'track': case 'poly':
-      e.pts.forEach((p) => { p.x += dx; p.y += dy; }); break;
+    case 'track':
+      e.pts.forEach((p) => { p.x += dx; p.y += dy; });
+      break;
+    case 'poly':
+      e.pts.forEach((p) => { p.x += dx; p.y += dy; });
+      e.holes?.forEach((h) => h.forEach((p) => { p.x += dx; p.y += dy; }));
+      break;
     case 'line':
       e.x1 += dx; e.y1 += dy; e.x2 += dx; e.y2 += dy; break;
     case 'rect':
       e.x += dx; e.y += dy; break;
+    case 'dim':
+      e.x1 += dx; e.y1 += dy; e.x2 += dx; e.y2 += dy; break;
   }
+  invalidateBBox(e);
 }
 
 /** Поворот на 90° против часовой вокруг точки */
@@ -224,10 +255,25 @@ export function rotateEnt90(e: Entity, cx: number, cy: number): void {
     case 'smd': {
       const p = R(e); e.x = p.x; e.y = p.y; e.rot = (e.rot + 90) % 180; break;
     }
-    case 'track': case 'poly': e.pts = e.pts.map(R); break;
+    case 'track':
+      e.pts = e.pts.map(R);
+      break;
+    case 'poly': {
+      e.pts = e.pts.map(R);
+      if (e.holes) e.holes = e.holes.map((h) => h.map(R));
+      break;
+    }
     case 'line': {
       const a = R({ x: e.x1, y: e.y1 }), b = R({ x: e.x2, y: e.y2 });
       e.x1 = a.x; e.y1 = a.y; e.x2 = b.x; e.y2 = b.y; break;
+    }
+    case 'dim': {
+      const a = R({ x: e.x1, y: e.y1 }), b = R({ x: e.x2, y: e.y2 });
+      e.x1 = a.x; e.y1 = a.y; e.x2 = b.x; e.y2 = b.y;
+      // смещение вращается вместе с нормалью: horiz↔vert, знак смещения меняется
+      if (e.mode === 'horiz') { e.mode = 'vert'; e.off = -e.off; }
+      else if (e.mode === 'vert') { e.mode = 'horiz'; e.off = -e.off; }
+      break;
     }
     case 'rect': {
       const a = R({ x: e.x, y: e.y }), b = R({ x: e.x + e.w, y: e.y + e.h });
@@ -241,6 +287,7 @@ export function rotateEnt90(e: Entity, cx: number, cy: number): void {
       const p = R(e); e.x = p.x; e.y = p.y; e.rot = (e.rot + 90) % 360; break;
     }
   }
+  invalidateBBox(e);
 }
 
 /** Перенос на другую сторону платы (зеркало по вертикали через cx) */
@@ -258,7 +305,13 @@ export function mirrorEnt(e: Entity, cx: number): void {
       e.layer = e.layer === 'k1' ? 'k2' : 'k1'; break;
     case 'poly':
       e.pts = e.pts.map((p) => ({ x: F(p.x), y: p.y }));
-      e.layer = e.layer === 'k1' ? 'k2' : 'k1'; break;
+      if (e.holes) e.holes = e.holes.map((h) => h.map((p) => ({ x: F(p.x), y: p.y })));
+      e.layer = e.layer === 'k1' ? 'k2' : e.layer === 'k2' ? 'k1' : swapLayer(e.layer);
+      break;
+    case 'dim':
+      e.x1 = F(e.x1); e.x2 = F(e.x2);
+      e.layer = swapLayer(e.layer);
+      break;
     case 'line':
       e.x1 = F(e.x1); e.x2 = F(e.x2); e.layer = swapLayer(e.layer); break;
     case 'rect':
@@ -277,6 +330,7 @@ export function mirrorEnt(e: Entity, cx: number): void {
       e.rot = (360 - e.rot) % 360;
       break;
   }
+  invalidateBBox(e);
 }
 
 export function entBBox(e: Entity): [number, number, number, number] {
@@ -350,6 +404,15 @@ export function entBBox(e: Entity): [number, number, number, number] {
         if (y > maxY) maxY = y;
       }
       box = [minX, minY, maxX, maxY]; break;
+    }
+    case 'dim': {
+      // консервативный габарит: точки + смещение + запас под подпись
+      const m = Math.abs(e.off) + (e.size || 2.5) * (e.text ? e.text.length * 0.4 : 1.2);
+      box = [
+        Math.min(e.x1, e.x2) - m, Math.min(e.y1, e.y2) - m,
+        Math.max(e.x1, e.x2) + m, Math.max(e.y1, e.y2) + m,
+      ];
+      break;
     }
   }
   if (cache) cache.set(e, box);
@@ -430,11 +493,28 @@ export function hitEnt(e: Entity, p: Pt, tol: number): boolean {
     case 'poly': {
       if (pointInPoly(e.pts, p.x, p.y)) return true;
       const rad = tol + 0.15;
-      for (let i = 0; i < e.pts.length; i++) {
-        const a = e.pts[i], b = e.pts[(i + 1) % e.pts.length];
-        if (distToSeg(p.x, p.y, a.x, a.y, b.x, b.y) <= rad) return true;
+      const rings = [e.pts, ...(e.holes ?? [])];
+      for (const ring of rings) {
+        for (let i = 0; i < ring.length; i++) {
+          const a = ring[i], b = ring[(i + 1) % ring.length];
+          if (distToSeg(p.x, p.y, a.x, a.y, b.x, b.y) <= rad) return true;
+        }
       }
       return false;
+    }
+    case 'dim': {
+      const segs = dimSegments(e);
+      const rad = Math.max(e.th / 2, 0.15) + tol;
+      for (const s of segs) {
+        if (distToSeg(p.x, p.y, s[0].x, s[0].y, s[1].x, s[1].y) <= rad) return true;
+      }
+      const g = dimGeom(e);
+      const tw = (g.label.length + 1) * e.size * 0.75;
+      const a = (-g.textAngle * Math.PI) / 180;
+      const dx = p.x - g.mid.x, dy = p.y - g.mid.y;
+      const lx = dx * Math.cos(a) - dy * Math.sin(a);
+      const ly = dx * Math.sin(a) + dy * Math.cos(a);
+      return Math.abs(lx) <= tw / 2 + tol && ly >= -e.size * 1.2 - tol && ly <= e.size + tol;
     }
     case 'line':
       return distToSeg(p.x, p.y, e.x1, e.y1, e.x2, e.y2) <= e.w / 2 + tol;

@@ -47,7 +47,7 @@ const cleanName = (s: string): string => s.replace(/[\\/:*?"<>|]/g, ' ').replace
 
 export const safeName = (s: string, fallback = 'Без имени'): string => cleanName(s) || fallback;
 
-const ENT_KINDS = new Set(['pad', 'smd', 'track', 'via', 'hole', 'line', 'rect', 'circle', 'text', 'poly', 'comp']);
+const ENT_KINDS = new Set(['pad', 'smd', 'track', 'via', 'hole', 'line', 'rect', 'circle', 'text', 'poly', 'dim', 'comp']);
 
 /** примитив платы: только заведомо известный kind — иначе entBBox/gerber упадут на битой записи */
 const isEnt = (e: unknown): e is M.Entity =>

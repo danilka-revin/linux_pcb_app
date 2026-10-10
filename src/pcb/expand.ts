@@ -73,7 +73,10 @@ function xformEmbedded(e: Entity, c: Comp, tf: (p: Pt) => Pt, idx: string): Enti
         return [{ ...e, id: idx, x: Math.min(a.x, b.x), y: Math.min(a.y, b.y), w: Math.abs(a.x - b.x), h: Math.abs(a.y - b.y), layer: rl(e.layer) }];
       }
       const cs = [{ x: e.x, y: e.y }, { x: e.x + e.w, y: e.y }, { x: e.x + e.w, y: e.y + e.h }, { x: e.x, y: e.y + e.h }];
-      if (e.filled) return [{ kind: 'poly', id: idx, pts: cs.map(tf), layer: rc(e.layer) }];
+      if (e.filled) {
+        const l = e.layer === 'k1' || e.layer === 'k2' ? rc(e.layer) : rl(e.layer);
+        return [{ kind: 'poly', id: idx, pts: cs.map(tf), layer: l } as Entity];
+      }
       return cs.map((p, i) => {
         const b = tf(cs[(i + 1) % 4]);
         return { kind: 'line', id: `${idx}.${i}`, x1: tf(p).x, y1: tf(p).y, x2: b.x, y2: b.y, w: e.th, layer: rl(e.layer) } as Entity;
@@ -86,7 +89,14 @@ function xformEmbedded(e: Entity, c: Comp, tf: (p: Pt) => Pt, idx: string): Enti
       return [{ ...e, id: idx, x: p.x, y: p.y, rot, mirror: bottom ? !e.mirror : e.mirror, layer: rl(e.layer) }];
     }
     case 'track': return [{ ...e, id: idx, pts: e.pts.map(tf), layer: rc(e.layer) }];
-    case 'poly': return [{ ...e, id: idx, pts: e.pts.map(tf), layer: rc(e.layer) }];
+    case 'poly': {
+      const l = e.layer === 'k1' || e.layer === 'k2' ? rc(e.layer) : rl(e.layer);
+      return [{
+        ...e, id: idx, pts: e.pts.map(tf),
+        holes: e.holes ? e.holes.map((h) => h.map(tf)) : undefined,
+        layer: l,
+      }];
+    }
     case 'comp': return []; // вложенные компоненты не поддерживаем
     default: return [];
   }

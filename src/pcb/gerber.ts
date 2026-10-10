@@ -3,11 +3,12 @@
 import type { Doc, Entity, LayerId, Pt } from './model';
 import { expandDoc } from './expand';
 import { textPolylines } from './strokefont';
+import { dimArrows, dimGeom, dimSegments } from './dim';
 
 type Op =
   | { t: 'flash'; ap: string; x: number; y: number }
   | { t: 'path'; ap: string; pts: Pt[] }
-  | { t: 'region'; pts: Pt[] }
+  | { t: 'region'; pts: Pt[]; clear?: boolean }
   | { t: 'arc'; ap: string; cx: number; cy: number; r: number };
 
 const f3 = (v: number): string => String(parseFloat(v.toFixed(4)));
@@ -77,8 +78,34 @@ function collectOps(doc: Doc, layer: LayerId): Op[] {
         break;
       }
       case 'poly':
-        if (e.layer === layer && e.pts.length > 2) ops.push({ t: 'region', pts: e.pts });
+        if (e.layer === layer && e.pts.length > 2) {
+          ops.push({ t: 'region', pts: e.pts });
+          // дырки (векторизованный логотип) вычитаются обратной полярностью
+          for (const hole of e.holes ?? [])
+            if (hole.length > 2) ops.push({ t: 'region', pts: hole, clear: true });
+        }
         break;
+      case 'dim': {
+        if (e.layer !== layer) break;
+        const g = dimGeom(e);
+        for (const [p1, p2] of dimSegments(e))
+          ops.push({ t: 'path', ap: `C,${f3(e.th)}`, pts: [p1, p2] });
+        for (const tri of dimArrows(e))
+          ops.push({ t: 'path', ap: `C,${f3(Math.max(e.th * 0.6, 0.06))}`, pts: [...tri, tri[0]] });
+        // подпись — тем же векторным шрифтом, что и текст
+        const sc = e.size / 10;
+        const a = (g.textAngle * Math.PI) / 180;
+        const ca = Math.cos(a), sa = Math.sin(a);
+        const t = { x: g.mid.x + g.n.x * e.size * 0.5, y: g.mid.y + g.n.y * e.size * 0.5 };
+        for (const seg of textPolylines(g.label)) {
+          const tp = seg.map((p) => {
+            const x = p.x * sc, y = p.y * sc;
+            return { x: t.x + x * ca - y * sa, y: t.y + x * sa + y * ca };
+          });
+          ops.push({ t: 'path', ap: `C,${f3(Math.max(e.th * 0.8, 0.08))}`, pts: tp });
+        }
+        break;
+      }
       case 'text':
         if (e.layer === layer && isSilk) addText(e);
         break;
@@ -136,12 +163,14 @@ export function gerberLayer(doc: Doc, layer: LayerId, title: string): string {
       move(o.pts[0]);
       for (let i = 1; i < o.pts.length; i++) draw(o.pts[i]);
     } else if (o.t === 'region') {
+      if (o.clear) out.push('%LPC*%');
       sel(apId('C,0.1'));
       out.push('G36*');
       move(o.pts[0]);
       for (let i = 1; i < o.pts.length; i++) draw(o.pts[i]);
       draw(o.pts[0]);
       out.push('G37*');
+      if (o.clear) out.push('%LPD*%');
     } else if (o.t === 'arc') {
       sel(apId(o.ap));
       move({ x: o.cx + o.r, y: o.cy });
