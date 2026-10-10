@@ -11,6 +11,11 @@ import { createPortal } from 'react-dom';
 import { Ic } from './icons';
 import { NI, SI, TI } from './widgets';
 import { ACCENT_PRESETS, THEME_BASE, type CustomColors } from './palette';
+import {
+  BOARD_SIZE_PRESETS, GRID_MODE_PRESETS, PRINT_PRESETS, TECH_PRESETS, THEME_PRESETS, UI_PRESETS,
+  isThemeActive, makeProfile, makeThemePreset, patchActive,
+  type PatchPreset, type ProfileUi, type SettingsProfile, type ThemePreset, type UserPresets,
+} from './presets';
 import { PerfBuilder } from './perf';
 import { UiBuilder, SideBuilder } from './updater';
 import {
@@ -40,6 +45,7 @@ interface Section {
 
 const SECTIONS: Section[] = [
   { id: 'general', icon: 'gear', title: 'Общие', hint: 'Тема, цвета, автосохранение, отмена', keys: 'тема цвет акцент автосохранение история отмена обновления запуск' },
+  { id: 'presets', icon: 'palette', title: 'Пресеты', hint: 'Темы оформления, технология, сетка, вид, свои профили', keys: 'пресет пресеты шаблон тема темы оформление цвет nord dracula solarized monokai профиль профили технология лут фоторезист чпу завод smd силовая сетка печать размер платы' },
   { id: 'interface', icon: 'uib', title: 'Интерфейс', hint: 'Панели, кнопки, строка состояния', keys: 'интерфейс панель кнопки тулбар док вкладки ширина компактный статус' },
   { id: 'grid', icon: 'grid', title: 'Сетка и привязка', hint: 'Шаг, вид, начало, привязка к объектам', keys: 'сетка шаг mil мм привязка снап объекты оси точки линии перекрестия' },
   { id: 'canvas', icon: 'eye', title: 'Холст и курсор', hint: 'Перекрестие, колесо мыши, качество', keys: 'холст курсор перекрестие координаты колесо зум масштаб качество отрисовка' },
@@ -141,6 +147,110 @@ function startGeom(p: Prefs): Geom {
   return { x, y, w, h };
 }
 
+
+// ------------------------------------------------------------------ пресеты
+
+/** Мини-превью темы: шапка, панель, кнопка-акцент и строки текста. */
+function ThemePreview({ p }: { p: ThemePreset }) {
+  const c = { ...THEME_BASE[p.theme], ...p.colors };
+  return (
+    <span className="tp-prev" style={{ background: c.page }} aria-hidden="true">
+      <span className="tp-bar" style={{ background: c.surface }}>
+        <i className="tp-dot" style={{ background: c.accent }} />
+        <i className="tp-line" style={{ background: c.text, opacity: 0.55, width: '38%' }} />
+      </span>
+      <span className="tp-body">
+        <span className="tp-panel" style={{ background: c.surface }}>
+          <i className="tp-line" style={{ background: c.text, opacity: 0.6, width: '80%' }} />
+          <i className="tp-line" style={{ background: c.text, opacity: 0.35, width: '60%' }} />
+          <i className="tp-line" style={{ background: c.text, opacity: 0.35, width: '70%' }} />
+        </span>
+        <span className="tp-board">
+          <i className="tp-trace" style={{ borderColor: c.accent }} />
+          <i className="tp-btn" style={{ background: c.accent }} />
+        </span>
+      </span>
+    </span>
+  );
+}
+
+function ThemeCard({
+  p, on, onPick, onDelete,
+}: {
+  p: ThemePreset;
+  on: boolean;
+  onPick: () => void;
+  onDelete?: () => void;
+}) {
+  return (
+    <div className={'tp-card' + (on ? ' on' : '')}>
+      <button type="button" className="tp-pick" title={p.hint ?? p.name} aria-pressed={on} onClick={onPick}>
+        <ThemePreview p={p} />
+        <span className="tp-name">
+          <span>{p.name}</span>
+          {on && <span className="pc-on" aria-label="выбрано">✓</span>}
+        </span>
+        <span className="tp-sub">{p.user ? 'своя · ' : ''}{p.theme === 'dark' ? 'тёмная' : 'светлая'}</span>
+      </button>
+      {onDelete && (
+        <button type="button" className="tp-del" title="Удалить свою тему" onClick={onDelete}>×</button>
+      )}
+    </div>
+  );
+}
+
+/** Карточка пресета-«заплатки»: название, пояснение, ключевые значения. */
+function PresetCard({
+  name, hint, meta, on, onPick,
+}: {
+  name: string;
+  hint: string;
+  meta?: string;
+  on: boolean;
+  onPick: () => void;
+}) {
+  return (
+    <button type="button" className={'pc-card' + (on ? ' on' : '')} title={hint} aria-pressed={on} onClick={onPick}>
+      <span className="pc-name">{name}{on && <span className="pc-on" aria-label="активен">✓</span>}</span>
+      <span className="pc-hint">{hint}</span>
+      {meta && <span className="pc-meta">{meta}</span>}
+    </button>
+  );
+}
+
+/** Строка быстрых пресетов внутри обычного раздела. */
+function QuickPresets({
+  items, isOn, onPick,
+}: {
+  items: { id: string; name: string; hint?: string }[];
+  isOn: (id: string) => boolean;
+  onPick: (id: string) => void;
+}) {
+  return (
+    <div className="set-choice set-quick" role="group">
+      {items.map((p) => (
+        <button
+          key={p.id}
+          type="button"
+          className={'btn tiny' + (isOn(p.id) ? ' on' : '')}
+          title={p.hint}
+          onClick={() => onPick(p.id)}
+        >{p.name}</button>
+      ))}
+    </div>
+  );
+}
+
+const techMeta = (d: Partial<Defs>): string =>
+  `дорожка ${fmt(d.trackW ?? 0)} · зазор ${fmt(d.drcClear ?? 0)} · переход ${fmt(d.viaSize ?? 0)}/${fmt(d.viaDrill ?? 0)} мм`;
+const gridMeta = (d: Partial<Defs>): string =>
+  (d.snapOn === false ? 'без сетки' : `шаг ${fmtGridFull(d.grid ?? 1.27)}`)
+  + ` · углы ${d.angle === 'free' ? 'любые' : (d.angle ?? '45') + '°'}`;
+const fmtDate = (t: number): string => {
+  if (!t) return '';
+  try { return new Date(t).toLocaleString('ru-RU', { dateStyle: 'short', timeStyle: 'short' }); } catch { return ''; }
+};
+
 // ------------------------------------------------------------------ окно
 
 export interface SettingsWindowProps {
@@ -153,10 +263,15 @@ export interface SettingsWindowProps {
   setTheme: (t: ThemeId) => void;
   colors: CustomColors;
   setColors: (c: CustomColors) => void;
+  /** свои пресеты: темы и профили настроек */
+  presets: UserPresets;
+  setPresets: (p: UserPresets) => void;
   /** конфигурация интерфейса: группы кнопок и боковые колонки */
   ui: { ids: string[]; hidden: string[]; sides: SidesConf; pinned: string[]; names: Record<string, string> };
   onUi: (next: { ids: string[]; hidden: string[] }) => void;
   onSides: (next: SidesConf) => void;
+  /** заменить всю конфигурацию интерфейса разом (профиль настроек) */
+  onUiAll: (next: ProfileUi) => void;
   /** слои */
   activeCu: 'k1' | 'k2';
   setActiveCu: (l: 'k1' | 'k2') => void;
@@ -177,8 +292,8 @@ export interface SettingsWindowProps {
 
 export function SettingsWindow(props: SettingsWindowProps) {
   const {
-    prefs, setPrefs, defs, setDefs, theme, setTheme, colors, setColors, ui, onUi, onSides,
-    activeCu, setActiveCu, hiddenLayers, toggleLayer, layerCounts, board, version,
+    prefs, setPrefs, defs, setDefs, theme, setTheme, colors, setColors, presets: userPresets, setPresets,
+    ui, onUi, onSides, onUiAll, activeCu, setActiveCu, hiddenLayers, toggleLayer, layerCounts, board, version,
     onClose, onDetach, onReset, onExport, onImport, onClearDraft,
   } = props;
 
@@ -367,6 +482,96 @@ export function SettingsWindow(props: SettingsWindowProps) {
 
   const accentBase = THEME_BASE[theme];
 
+  // ---------------- пресеты ----------------
+  // Перед применением любого пресета запоминаем текущие настройки, чтобы
+  // одним щелчком «Вернуть как было» (кнопка в нижней строке окна).
+  const curUi: ProfileUi = { ids: ui.ids, hidden: ui.hidden, sides: ui.sides };
+  const [undoSnap, setUndoSnap] = useState<{ label: string; profile: SettingsProfile } | null>(null);
+  const [themeName, setThemeName] = useState('');
+  const [profileName, setProfileName] = useState('');
+  const [askDel, setAskDel] = useState<string | null>(null);
+  const [presetMsg, setPresetMsg] = useState('');
+  const allThemes = useMemo(() => [...THEME_PRESETS, ...userPresets.themes], [userPresets.themes]);
+  const activeTheme = allThemes.find((p) => isThemeActive(p, theme, colors));
+
+  const remember = (label: string) => setUndoSnap({
+    label, profile: makeProfile('undo', { theme, colors, prefs, defs, ui: curUi }),
+  });
+  const putProfile = (pr: SettingsProfile) => {
+    setTheme(pr.theme);
+    setColors({ ...pr.colors });
+    setPrefs(pr.prefs);
+    setDefs(pr.defs);
+    if (pr.ui) onUiAll(pr.ui);
+  };
+  const applyTheme = (p: ThemePreset) => {
+    if (isThemeActive(p, theme, colors)) return;
+    remember(`тема «${p.name}»`);
+    setTheme(p.theme);
+    setColors({ ...p.colors });
+  };
+  const applyDefs = (p: PatchPreset<Defs>, kind: string) => {
+    remember(`${kind} «${p.name}»`);
+    setDefs(p.patch);
+  };
+  const applyPrefs = (p: PatchPreset<Prefs>, kind: string) => {
+    remember(`${kind} «${p.name}»`);
+    setPrefs(p.patch);
+  };
+  const applyProfile = (pr: SettingsProfile) => {
+    remember(`профиль «${pr.name}»`);
+    putProfile(pr);
+    setPresetMsg(`Профиль «${pr.name}» применён.`);
+  };
+  const undoPreset = () => {
+    if (!undoSnap) return;
+    putProfile(undoSnap.profile);
+    setUndoSnap(null);
+  };
+  const saveTheme = () => {
+    const t = makeThemePreset(themeName || `Моя тема ${userPresets.themes.length + 1}`, theme, colors);
+    setPresets({ ...userPresets, themes: [...userPresets.themes, t] });
+    setThemeName('');
+    setPresetMsg(`Тема «${t.name}» сохранена.`);
+  };
+  const saveProfile = () => {
+    const pr = makeProfile(profileName || `Профиль ${userPresets.profiles.length + 1}`, { theme, colors, prefs, defs, ui: curUi });
+    setPresets({ ...userPresets, profiles: [...userPresets.profiles, pr] });
+    setProfileName('');
+    setPresetMsg(`Профиль «${pr.name}» сохранён.`);
+  };
+  const overwriteProfile = (id: string) => {
+    setPresets({
+      ...userPresets,
+      profiles: userPresets.profiles.map((p) => (p.id === id
+        ? { ...makeProfile(p.name, { theme, colors, prefs, defs, ui: curUi }), id: p.id }
+        : p)),
+    });
+    setPresetMsg('Профиль обновлён текущими настройками.');
+  };
+  /** Удаление в два щелчка: первый спрашивает, второй удаляет. */
+  const delPreset = (id: string, kind: 'themes' | 'profiles') => {
+    if (askDel !== id) { setAskDel(id); return; }
+    setAskDel(null);
+    if (kind === 'themes') setPresets({ ...userPresets, themes: userPresets.themes.filter((t) => t.id !== id) });
+    else setPresets({ ...userPresets, profiles: userPresets.profiles.filter((p) => p.id !== id) });
+  };
+  const allThemeName = (pr: SettingsProfile): string =>
+    allThemes.find((p) => isThemeActive(p, pr.theme, pr.colors))?.name
+    ?? (pr.theme === 'dark' ? 'тёмная, свои цвета' : 'светлая, свои цвета');
+  const pickTech = (id: string) => { const p = TECH_PRESETS.find((x) => x.id === id); if (p) applyDefs(p, 'технология'); };
+  const pickGrid = (id: string) => { const p = GRID_MODE_PRESETS.find((x) => x.id === id); if (p) applyDefs(p, 'сетка'); };
+  const pickUi = (id: string) => { const p = UI_PRESETS.find((x) => x.id === id); if (p) applyPrefs(p, 'вид'); };
+  const pickPrint = (id: string) => { const p = PRINT_PRESETS.find((x) => x.id === id); if (p) applyPrefs(p, 'печать'); };
+  const pickSize = (id: string) => {
+    const p = BOARD_SIZE_PRESETS.find((x) => x.id === id);
+    if (p) setPrefs({ newW: p.w, newH: p.h });
+  };
+  const sizeOn = (id: string) => {
+    const p = BOARD_SIZE_PRESETS.find((x) => x.id === id);
+    return !!p && Math.abs(p.w - prefs.newW) < 1e-6 && Math.abs(p.h - prefs.newH) < 1e-6;
+  };
+
   // ---------------------------------------------------------------- разметка разделов
 
   const renderSection = (): ReactNode => {
@@ -382,6 +587,23 @@ export function SettingsWindow(props: SettingsWindowProps) {
                   options={[['dark', 'Тёмная'], ['light', 'Светлая']]}
                   onChange={setTheme}
                 />
+              </Row>
+              <Row label="Готовая тема" hint="Пресеты оформления: Nord, Dracula, Solarized, «Бумага» и другие">
+                <select
+                  className="set-sel"
+                  aria-label="Готовая тема"
+                  value={activeTheme?.id ?? ''}
+                  onChange={(e) => { const p = allThemes.find((x) => x.id === e.target.value); if (p) applyTheme(p); }}
+                >
+                  {!activeTheme && <option value="">свои цвета</option>}
+                  <optgroup label="Тёмные">
+                    {allThemes.filter((p) => p.theme === 'dark').map((p) => <option key={p.id} value={p.id}>{p.name}{p.user ? ' (своя)' : ''}</option>)}
+                  </optgroup>
+                  <optgroup label="Светлые">
+                    {allThemes.filter((p) => p.theme === 'light').map((p) => <option key={p.id} value={p.id}>{p.name}{p.user ? ' (своя)' : ''}</option>)}
+                  </optgroup>
+                </select>
+                <button type="button" className="btn tiny" onClick={() => setSection('presets')}>Все пресеты…</button>
               </Row>
               <Row label="Акцентный цвет" hint="Цвет выделения, активных кнопок и полос прогресса">
                 <span className="swatches compact">
@@ -478,10 +700,144 @@ export function SettingsWindow(props: SettingsWindowProps) {
           </>
         );
 
+      // ---------------- Пресеты ----------------
+      case 'presets':
+        return (
+          <>
+            <Block
+              title="Темы оформления"
+              note="Тема меняет цвета интерфейса и холста: фон платы, сетку и цвет выделения. Цвета слоёв меди и шелкографии остаются привычными. Любую тему можно подправить в «Общих» и сохранить как свою."
+            >
+              <div className="tp-grid">
+                {allThemes.map((p) => (
+                  <ThemeCard
+                    key={p.id}
+                    p={p}
+                    on={activeTheme?.id === p.id}
+                    onPick={() => applyTheme(p)}
+                    onDelete={p.user ? () => delPreset(p.id, 'themes') : undefined}
+                  />
+                ))}
+              </div>
+              {askDel && userPresets.themes.some((t) => t.id === askDel) && (
+                <p className="set-note">Нажмите × ещё раз, чтобы удалить тему.</p>
+              )}
+              <div className="set-row">
+                <span className="set-row-label">Сохранить текущую</span>
+                <span className="set-row-ctl">
+                  <span className="set-inline">
+                    <input
+                      className="txt"
+                      value={themeName}
+                      placeholder={activeTheme ? `${activeTheme.name} (копия)` : 'Название темы'}
+                      aria-label="Название своей темы"
+                      onChange={(e) => setThemeName(e.target.value)}
+                      onKeyDown={(e) => { if (e.key === 'Enter') saveTheme(); }}
+                    />
+                    <button type="button" className="btn tiny" onClick={saveTheme}>Сохранить тему</button>
+                  </span>
+                </span>
+              </div>
+            </Block>
+
+            <Block
+              title="Технология изготовления"
+              note="Ширина дорожек, площадки, переходы, контроль зазоров и параметры автотрассировки разом. Это отправная точка — перед заказом сверьтесь с требованиями своего производства."
+            >
+              <div className="pc-grid">
+                {TECH_PRESETS.map((p) => (
+                  <PresetCard
+                    key={p.id} name={p.name} hint={p.hint} meta={techMeta(p.patch)}
+                    on={patchActive(defs, p.patch)} onPick={() => applyDefs(p, 'технология')}
+                  />
+                ))}
+              </div>
+            </Block>
+
+            <Block title="Сетка и привязка">
+              <div className="pc-grid">
+                {GRID_MODE_PRESETS.map((p) => (
+                  <PresetCard
+                    key={p.id} name={p.name} hint={p.hint} meta={gridMeta(p.patch)}
+                    on={patchActive(defs, p.patch)} onPick={() => applyDefs(p, 'сетка')}
+                  />
+                ))}
+              </div>
+            </Block>
+
+            <Block title="Вид интерфейса">
+              <div className="pc-grid">
+                {UI_PRESETS.map((p) => (
+                  <PresetCard
+                    key={p.id} name={p.name} hint={p.hint}
+                    on={patchActive(prefs, p.patch)} onPick={() => applyPrefs(p, 'вид')}
+                  />
+                ))}
+              </div>
+            </Block>
+
+            <Block title="Печать 1:1 и новая плата" note="Слой печати пресет не меняет — только разрешение, зеркало и метки отверстий.">
+              <Row label="Печать (PNG)">
+                <QuickPresets items={PRINT_PRESETS} isOn={(id) => patchActive(prefs, PRINT_PRESETS.find((x) => x.id === id)!.patch)} onPick={pickPrint} />
+              </Row>
+              <Row label="Размер новой платы" hint="Подставляется в диалог «Новая плата»">
+                <QuickPresets
+                  items={BOARD_SIZE_PRESETS.map((p) => ({ ...p, hint: `${fmt(p.w)} × ${fmt(p.h)} мм` }))}
+                  isOn={sizeOn} onPick={pickSize}
+                />
+              </Row>
+            </Block>
+
+            <Block
+              title="Мои профили"
+              note="Профиль — снимок всех настроек: тема и цвета, сетка, инструменты, трассировка, горячие клавиши, состав кнопок и панелей. Удобно держать, например, «Дом — ЛУТ» и «Завод — SMD». Профили не удаляются сбросом настроек и попадают в файл настроек."
+            >
+              {userPresets.profiles.length === 0 && <p className="set-note">Пока нет сохранённых профилей.</p>}
+              {userPresets.profiles.map((pr) => (
+                <div className="pf-row" key={pr.id}>
+                  <span className="pf-info">
+                    <b>{pr.name}</b>
+                    <small>{allThemeName(pr)}{pr.created ? ' · ' + fmtDate(pr.created) : ''}</small>
+                  </span>
+                  <span className="pf-act">
+                    <button type="button" className="btn tiny primary" onClick={() => applyProfile(pr)}>Применить</button>
+                    <button type="button" className="btn tiny" title="Записать в профиль текущие настройки" onClick={() => overwriteProfile(pr.id)}>Обновить</button>
+                    <button
+                      type="button"
+                      className={'btn tiny' + (askDel === pr.id ? ' danger' : '')}
+                      onClick={() => delPreset(pr.id, 'profiles')}
+                    >{askDel === pr.id ? 'Точно удалить?' : 'Удалить'}</button>
+                  </span>
+                </div>
+              ))}
+              <div className="set-row">
+                <span className="set-row-label">Сохранить текущие настройки</span>
+                <span className="set-row-ctl">
+                  <span className="set-inline">
+                    <input
+                      className="txt"
+                      value={profileName}
+                      placeholder="Название профиля"
+                      aria-label="Название профиля настроек"
+                      onChange={(e) => setProfileName(e.target.value)}
+                      onKeyDown={(e) => { if (e.key === 'Enter') saveProfile(); }}
+                    />
+                    <button type="button" className="btn tiny" onClick={saveProfile}>Сохранить профиль</button>
+                  </span>
+                </span>
+              </div>
+              {presetMsg && <p className="set-note">{presetMsg}</p>}
+            </Block>
+          </>
+        );
+
       // ---------------- Интерфейс ----------------
       case 'interface':
         return (
           <>
+            <Block title="Пресет вида" note="Готовые наборы настроек ниже: компактность, док, перекрестие, подсказки.">
+              <QuickPresets items={UI_PRESETS} isOn={(id) => patchActive(prefs, UI_PRESETS.find((x) => x.id === id)!.patch)} onPick={pickUi} />
+            </Block>
             <Block title="Окно редактора">
               <Check
                 label="Компактный интерфейс"
@@ -541,6 +897,9 @@ export function SettingsWindow(props: SettingsWindowProps) {
       case 'grid':
         return (
           <>
+            <Block title="Режим работы" note="Пресеты сетки и привязки: шаг, вид, главные узлы, привязка и углы прокладки.">
+              <QuickPresets items={GRID_MODE_PRESETS} isOn={(id) => patchActive(defs, GRID_MODE_PRESETS.find((x) => x.id === id)!.patch)} onPick={pickGrid} />
+            </Block>
             <Block title="Шаг сетки" note={`Сейчас: ${fmtGridFull(grid.step)} · ${gridSummary(grid)}`}>
               <Row label="Шаг" hint="Стандартные шаги (метрика, mil, монтаж) и любое своё значение">
                 <select
@@ -723,6 +1082,9 @@ export function SettingsWindow(props: SettingsWindowProps) {
       case 'objects':
         return (
           <>
+            <Block title="Технология" note="Пресет меняет дорожки, площадки, переходы, зазор DRC и параметры автотрассировки.">
+              <QuickPresets items={TECH_PRESETS} isOn={(id) => patchActive(defs, TECH_PRESETS.find((x) => x.id === id)!.patch)} onPick={pickTech} />
+            </Block>
             <Block title="Дорожки">
               <Row label="Ширина дорожки, мм">
                 <NI label="Ширина дорожки, мм" value={defs.trackW} step={0.05} min={0.05} max={20} on={(v) => setDefs({ trackW: v })} />
@@ -856,6 +1218,9 @@ export function SettingsWindow(props: SettingsWindowProps) {
       case 'routing':
         return (
           <>
+            <Block title="Технология" note="Тот же пресет, что в «Новых объектах»: зазоры и ширины под способ изготовления.">
+              <QuickPresets items={TECH_PRESETS} isOn={(id) => patchActive(defs, TECH_PRESETS.find((x) => x.id === id)!.patch)} onPick={pickTech} />
+            </Block>
             <Block title="Параметры трассировщика" note="Работают и в режиме «две точки», и при разводке групп соединений.">
               <Row label="Ширина дорожки, мм">
                 <NI label="Ширина дорожки, мм" value={defs.rtW} step={0.05} min={0.05} max={20} on={(v) => setDefs({ rtW: v })} />
@@ -930,6 +1295,12 @@ export function SettingsWindow(props: SettingsWindowProps) {
         return (
           <>
             <Block title="Новая плата" note="Значения подставляются в диалог «Новая плата».">
+              <Row label="Типовой размер">
+                <QuickPresets
+                  items={BOARD_SIZE_PRESETS.map((p) => ({ ...p, hint: `${fmt(p.w)} × ${fmt(p.h)} мм` }))}
+                  isOn={sizeOn} onPick={pickSize}
+                />
+              </Row>
               <Row label="Название">
                 <TI label="Название" value={prefs.newName} on={(v) => setPrefs({ newName: v })} />
               </Row>
@@ -941,6 +1312,9 @@ export function SettingsWindow(props: SettingsWindowProps) {
               </Row>
             </Block>
             <Block title="Печать 1:1 (PNG)" note="ЛУТ и фотошаблон: слой, зеркало, метки центров и разрешение.">
+              <Row label="Пресет">
+                <QuickPresets items={PRINT_PRESETS} isOn={(id) => patchActive(prefs, PRINT_PRESETS.find((x) => x.id === id)!.patch)} onPick={pickPrint} />
+              </Row>
               <Row label="Слой">
                 <SI
                   label="Слой печати"
@@ -1069,12 +1443,12 @@ export function SettingsWindow(props: SettingsWindowProps) {
                 <div><span>Элементов</span><b>{board.entities}</b></div>
                 <div><span>Групп</span><b>{board.groups}</b></div>
                 <div><span>Версия</span><b>{version ?? 'разработка'}</b></div>
-                <div><span>Тема</span><b>{theme === 'dark' ? 'тёмная' : 'светлая'}</b></div>
+                <div><span>Тема</span><b>{activeTheme ? activeTheme.name : (theme === 'dark' ? 'тёмная, свои цвета' : 'светлая, свои цвета')}</b></div>
               </div>
               <p className="set-note">
                 Проект и черновик хранятся в этом браузере; на общем сервере — в вашем
                 аккаунте. Настройки лежат в localStorage: <code>psbees.prefs</code>,
-                {' '}<code>lauaut.defs</code>, <code>lauaut.ui</code>.
+                {' '}<code>lauaut.defs</code>, <code>lauaut.ui</code>, свои пресеты — <code>psbees.presets</code>.
               </p>
             </Block>
             <Block title="Перенос настроек">
@@ -1182,7 +1556,16 @@ export function SettingsWindow(props: SettingsWindowProps) {
       <div className="set-foot">
         <button className="btn tiny" onClick={onReset}>Сбросить все настройки</button>
         <span className="sp" />
-        <span className="set-foot-note">Изменения применяются сразу</span>
+        {undoSnap
+          ? (
+            <span className="set-foot-note set-undo">
+              Применено: {undoSnap.label}.
+              <button type="button" className="btn tiny" onClick={undoPreset} title="Вернуть настройки, какими они были до пресета">
+                Вернуть как было
+              </button>
+            </span>
+          )
+          : <span className="set-foot-note">Изменения применяются сразу</span>}
         <button className="btn primary" onClick={onClose}>Готово</button>
       </div>
 

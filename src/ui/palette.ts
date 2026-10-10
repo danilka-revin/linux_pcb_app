@@ -2,7 +2,7 @@
 // Пользователь задаёт базовые hex-цвета, из них выводятся производные
 // CSS-переменные (hover, линии, затемнения акцента и т.п.) и применяются
 // инлайн на <html>, перекрывая значения темы. См. applyCustomColors.
-import type { ThemeId } from '../pcb/render';
+import type { CanvasOverrides, ThemeId } from '../pcb/render';
 
 export type CustomColors = {
   accent?: string; // акцентный цвет, hex
@@ -177,4 +177,40 @@ export function applyCustomColors(c: CustomColors, theme: ThemeId): void {
     root.style.setProperty('--modal-veil', lightish ? rgba('#1e232a', 0.45) : rgba(bg, 0.72));
     root.style.setProperty('--sw-line', rgba(tx, 0.25));
   }
+}
+
+// ---------------- холст ----------------
+
+/**
+ * Цвета холста из пользовательских цветов: фон платы, сетка и оси следуют
+ * цвету фона, выделение — акценту. Без своих цветов — пусто (цвета темы).
+ */
+export function canvasOverrides(c: CustomColors, theme: ThemeId): CanvasOverrides {
+  const out: CanvasOverrides = {};
+  const base = THEME_BASE[theme];
+  if (isHex(c.accent)) out.colors = { sel: c.accent };
+  if (isHex(c.page)) {
+    const bg = c.page;
+    const tx = isHex(c.text) ? c.text : base.text;
+    const lightish = lum(bg) >= 0.45;
+    // плата чуть светлее фона: на светлом — почти белая, на тёмном — едва заметно
+    const board = mix(bg, '#ffffff', lightish ? 0.7 : 0.05);
+    out.colors = {
+      ...out.colors,
+      bg,
+      board,
+      holeFill: bg,
+      grid: mix(board, tx, lightish ? 0.13 : 0.06),
+      gridMajor: mix(board, tx, lightish ? 0.24 : 0.13),
+      gridOrigin: mix(board, tx, lightish ? 0.38 : 0.24),
+      axes: mix(board, tx, lightish ? 0.22 : 0.16),
+    };
+    out.ui = {
+      ink: tx,
+      labelBg: rgba(lightish ? board : bg, 0.9),
+      labelInk: mix(tx, board, 0.3),
+      crosshair: rgba(tx, lightish ? 0.13 : 0.14),
+    };
+  }
+  return out;
 }
