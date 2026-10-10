@@ -656,9 +656,14 @@ function entitiesToLay(ents: M.Entity[]): LayEmit[] {
       case 'line':
         lineObj([{ x: e.x1, y: e.y1 }, { x: e.x2, y: e.y2 }], e.w, e.layer);
         break;
-      case 'poly':
-        polyObj(e.pts, true, 0.1, e.layer);
+      case 'poly': {
+        // в Sprint-Layout залитые полигоны только на меди; шелкографию/контур
+        // отдаём обводкой, дырки (векторизованный логотип) — тоже обводкой
+        const cu = e.layer === 'k1' || e.layer === 'k2';
+        polyObj(e.pts, cu, cu ? 0.1 : 0.15, e.layer);
+        if (!cu) for (const hole of e.holes ?? []) polyObj(hole, false, 0.15, e.layer);
         break;
+      }
       case 'rect': {
         const c = [
           { x: e.x, y: e.y }, { x: e.x + e.w, y: e.y },

@@ -4,12 +4,14 @@ import { LAYERS, fmt, type Doc, type Entity, type Group, type LayerId, type PadS
 import { groupCountLabel } from '../pcb/group';
 import type { GridStyle, GridUnit } from '../pcb/grid';
 import { fmtGridFull, GRID_STEPS_MM, gridPresets, isPresetStep, gridSummary } from '../pcb/grid';
+import { polylineLength, trackCalc, fmtAmp, fmtOhm, fmtVolt, COPPER_PRESETS } from '../pcb/trackcalc';
+import { dimValue } from '../pcb/dim';
 import { NI, SI, TI, TIC } from './widgets';
 import { Ic } from './icons';
 
 export type ToolId =
   | 'select' | 'cut' | 'solder' | 'track' | 'pad' | 'smd' | 'via' | 'hole' | 'line' | 'rect'
-  | 'circle' | 'fill' | 'text' | 'ruler' | 'comp' | 'route' | 'probe';
+  | 'circle' | 'fill' | 'text' | 'ruler' | 'dim' | 'comp' | 'route' | 'probe';
 
 export const TOOLS: { id: ToolId; name: string; icon: string; hint: string }[] = [
   { id: 'select', name: 'Выбор', icon: 'select', hint: 'ЛКМ — выбрать/двигать · рамка — выделить · двойной клик по звену — добавить узел · тяните узел для изменения формы · двойной клик/ПКМ/Del по узлу — удалить · Esc — снять выбор узла' },
@@ -28,6 +30,7 @@ export const TOOLS: { id: ToolId; name: string; icon: string; hint: string }[] =
   { id: 'fill', name: 'Полигон', icon: 'fill', hint: 'ЛКМ — вершины · ПКМ/Esc — замкнуть залитый полигон (земля)' },
   { id: 'text', name: 'Текст', icon: 'text', hint: 'Текст задаётся справа · ЛКМ — поставить · R — повернуть при установке' },
   { id: 'ruler', name: 'Линейка', icon: 'ruler', hint: 'ЛКМ — начало и конец измерения · Esc — убрать' },
+  { id: 'dim', name: 'Размер', icon: 'ruler', hint: 'Три клика: первая точка → вторая точка → куда отвести размерную линию. Размер остаётся на плате и попадает в печать и Gerber' },
   { id: 'comp', name: 'Установка компонента', icon: 'comp', hint: 'Выберите деталь во вкладке «Детали» слева · R — повернуть · Q — сторона · ЛКМ — установить' },
 ];
 
@@ -71,6 +74,14 @@ export interface Defs {
   textRot: number;
   textMirror: boolean;
   textLayer: 's1' | 's2';
+  // размерные линии (инструмент «Размер»)
+  dimTh: number;               // толщина линий размера, мм
+  dimSize: number;             // высота подписи, мм
+  dimLayer: 's1' | 's2' | 'outline';
+  dimMode: 'aligned' | 'horiz' | 'vert';
+  // расчёт дорожки (IPC-2221)
+  copperUm: number;            // толщина меди, мкм (35 = 1 oz)
+  tempRise: number;            // допустимый нагрев дорожки, °C
   // автотрассировка
   rtW: number;          // ширина дорожки
   rtClear: number;      // зазор до дорожек/меди
@@ -153,6 +164,7 @@ const rectOpts: [string, string][] = [
 function entityEditor(
   e: Entity,
   patch: (p: Record<string, unknown>) => void,
+  calc?: { copperUm: number; tempRise: number },
 ): JSX.Element {
   switch (e.kind) {
     case 'pad':
@@ -171,12 +183,37 @@ function entityEditor(
         <NI label="Высота, мм" value={e.h} min={0.1} on={(v) => patch({ h: v })} />
         <SI label="Слой" value={e.layer} options={[['k1', 'Медь верх (K1)'], ['k2', 'Медь низ (K2)']]} on={(v) => patch({ layer: v })} />
       </>);
-    case 'track':
+    case 'track': {
+      const len = polylineLength(e.pts);
+      const r = calc ? trackCalc({
+        widthMm: e.w, lengthMm: len,
+        thicknessUm: calc.copperUm, tempRiseC: calc.tempRise,
+      }) : null;
       return (<>
         <NI label="Ширина, мм" value={e.w} min={0.05} on={(v) => patch({ w: v })} />
         <SI label="Слой" value={e.layer} options={[['k1', 'Медь верх (K1)'], ['k2', 'Медь низ (K2)']]} on={(v) => patch({ layer: v })} />
+        {r && (
+          <div className="group-box" data-testid="track-calc">
+            <h3>Расчёт дорожки (IPC-2221)</h3>
+            <div className="sub">
+              Длина: <b>{fmt(len)}</b> мм · сечение: <b>{fmt(r.areaMm2, 3)}</b> мм²
+            </div>
+            <div className="sub">
+              Допустимый ток: <b>~{fmtAmp(r.currentA)} А</b> (нагрев до {String(calc!.tempRise).replace('.', ',')} °C,
+              медь {String(calc!.copperUm).replace('.', ',')} мкм)
+            </div>
+            <div className="sub">
+              Сопротивление: <b>{fmtOhm(r.resistanceOhm)}</b> · падение при {fmtAmp(r.currentA)} А: <b>{fmtVolt(r.voltDrop)} В</b>
+            </div>
+            <div className="hint" style={{ padding: '4px 2px' }}>
+              Оценка по формуле IPC-2221 для внешнего слоя и меди 20 °C. Для силовых цепей
+              закладывайте запас: считается допустимый нагрев, а не гарантированный нагрев.
+            </div>
+          </div>
+        )}
         <div className="sub">Узлов: {e.pts.length}. В «Выборе» тяните квадратный узел, двойной клик по звену добавляет узел, двойной клик или ПКМ по узлу удаляет его. Выбранный узел также удаляется клавишей Del.</div>
       </>);
+    }
     case 'via':
       return (<>
         <NI label="X, мм" value={e.x} on={(v) => patch({ x: v })} />
@@ -236,9 +273,25 @@ function entityEditor(
       </>);
     case 'poly':
       return (<>
-        <SI label="Слой" value={e.layer} options={[['k1', 'Медь верх (K1)'], ['k2', 'Медь низ (K2)']]} on={(v) => patch({ layer: v })} />
-        <div className="sub">Вершин: {e.pts.length}. В «Выборе» тяните вершины мышью; двойной клик по стороне добавляет вершину, двойной клик или ПКМ по вершине удаляет её.</div>
+        <SI label="Слой" value={e.layer} options={[['k1', 'Медь верх (K1)'], ['k2', 'Медь низ (K2)'], ...silkOpts]} on={(v) => patch({ layer: v })} />
+        <div className="sub">Вершин: {e.pts.length}{e.holes?.length ? ` · дырок: ${e.holes.length}` : ''}. В «Выборе» тяните вершины мышью; двойной клик по стороне добавляет вершину, двойной клик или ПКМ по вершине удаляет её.</div>
       </>);
+    case 'dim': {
+      const val = dimValue(e);
+      return (<>
+        <div className="sub">Размер: <b>{fmt(val, 3).replace('.', ',')} мм</b>{e.text ? ` · подпись: «${e.text}»` : ''}</div>
+        <NI label="X1, мм" value={e.x1} on={(v) => patch({ x1: v })} />
+        <NI label="Y1, мм" value={e.y1} on={(v) => patch({ y1: v })} />
+        <NI label="X2, мм" value={e.x2} on={(v) => patch({ x2: v })} />
+        <NI label="Y2, мм" value={e.y2} on={(v) => patch({ y2: v })} />
+        <NI label="Смещение линии, мм" value={e.off} on={(v) => patch({ off: v })} />
+        <SI label="Направление" value={e.mode} options={[['aligned', 'По точкам'], ['horiz', 'Горизонтально'], ['vert', 'Вертикально']]} on={(v) => patch({ mode: v })} />
+        <NI label="Толщина линий, мм" value={e.th} min={0.05} on={(v) => patch({ th: v })} />
+        <NI label="Высота текста, мм" value={e.size} min={0.5} on={(v) => patch({ size: v })} />
+        <TI label="Своя подпись" value={e.text ?? ''} on={(v) => patch({ text: v })} />
+        <SI label="Слой" value={e.layer} options={lineOpts} on={(v) => patch({ layer: v })} />
+      </>);
+    }
     case 'comp':
       return (<>
         <div className="sub">Компонент: <b>{e.name}</b></div>
@@ -304,7 +357,7 @@ export function PropsPanel({
     return (
       <div className="props">
         <h3>Выделено: {selEnts.length}{selGroup ? ` · ${selGroup.name}` : ''}</h3>
-        {one ? entityEditor(one, (p) => patchEnt(one.id, p)) : (
+        {one ? entityEditor(one, (p) => patchEnt(one.id, p), { copperUm: defs.copperUm, tempRise: defs.tempRise }) : (
           <div className="sub">Несколько элементов. Общие операции ниже.</div>
         )}
         {editInfo && <>
@@ -505,13 +558,32 @@ export function PropsPanel({
           </div>
         </div>
       );
-    case 'track':
+    case 'track': {
+      const preview = trackCalc({
+        widthMm: defs.trackW, lengthMm: 100,
+        thicknessUm: defs.copperUm, tempRiseC: defs.tempRise,
+      });
       return (
         <div className="props">
           <h3>Дорожка</h3>
           <NI label="Ширина, мм" value={defs.trackW} min={0.05} on={(v) => setDefs({ trackW: v })} />
           <SI label="Слой" value={activeCu} options={[['k1', 'Медь верх (K1)'], ['k2', 'Медь низ (K2)']]} on={(v) => setActiveCu(v as 'k1' | 'k2')} />
           <SI label="Углы" value={defs.angle} options={[['45', '45°'], ['90', '90°'], ['free', 'Свободно']]} on={(v) => setDefs({ angle: v as Defs['angle'] })} />
+          <div className="group-box">
+            <h3>Расчёт тока и сопротивления</h3>
+            <SI label="Толщина меди" value={String(defs.copperUm)}
+              options={COPPER_PRESETS.some((c) => c.um === defs.copperUm)
+                ? COPPER_PRESETS.map((c): [string, string] => [String(c.um), c.label])
+                : [[String(defs.copperUm), `своё: ${defs.copperUm} мкм`] as [string, string], ...COPPER_PRESETS.map((c): [string, string] => [String(c.um), c.label])]}
+              on={(v) => setDefs({ copperUm: parseFloat(v) })} />
+            <NI label="Допустимый нагрев, °C" value={defs.tempRise} min={1} max={100} on={(v) => setDefs({ tempRise: v })} />
+            <div className="sub">
+              При ширине {fmt(defs.trackW)} мм: ~{fmtAmp(preview.currentA)} А,
+              {' '}{(preview.resistanceOhm * 1000).toFixed(1).replace('.', ',')} мОм на 100 мм,
+              падение {(preview.voltDrop * 1000).toFixed(1).replace('.', ',')} мВ на 100 мм.
+              Точные цифры по выбранной дорожке — в свойствах (клик «Выбором»).
+            </div>
+          </div>
           <div className="hint">
             ЛКМ — точки, ПКМ/Esc — закончить. <span className="kbd">L</span> во время прокладки —
             переход на другой слой с виой. Клик по узлу дорожки начинает ответвление
@@ -521,6 +593,7 @@ export function PropsPanel({
           </div>
         </div>
       );
+    }
     case 'pad':
       return (
         <div className="props">
@@ -617,6 +690,22 @@ export function PropsPanel({
         <div className="props">
           <h3>Линейка</h3>
           <div className="hint">Два клика измеряют расстояние. <span className="kbd">Esc</span> — убрать измерение.</div>
+        </div>
+      );
+    case 'dim':
+      return (
+        <div className="props">
+          <h3>Размер</h3>
+          <SI label="Направление" value={defs.dimMode} options={[['aligned', 'По точкам'], ['horiz', 'Горизонтально'], ['vert', 'Вертикально']]} on={(v) => setDefs({ dimMode: v as Defs['dimMode'] })} />
+          <NI label="Толщина линий, мм" value={defs.dimTh} min={0.05} on={(v) => setDefs({ dimTh: v })} />
+          <NI label="Высота текста, мм" value={defs.dimSize} min={0.5} on={(v) => setDefs({ dimSize: v })} />
+          <SI label="Слой" value={defs.dimLayer} options={lineOpts} on={(v) => setDefs({ dimLayer: v as Defs['dimLayer'] })} />
+          <div className="hint">
+            Три клика: <b>первая точка</b> → <b>вторая точка</b> → куда отвести размерную линию.
+            Размер остаётся примитивом платы: его двигают, поворачивают, правят в свойствах
+            (там же своя подпись), он попадает в печать PNG и Gerber выбранного слоя.
+            <span className="kbd">Esc</span> — начать заново.
+          </div>
         </div>
       );
     case 'comp':

@@ -112,7 +112,19 @@ function copperShapes(e: Entity): Clipper.Paths {
       const path = rect(e.x, e.y, e.w, e.h, e.id);
       return e.filled ? [path] : stroked(path.map(model), e.th, e.id, true);
     }
-    case 'poly': return [polygon(e.pts, e.id)];
+    case 'poly': {
+      const paths = [polygon(e.pts, e.id)];
+      // дырки (например, у векторизованного логотипа) вычитаются из меди:
+      // отрицательная ориентация + заливка NonZero
+      for (const hole of e.holes ?? []) {
+        const hp = hole.map(coord);
+        if (hp.length >= 3 && Math.abs(Clipper.Clipper.Area(hp)) >= 1) {
+          if (Clipper.Clipper.Orientation(hp)) hp.reverse();
+          paths.push(hp);
+        }
+      }
+      return paths;
+    }
     case 'text': {
       checkPoint(e, e.id);
       positive(e.size, e.id); positive(e.th, e.id);
@@ -151,6 +163,21 @@ function unionCopper(entities: Entity[], layer: 'k1' | 'k2'): Clipper.Paths {
   clip.Execute(Clipper.ClipType.ctUnion, result, Clipper.PolyFillType.pftNonZero, Clipper.PolyFillType.pftNonZero);
   countPoints(result);
   return result;
+}
+
+/**
+ * Площадь меди слоя, мм²: точное объединение геометрии (как для ЧПУ).
+ * null — геометрия слишком сложная, вызывающий код берёт приближение.
+ */
+export function copperAreaOf(entities: Entity[], layer: 'k1' | 'k2'): number | null {
+  try {
+    const paths = unionCopper(entities, layer);
+    let area = 0;
+    for (const p of paths) area += Clipper.Clipper.Area(p); // дырки вычитаются знаком
+    return Math.abs(area) / (SCALE * SCALE);
+  } catch {
+    return null;
+  }
 }
 
 function topology(paths: Clipper.Paths): [number, number] {

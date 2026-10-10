@@ -199,8 +199,12 @@ function otherShapes(e: Entity): Shape[] {
       if (!segs.length && e.pts.length) segs.push([e.pts[0].x, e.pts[0].y, e.pts[0].x, e.pts[0].y]);
       return segs.length ? [mkShape(e.id, [e.layer], segs, e.w / 2)] : [];
     }
-    case 'poly':
-      return e.pts.length >= 3 ? [mkShape(e.id, [e.layer], polySegs(e.pts), 0, e.pts)] : [];
+    case 'poly': {
+      if (e.layer !== 'k1' && e.layer !== 'k2') return [];
+      if (e.pts.length < 3) return [];
+      // дырки игнорируются (консервативно: полигон — сплошное препятствие)
+      return [mkShape(e.id, [e.layer], polySegs(e.pts), 0, e.pts)];
+    }
     case 'rect': {
       if (e.layer !== 'k1' && e.layer !== 'k2') return [];
       const p = boxPoly(e.x + e.w / 2, e.y + e.h / 2, e.w / 2, e.h / 2);

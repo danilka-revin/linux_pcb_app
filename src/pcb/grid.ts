@@ -188,8 +188,18 @@ export function snapPoint(p: Pt, c: GridConf): Pt {
  */
 export function refPoints(e: Entity): Pt[] {
   switch (e.kind) {
-    case 'pad': case 'via': case 'hole': case 'smd': case 'text':
+    case 'pad': case 'via': case 'hole': case 'text':
       return [{ x: e.x, y: e.y }];
+    case 'smd': {
+      const rot = ((Math.round(e.rot) % 180) + 180) % 180;
+      const w = rot === 0 ? e.w : e.h, h = rot === 0 ? e.h : e.w;
+      const hw = w / 2, hh = h / 2;
+      return [
+        { x: e.x, y: e.y },
+        { x: e.x - hw, y: e.y - hh }, { x: e.x + hw, y: e.y - hh },
+        { x: e.x + hw, y: e.y + hh }, { x: e.x - hw, y: e.y + hh },
+      ];
+    }
     case 'track':
       return withMids(e.pts, false);
     case 'poly':

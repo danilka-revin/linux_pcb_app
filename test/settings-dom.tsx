@@ -110,9 +110,12 @@ const statusGrid = [...doc.querySelectorAll('.status > span')]
   .find((s) => (s.textContent ?? '').includes('Сетка'));
 assert.ok((statusGrid?.textContent ?? '').includes('2.54'), 'строка состояния показывает новый шаг');
 
-// привязка к объектам
-await click(byText('.set-chk', 'Привязка к объектам платы')?.querySelector('input'));
-assert.equal(defs().snapObj, true, 'привязка к объектам включена');
+// привязка к объектам (по умолчанию включена — выключается и включается галочкой)
+const snapChk = byText('.set-chk', 'Привязка к объектам платы')?.querySelector('input');
+await click(snapChk);
+assert.equal(defs().snapObj, false, 'привязка к объектам выключается');
+await click(snapChk);
+assert.equal(defs().snapObj, true, 'привязка к объектам включается');
 
 // ---------------------------------------------------------------- холст: перекрестие
 await click(byText('.set-nav-item', 'Холст и курсор'));

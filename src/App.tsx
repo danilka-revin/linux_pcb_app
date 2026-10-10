@@ -27,7 +27,7 @@ import {
 import { noteFrame, perfDpr } from './perf';
 import { usePerfProfile } from './ui/perf';
 import {
-  collectRefs, cycleGrid, drawGrid, fmtGridFull, gridSummary, nearestRefPts, snapPoint,
+  cycleGrid, drawGrid, fmtGridFull, gridSummary, nearestRefPts, snapPoint,
   type GridConf,
 } from './pcb/grid';
 import { productionFiles } from './pcb/gerber';
@@ -40,6 +40,9 @@ import { copperComponents, type NetRouteVariants, type NetRouteVariant } from '.
 import { AutoPlaceDialog, RouteVariantsDialog } from './ui/auto-layout';
 import { NetsPanel, NET_COLORS } from './ui/nets';
 import { InventoryDialog } from './ui/inventory';
+import { StatsDialog } from './ui/stats';
+import { ImageImportDialog } from './ui/image-import';
+import { alignSnap, collectSnapTagged, nearestSnap, selBBox, type AlignGuide, type SnapKind } from './pcb/snapguide';
 import { download, makeZip } from './pcb/zip';
 
 // ЧПУ открывают редко; CAM и его интерфейс загружаются по запросу, не при старте редактора.
@@ -187,11 +190,12 @@ type Draft =
   | { t: 'line'; p1: M.Pt }
   | { t: 'rect'; p1: M.Pt }
   | { t: 'circle'; c: M.Pt }
-  | { t: 'ruler'; pts: M.Pt[] };
+  | { t: 'ruler'; pts: M.Pt[] }
+  | { t: 'dim'; p1: M.Pt; p2: M.Pt | null };
 
 type Drag =
   | { mode: 'pan'; startPx: { x: number; y: number }; view0: View }
-  | { mode: 'move'; startWorld: M.Pt; doc0: M.Doc; moved: boolean; dx: number; dy: number }
+  | { mode: 'move'; startWorld: M.Pt; doc0: M.Doc; moved: boolean; dx: number; dy: number; guides?: AlignGuide[]; statics?: M.Pt[] }
   | { mode: 'marquee'; startWorld: M.Pt; curWorld: M.Pt }
   | { mode: 'node'; entId: string; idx: number; doc0: M.Doc; moved: boolean; startWorld: M.Pt; preview?: M.Pt; cache?: M.Entity };
 
@@ -263,13 +267,13 @@ const TOOL_GROUPS: ToolId2[][] = [
   ['route', 'probe'],
   ['track', 'cut', 'solder', 'pad', 'smd', 'via', 'hole'],
   ['line', 'rect', 'circle', 'fill', 'text'],
-  ['ruler', 'comp'],
+  ['ruler', 'dim', 'comp'],
 ];
 /** Цифровые горячие клавиши инструментов (для подсказок) */
 const TOOL_KEYS: Partial<Record<ToolId2, string>> = {
   select: '1', track: '2', pad: '3', via: '4', hole: '5',
   line: '6', text: '7', ruler: '8', route: '9', probe: '0',
-  cut: 'X', solder: 'S',
+  cut: 'X', solder: 'S', dim: 'U',
 };
 
 const DEFAULT_DEFS: Defs = {
@@ -281,7 +285,7 @@ const DEFAULT_DEFS: Defs = {
   gridOx: 0,
   gridOy: 0,
   snapOn: true,
-  snapObj: false,
+  snapObj: true,
   snapPx: 10,
   showAxes: true,
   angle: '45',
@@ -311,6 +315,12 @@ const DEFAULT_DEFS: Defs = {
   textRot: 0,
   textMirror: false,
   textLayer: 's1',
+  dimTh: 0.15,
+  dimSize: 2.5,
+  dimLayer: 's1',
+  dimMode: 'aligned',
+  copperUm: 35,
+  tempRise: 10,
   rtW: 0.8,
   rtClear: 0.4,
   rtHoleClear: 0.6,
@@ -487,7 +497,7 @@ export default function App({ cloudUser, onLogout }: { cloudUser?: CloudUser; on
   }, [expanded, doc.entities, tool, routeMode]);
   const [routeA, setRouteA] = useState<RouteEnd | null>(null);
   const [routeMsg, setRouteMsg] = useState<{ msg: string; ok: boolean | null }>({ msg: '', ok: null });
-  const [dialog, setDialog] = useState<'new' | 'export' | 'cnc' | 'panelize' | 'about' | 'inventory' | 'uib' | 'colors' | 'grid' | 'close' | 'cloud' | 'account' | 'board-preview' | 'autoplace' | 'settings' | null>(null);
+  const [dialog, setDialog] = useState<'new' | 'export' | 'cnc' | 'panelize' | 'about' | 'inventory' | 'stats' | 'imgimport' | 'uib' | 'colors' | 'grid' | 'close' | 'cloud' | 'account' | 'board-preview' | 'autoplace' | 'settings' | null>(null);
   // подтверждение опасного действия (удаление по настройке «Подтверждать удаление»)
   const [confirmAsk, setConfirmAsk] = useState<{ title: string; text: string; ok: string; onOk: () => void } | null>(null);
   const [boardPreviewTab, setBoardPreviewTab] = useState<'2d' | '3d'>('2d');
@@ -716,10 +726,10 @@ export default function App({ cloudUser, onLogout }: { cloudUser?: CloudUser; on
     defs.grid, defs.gridUnit, defs.gridStyle, defs.gridDiv, defs.gridMajor,
     defs.gridOx, defs.gridOy, defs.snapOn, defs.snapObj, defs.snapPx,
   ]);
-  // точки, к которым «прилипает» курсор при привязке к объектам: плоский
-  // массив строится один раз при изменении платы, а не на каждое движение мыши
+  // точки, к которым «прилипает» курсор при привязке к объектам: концы, середины,
+  // центры и пересечения строятся один раз при изменении платы, а не на каждый кадр
   const snapPts = useMemo(
-    () => (defs.snapOn && defs.snapObj ? collectRefs(expanded) : null),
+    () => (defs.snapOn && defs.snapObj ? collectSnapTagged(expanded) : null),
     [defs.snapOn, defs.snapObj, expanded],
   );
 
@@ -1912,6 +1922,33 @@ export default function App({ cloudUser, onLogout }: { cloudUser?: CloudUser; on
         });
         break;
       }
+      case 'dim': {
+        // три клика: первая точка → вторая точка → смещение размерной линии
+        const d = draft && draft.t === 'dim' ? draft : null;
+        if (!d) { setDraft({ t: 'dim', p1: sp, p2: null }); break; }
+        if (!d.p2) { setDraft({ ...d, p2: sp }); break; }
+        const mode = defs.dimMode;
+        let off: number;
+        if (mode === 'horiz') off = sp.y - (d.p1.y + d.p2.y) / 2;
+        else if (mode === 'vert') off = sp.x - (d.p1.x + d.p2.x) / 2;
+        else {
+          // смещение вдоль нормали к p1→p2
+          const ddx = d.p2.x - d.p1.x, ddy = d.p2.y - d.p1.y;
+          const L = Math.hypot(ddx, ddy) || 1;
+          const nx = -ddy / L, ny = ddx / L;
+          const mx = (d.p1.x + d.p2.x) / 2, my = (d.p1.y + d.p2.y) / 2;
+          off = (sp.x - mx) * nx + (sp.y - my) * ny;
+        }
+        if (Math.hypot(d.p2.x - d.p1.x, d.p2.y - d.p1.y) > 0.01) {
+          addEnts([{
+            id: M.uid(), kind: 'dim',
+            x1: d.p1.x, y1: d.p1.y, x2: d.p2.x, y2: d.p2.y,
+            off, th: defs.dimTh, size: defs.dimSize, mode, layer: defs.dimLayer,
+          }]);
+        }
+        setDraft({ t: 'dim', p1: sp, p2: null });
+        break;
+      }
       case 'comp': addComp(sp); break;
       case 'route': routeClick(w, sp); break;
       case 'probe': {
@@ -1959,8 +1996,24 @@ export default function App({ cloudUser, onLogout }: { cloudUser?: CloudUser; on
     } else if (d.mode === 'move') {
       const mdx = m.rx - d.startWorld.x, mdy = m.ry - d.startWorld.y;
       if (!d.moved && Math.hypot(mdx, mdy) * view.s < 4) return;
-      const sdx = m.alt ? mdx : M.snap(mdx, defs.grid);
-      const sdy = m.alt ? mdy : M.snap(mdy, defs.grid);
+      let sdx = m.alt ? mdx : M.snap(mdx, defs.grid);
+      let sdy = m.alt ? mdy : M.snap(mdy, defs.grid);
+      if (!m.alt && defs.snapOn && defs.snapObj) {
+        // «умные» направляющие: край/центр выделения прилипает к краям и центрам соседей
+        if (!d.statics) {
+          const others = d.doc0.entities.filter((e) => !selRef.current.has(e.id));
+          d.statics = collectSnapTagged(others, false);
+        }
+        const box = selBBox(d.doc0.entities, selRef.current);
+        if (box) {
+          const tol = 8 / Math.max(view.s, 0.01);
+          const res = alignSnap(box, sdx, sdy, d.statics, tol);
+          sdx = res.dx; sdy = res.dy;
+          d.guides = res.guides;
+        }
+      } else {
+        d.guides = undefined;
+      }
       const first = !d.moved;
       d.moved = true;
       d.dx = sdx; d.dy = sdy;
@@ -2133,6 +2186,8 @@ export default function App({ cloudUser, onLogout }: { cloudUser?: CloudUser; on
       case 'file.autoplace': setDialog('autoplace'); return;
       case 'file.cnc': setDialog('cnc'); return;
       case 'file.inventory': setDialog('inventory'); return;
+      case 'file.stats': setDialog('stats'); return;
+      case 'file.imgimport': setDialog('imgimport'); return;
 
       // ---------------- правка ----------------
       case 'edit.undo': undo(); return;
@@ -2670,6 +2725,66 @@ export default function App({ cloudUser, onLogout }: { cloudUser?: CloudUser; on
         });
       }
 
+      // размерная линия: черновик первых точек и превью готового размера
+      if (draft?.t === 'dim') {
+        const cur = { x: mouse.wx, y: mouse.wy };
+        if (!draft.p2) {
+          const a = toPx(draft.p1.x, draft.p1.y), b = toPx(cur.x, cur.y);
+          ctx.setLineDash([5, 4]);
+          ctx.strokeStyle = CANVAS_UI.ink;
+          ctx.lineWidth = 1;
+          ctx.beginPath(); ctx.moveTo(a.px, a.py); ctx.lineTo(b.px, b.py); ctx.stroke();
+          ctx.setLineDash([]);
+          const len = Math.hypot(cur.x - draft.p1.x, cur.y - draft.p1.y);
+          ctx.fillStyle = CANVAS_UI.labelBg;
+          ctx.fillRect(b.px + 8, b.py - 16, 74, 15);
+          ctx.fillStyle = CANVAS_UI.labelInk;
+          ctx.font = '11px monospace';
+          ctx.fillText(`${M.fmt(len)} мм`, b.px + 12, b.py - 5);
+        } else {
+          const mode = defs.dimMode;
+          let off: number;
+          if (mode === 'horiz') off = cur.y - (draft.p1.y + draft.p2.y) / 2;
+          else if (mode === 'vert') off = cur.x - (draft.p1.x + draft.p2.x) / 2;
+          else {
+            const dx = draft.p2.x - draft.p1.x, dy = draft.p2.y - draft.p1.y;
+            const L = Math.hypot(dx, dy) || 1;
+            const mx = (draft.p1.x + draft.p2.x) / 2, my = (draft.p1.y + draft.p2.y) / 2;
+            off = (cur.x - mx) * (-dy / L) + (cur.y - my) * (dx / L);
+          }
+          drawEnt(ctx, view, {
+            id: 'g', kind: 'dim',
+            x1: draft.p1.x, y1: draft.p1.y, x2: draft.p2.x, y2: draft.p2.y,
+            off, th: defs.dimTh, size: defs.dimSize, mode, layer: defs.dimLayer,
+          }, { alpha: 0.8, hidden: new Set<M.LayerId>() });
+        }
+      }
+
+      // маркер привязки к объектам: конец/середина/центр/угол/пересечение
+      if (snapPts && mouse.px >= 0 && mouse.py >= 0 && !drag.current) {
+        const hitSnap = nearestSnap(snapPts, { x: mouse.rx, y: mouse.ry }, defs.snapPx / Math.max(view.s, 0.01));
+        if (hitSnap) {
+          const q = toPx(hitSnap.x, hitSnap.y);
+          const SNAP_LABEL: Record<SnapKind, string> = {
+            end: 'конец', mid: 'середина', center: 'центр', corner: 'угол', cross: 'пересечение',
+          };
+          ctx.strokeStyle = '#7ac0ff';
+          ctx.lineWidth = 1.5;
+          ctx.beginPath();
+          ctx.moveTo(q.px, q.py - 6); ctx.lineTo(q.px + 6, q.py);
+          ctx.lineTo(q.px, q.py + 6); ctx.lineTo(q.px - 6, q.py);
+          ctx.closePath();
+          ctx.stroke();
+          ctx.font = '10px monospace';
+          const lbl = SNAP_LABEL[hitSnap.kind];
+          const tw = ctx.measureText(lbl).width;
+          ctx.fillStyle = CANVAS_UI.labelBg;
+          ctx.fillRect(q.px + 9, q.py - 8, tw + 8, 14);
+          ctx.fillStyle = '#7ac0ff';
+          ctx.fillText(lbl, q.px + 13, q.py + 2);
+        }
+      }
+
       // автотрассировка: первая точка и резиновая линия
       if (tool === 'route' && routeA) {
         const a = toPx(routeA.x, routeA.y);
@@ -2801,6 +2916,25 @@ export default function App({ cloudUser, onLogout }: { cloudUser?: CloudUser; on
           drawEnt(ctx, view, ent, dragDraw);
         }
         ctx.restore();
+        // направляющие выравнивания: тонкие линии к краям/центрам соседей
+        if (dragNow.guides?.length) {
+          ctx.save();
+          ctx.strokeStyle = '#7ac0ff';
+          ctx.setLineDash([4, 3]);
+          ctx.lineWidth = 1;
+          for (const g of dragNow.guides) {
+            ctx.beginPath();
+            if (g.axis === 'x') {
+              const p = toPx(g.at, 0);
+              ctx.moveTo(p.px + 0.5, 0); ctx.lineTo(p.px + 0.5, size.h);
+            } else {
+              const p = toPx(0, g.at);
+              ctx.moveTo(0, p.py + 0.5); ctx.lineTo(size.w, p.py + 0.5);
+            }
+            ctx.stroke();
+          }
+          ctx.restore();
+        }
       } else if (dragNow?.mode === 'node' && dragNow.moved && dragNow.preview) {
         // клон одной дорожки держим между кадрами: точка меняется на месте,
         // глубокое клонирование на каждый кадр здесь больше не нужно
@@ -2985,6 +3119,8 @@ export default function App({ cloudUser, onLogout }: { cloudUser?: CloudUser; on
               { icon: 'panel', label: 'Размножить плату (панелизация)…', onClick: () => setDialog('panelize') },
               { sep: true },
               { icon: 'inventory', label: 'Перечень площадок и отверстий…', onClick: () => setDialog('inventory') },
+              { icon: 'inventory', label: 'Статистика платы…', onClick: () => setDialog('stats') },
+              { icon: 'png', label: 'Изображение → шелкография…', onClick: () => setDialog('imgimport') },
               { sep: true },
               { icon: 'gear', label: 'Настройки…', kbd: 'Ctrl+,', onClick: () => setDialog('settings') },
             ]}
@@ -3610,6 +3746,20 @@ export default function App({ cloudUser, onLogout }: { cloudUser?: CloudUser; on
         <PanelizeDialog defX={doc.w + 2} defY={doc.h + 2} onOk={(c, r, gx, gy) => { panelize(c, r, gx, gy); setDialog(null); }} onClose={() => setDialog(null)} />
       )}
       {dialog === 'inventory' && <InventoryDialog doc={doc} onClose={() => setDialog(null)} />}
+      {dialog === 'stats' && <StatsDialog doc={doc} onClose={() => setDialog(null)} />}
+      {dialog === 'imgimport' && (
+        <ImageImportDialog
+          onClose={() => setDialog(null)}
+          onInsert={(ents) => {
+            setDialog(null);
+            if (!ents.length) return;
+            setPasteTpl(ents);
+            pasteGroups.current = [];
+            setToolRaw('select');
+            setTrackMsg({ msg: 'Кликните по плате, чтобы поставить рисунок (R — повернуть, Esc — отмена).', ok: true });
+          }}
+        />
+      )}
       {dialog === 'colors' && (
         <ColorsDialog
           colors={colors} theme={theme} setColors={setColors}
