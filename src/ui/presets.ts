@@ -65,6 +65,46 @@ export const THEME_PRESETS: ThemePreset[] = [
     colors: { accent: '#ffd400', page: '#000000', surface: '#0a0a0a', text: '#ffffff' },
   },
   {
+    id: 'one-dark', name: 'One Dark', hint: 'Atom One Dark: сдержанная классика редакторов кода', theme: 'dark',
+    colors: { accent: '#61afef', page: '#21252b', surface: '#282c34', text: '#abb2bf' },
+  },
+  {
+    id: 'tokyo-night', name: 'Tokyo Night', hint: 'Глубокий индиго с неоновым акцентом', theme: 'dark',
+    colors: { accent: '#7aa2f7', page: '#1a1b26', surface: '#24283b', text: '#a9b1d6' },
+  },
+  {
+    id: 'catppuccin', name: 'Catppuccin', hint: 'Catppuccin Mocha: мягкая пастель на тёмном', theme: 'dark',
+    colors: { accent: '#cba6f7', page: '#181825', surface: '#1e1e2e', text: '#cdd6f4' },
+  },
+  {
+    id: 'gruvbox', name: 'Gruvbox', hint: 'Тёплый ретро: песок и охра, ничего кислотного', theme: 'dark',
+    colors: { accent: '#fabd2f', page: '#282828', surface: '#3c3836', text: '#ebdbb2' },
+  },
+  {
+    id: 'github-dark', name: 'GitHub тёмная', hint: 'Привычная палитра GitHub: тёмно-синий и синий акцент', theme: 'dark',
+    colors: { accent: '#4493f8', page: '#0d1117', surface: '#161b22', text: '#e6edf3' },
+  },
+  {
+    id: 'rose-pine', name: 'Rosé Pine', hint: 'Приглушённые розово-лиловые тона', theme: 'dark',
+    colors: { accent: '#ebbcba', page: '#191724', surface: '#1f1d2e', text: '#e0def4' },
+  },
+  {
+    id: 'everforest', name: 'Everforest', hint: 'Спокойная зелень леса и тёплый песок', theme: 'dark',
+    colors: { accent: '#a7c080', page: '#2d353b', surface: '#343f44', text: '#d3c6aa' },
+  },
+  {
+    id: 'neon', name: 'Неон', hint: 'Киберпанк: розовый неон на глубоком фиолетовом', theme: 'dark',
+    colors: { accent: '#ff2a6d', page: '#0d0221', surface: '#1a0b38', text: '#f2e9ff' },
+  },
+  {
+    id: 'matrix', name: 'Матрица', hint: 'Зелёный терминал из девяностых', theme: 'dark',
+    colors: { accent: '#3fff6e', page: '#04120a', surface: '#0a2113', text: '#bfffd0' },
+  },
+  {
+    id: 'phosphor', name: 'Фосфор', hint: 'Янтарный ретро-монитор', theme: 'dark',
+    colors: { accent: '#ffb000', page: '#141005', surface: '#221a08', text: '#ffd9a0' },
+  },
+  {
     id: 'solar-light', name: 'Solarized светлая', hint: 'Тёплый светлый фон, синий акцент', theme: 'light',
     colors: { accent: '#268bd2', page: '#eee8d5', surface: '#fdf6e3', text: '#073642' },
   },
@@ -79,6 +119,30 @@ export const THEME_PRESETS: ThemePreset[] = [
   {
     id: 'mint', name: 'Мята', hint: 'Светлая с зелёным акцентом', theme: 'light',
     colors: { accent: '#12a37a', page: '#e8f4ef', surface: '#ffffff', text: '#17302a' },
+  },
+  {
+    id: 'one-light', name: 'One Light', hint: 'Atom One Light: чистый минимализм', theme: 'light',
+    colors: { accent: '#4078f2', page: '#f0f1f3', surface: '#ffffff', text: '#383a42' },
+  },
+  {
+    id: 'github-light', name: 'GitHub светлая', hint: 'Аккуратные серые с синим акцентом', theme: 'light',
+    colors: { accent: '#0969da', page: '#f6f8fa', surface: '#ffffff', text: '#1f2328' },
+  },
+  {
+    id: 'catppuccin-latte', name: 'Catppuccin Latte', hint: 'Пастель на светлом: сиреневый акцент', theme: 'light',
+    colors: { accent: '#8839ef', page: '#e6e9ef', surface: '#f4f5fb', text: '#4c4f69' },
+  },
+  {
+    id: 'rose-dawn', name: 'Розовая заря', hint: 'Rosé Pine Dawn: тёплый рассвет', theme: 'light',
+    colors: { accent: '#b4637a', page: '#f5ece2', surface: '#fdf8f2', text: '#575279' },
+  },
+  {
+    id: 'lavender', name: 'Лаванда', hint: 'Светлая с фиолетовым акцентом', theme: 'light',
+    colors: { accent: '#7c5cff', page: '#f0edfa', surface: '#ffffff', text: '#2d2749' },
+  },
+  {
+    id: 'peach', name: 'Персик', hint: 'Тёплая светлая с апельсиновым акцентом', theme: 'light',
+    colors: { accent: '#e8590c', page: '#fdeee2', surface: '#fff8f1', text: '#472b18' },
   },
 ];
 

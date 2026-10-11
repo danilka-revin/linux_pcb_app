@@ -601,7 +601,7 @@ export function SettingsWindow(props: SettingsWindowProps) {
                   onChange={setTheme}
                 />
               </Row>
-              <Row label="Готовая тема" hint="Пресеты оформления: Nord, Dracula, Solarized, «Бумага» и другие">
+              <Row label="Готовая тема" hint="Пресеты оформления: Nord, Dracula, Tokyo Night, Catppuccin, «Матрица», «Бумага» и другие">
                 <select
                   className="set-sel"
                   aria-label="Готовая тема"
