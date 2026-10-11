@@ -62,6 +62,27 @@ const base = (): Doc => ({
   assert.equal(diffDocs(a, b).changed, 0, 'одинаковые по смыслу примитивы — не изменены');
 }
 
+// --------------------------------------------------- комментарии ревью
+{
+  const a = base();
+  a.comments = [
+    { id: 'c1', x: 5, y: 6, text: 'Сузить дорожку?' },
+    { id: 'c2', x: 10, y: 12, text: 'Старое замечание' },
+  ];
+  const b = base();
+  b.comments = [
+    { id: 'c1', x: 8, y: 6, text: 'Сузить дорожку?' },
+    { id: 'c3', x: 40, y: 50, text: 'Проверить маску' },
+  ];
+  const d = diffDocs(a, b);
+  assert.deepEqual(d.comments.map((c) => c.type), ['changed', 'added', 'removed']);
+  assert.equal(d.comments[0].detail, 'метка перемещена');
+  assert.ok(d.comments.some((c) => c.type === 'added' && c.detail === 'Проверить маску'));
+  assert.ok(d.comments.some((c) => c.type === 'removed' && c.detail === 'Старое замечание'));
+  assert.match(diffSummary(d), /комментариев: 3/);
+  assert.equal(d.added + d.removed + d.changed, 0, 'аннотации не считаются геометрией платы');
+}
+
 // ------------------------------------------------ цепи и размер платы
 {
   const a = base();

@@ -220,7 +220,30 @@ assert.ok(sx > 0 && sy > 0, 'строка состояния показывае�
   assert.match(header(), /^Выделено: 1/, `показанную площадку снова можно выбрать: ${header()}`);
 }
 
-// --- 5. «замок»: объект виден, но не выбирается ---------------------------
+// --- 5. замок слоя: все объекты слоя нельзя выбрать или перетащить ----------
+{
+  const layersTab = qa('.tabs button').find((el) => el.textContent === 'Слои')!;
+  await click(layersTab);
+  const lockBtn = q('[data-testid="layer-lock-k1"]') as HTMLElement;
+  await click(lockBtn);
+  assert.ok(lockBtn.className.includes('on'), 'замок K1 включён');
+  await calib();
+  await clickWorld(30, 60);
+  assert.ok(!header().startsWith('Выделено'), `дорожка заблокированного слоя не выбирается: ${header()}`);
+  assert.ok(body().includes('замком объекта или слоя'), 'появилось пояснение о замке слоя');
+  await pointer('pointerdown', 30, 60);
+  await pointer('pointermove', 35, 60);
+  await pointer('pointerup', 35, 60);
+  const stillLocked = await savedDoc();
+  const track = stillLocked.entities.find((e) => e.id === 't1') as { pts: { x: number; y: number }[] };
+  assert.equal(track.pts[0].x, 10, 'перетаскивание не изменило дорожку заблокированного слоя');
+  await click(lockBtn);
+  assert.ok(!lockBtn.className.includes('on'), 'замок K1 снят');
+  const objectsTab = qa('.tabs button').find((el) => el.textContent === 'Объекты')!;
+  await click(objectsTab);
+}
+
+// --- 6. «замок»: объект виден, но не выбирается ---------------------------
 {
   const lockBtn = rowStarting('Площадка ⌀2,5 мм')!.querySelector('.obj-lock') as HTMLElement;
   await click(lockBtn);
@@ -285,10 +308,51 @@ assert.ok(sx > 0 && sy > 0, 'строка состояния показывае�
   assert.ok(!body().includes('История правок'), 'окно истории закрылось');
 }
 
+// --- 7. заметки ревью: поставить, сохранить, закрыть и перетащить метку -----
+{
+  await calib();
+  const reviewTab = qa('.tabs button').find((el) => el.textContent === 'Ревью');
+  assert.ok(reviewTab, 'появилась вкладка «Ревью»');
+  await click(reviewTab!);
+  await click(q('.review-tools .btn') as HTMLElement);
+  const commentTool = q('[data-tool-id="comment"]') as HTMLElement;
+  assert.ok(commentTool.className.includes('active'), 'активен инструмент комментария');
+  await clickWorld(70, 45);
+  assert.ok(q('.comment-editor'), 'после клика по плате открылся редактор заметки');
+  const area = q('#review-comment-text') as unknown as HTMLTextAreaElement;
+  await act(async () => {
+    const setter = Object.getOwnPropertyDescriptor(win.HTMLTextAreaElement.prototype, 'value')!.set!;
+    setter.call(area, 'Перерисовать дорожку: проверить зазор');
+    area.dispatchEvent(new win.Event('input', { bubbles: true }));
+    await frame();
+  });
+  await click(q('.comment-editor .btn.primary') as HTMLElement);
+  const persisted = await savedDoc() as typeof board & { comments?: { id: string; x: number; y: number; text: string; resolved?: boolean }[] };
+  assert.equal(persisted.comments?.length, 1, 'заметка сохранилась в JSON-черновике платы');
+  assert.equal(persisted.comments?.[0].text, 'Перерисовать дорожку: проверить зазор');
+  assert.ok(body().includes('Перерисовать дорожку: проверить зазор'), 'комментарий виден в панели ревью');
+
+  const resolve = q('.review-actions button') as HTMLElement;
+  await click(resolve);
+  assert.ok(body().includes('Готово'), 'комментарий можно отметить выполненным');
+  const selectTool = q('[data-tool-id="select"]') as HTMLElement;
+  await click(selectTool);
+  await calib();
+  await clickWorld(70, 45);
+  assert.ok(q('.comment-editor'), 'клик по карточке комментария открывает её для правки');
+  await click(qa('.comment-editor .foot .btn').find((el) => el.textContent === 'Отмена')!);
+  await pointer('pointerdown', 70, 45);
+  await pointer('pointermove', 80, 55);
+  await pointer('pointerup', 80, 55);
+  const movedCommentDoc = await savedDoc() as typeof board & { comments?: { x: number; y: number }[] };
+  assert.ok(Math.abs((movedCommentDoc.comments?.[0].x ?? 0) - 80) < 0.05, 'метку можно перетащить по плате');
+  assert.ok(Math.abs((movedCommentDoc.comments?.[0].y ?? 0) - 55) < 0.05, 'перемещение сохраняет координату Y');
+}
+
 await act(async () => { root.unmount(); });
 // jsdom держит цикл кадров — без закрытия окна процесс не завершится сам
 dom.window.close();
 process.stdout.write(
-  'OBJECTS DOM OK: дерево, поиск, выделение, скрытие, замок, история и отмена до операции\n',
+  'OBJECTS DOM OK: дерево, поиск, выделение, скрытие, замки объекта/слоя, заметки ревью, история и отмена до операции\n',
   () => process.exit(0),
 );

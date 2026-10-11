@@ -170,6 +170,15 @@ export interface Group {
   ids: string[];
 }
 
+/** Ревью-комментарий на плате. Не является геометрией и не попадает в Gerber/ЧПУ. */
+export interface BoardComment {
+  id: string;
+  x: number;
+  y: number;
+  text: string;
+  resolved?: boolean;
+}
+
 export interface Doc {
   name: string;
   w: number; // ширина рабочего поля / платы без замкнутого контура, мм
@@ -178,6 +187,7 @@ export interface Doc {
   nets?: Net[]; // сохраняются в проекте JSON, не в Sprint-Layout
   ignoredClearance?: string[]; // geometry-bound DRC exceptions, stored in JSON projects
   groups?: Group[]; // сохраняются в проекте JSON, не в Sprint-Layout
+  comments?: BoardComment[]; // заметки ревью: JSON/облако, отдельно от производственной геометрии
 }
 
 export const LAYERS: { id: LayerId; ru: string; short: string; color: string }[] = [

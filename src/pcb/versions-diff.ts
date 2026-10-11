@@ -28,6 +28,15 @@ export interface NetChange {
   detail: string;
 }
 
+export interface CommentChange {
+  type: ChangeType;
+  id: string;
+  /** Короткое содержание заметки или причина изменения. */
+  detail: string;
+  x: number;
+  y: number;
+}
+
 export interface VersionDiff {
   /** всего изменений по типам */
   added: number;
@@ -40,6 +49,8 @@ export interface VersionDiff {
   /** размер платы поменялся */
   sizeChanged: boolean;
   nets: NetChange[];
+  /** заметки ревью сравниваются отдельно от производственной геометрии */
+  comments: CommentChange[];
   /** список изменений (ограничен, чтобы большой диф не забивал окно) */
   changes: EntityChange[];
   /** изменений всего, даже если в списке показаны не все */
@@ -94,7 +105,7 @@ export function diffDocs(a: Doc, b: Doc): VersionDiff {
     added: 0, removed: 0, changed: 0, byKind: {},
     trackLength: { before: trackLen(a), after: trackLen(b) },
     sizeChanged: a.w !== b.w || a.h !== b.h,
-    nets: [], changes: [], truncated: false,
+    nets: [], comments: [], changes: [], truncated: false,
   };
   const bump = (kind: Entity['kind'], type: ChangeType): void => {
     const row = out.byKind[kind] ?? (out.byKind[kind] = { added: 0, removed: 0, changed: 0 });
@@ -140,17 +151,37 @@ export function diffDocs(a: Doc, b: Doc): VersionDiff {
   for (const n of a.nets ?? []) {
     if (!netB.has(n.id)) out.nets.push({ type: 'removed', name: n.name, detail: '' });
   }
+
+  // Заметки ревью — аннотации к рабочему файлу, но не примитивы платы.
+  const commentsA = new Map((a.comments ?? []).map((comment) => [comment.id, comment] as const));
+  const commentsB = new Map((b.comments ?? []).map((comment) => [comment.id, comment] as const));
+  for (const comment of b.comments ?? []) {
+    const old = commentsA.get(comment.id);
+    if (!old) out.comments.push({ type: 'added', id: comment.id, detail: comment.text, x: comment.x, y: comment.y });
+    else if (old.text !== comment.text || old.x !== comment.x || old.y !== comment.y
+      || !!old.resolved !== !!comment.resolved) {
+      const parts: string[] = [];
+      if (old.text !== comment.text) parts.push('текст изменён');
+      if (old.x !== comment.x || old.y !== comment.y) parts.push('метка перемещена');
+      if (!!old.resolved !== !!comment.resolved) parts.push(comment.resolved ? 'отмечена выполненной' : 'снова открыта');
+      out.comments.push({ type: 'changed', id: comment.id, detail: parts.join(', ') || 'изменена', x: comment.x, y: comment.y });
+    }
+  }
+  for (const comment of a.comments ?? []) {
+    if (!commentsB.has(comment.id)) out.comments.push({ type: 'removed', id: comment.id, detail: comment.text, x: comment.x, y: comment.y });
+  }
   return out;
 }
 
 /** Текст сводки для строки под результатом сравнения. */
 export function diffSummary(d: VersionDiff): string {
   const total = d.added + d.removed + d.changed;
-  if (!total && !d.nets.length && !d.sizeChanged) return 'Версии совпадают: различий нет.';
+  if (!total && !d.nets.length && !d.comments.length && !d.sizeChanged) return 'Версии совпадают: различий нет.';
   const parts: string[] = [];
   if (d.added) parts.push(`добавлено ${d.added}`);
   if (d.removed) parts.push(`удалено ${d.removed}`);
   if (d.changed) parts.push(`изменено ${d.changed}`);
   if (d.nets.length) parts.push(`цепей: ${d.nets.length}`);
+  if (d.comments.length) parts.push(`комментариев: ${d.comments.length}`);
   return parts.join(', ');
 }

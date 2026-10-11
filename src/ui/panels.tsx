@@ -11,7 +11,7 @@ import { Ic } from './icons';
 
 export type ToolId =
   | 'select' | 'cut' | 'solder' | 'track' | 'pad' | 'smd' | 'via' | 'hole' | 'line' | 'rect'
-  | 'circle' | 'fill' | 'text' | 'ruler' | 'dim' | 'comp' | 'route' | 'probe';
+  | 'circle' | 'fill' | 'text' | 'ruler' | 'dim' | 'comp' | 'route' | 'probe' | 'comment';
 
 export const TOOLS: { id: ToolId; name: string; icon: string; hint: string }[] = [
   { id: 'select', name: 'Выбор', icon: 'select', hint: 'ЛКМ — выбрать/двигать · рамка — выделить · двойной клик по звену — добавить узел · тяните узел для изменения формы · двойной клик/ПКМ/Del по узлу — удалить · Esc — снять выбор узла' },
@@ -19,6 +19,7 @@ export const TOOLS: { id: ToolId; name: string; icon: string; hint: string }[] =
   { id: 'solder', name: 'Пайка', icon: 'solder', hint: 'ЛКМ рядом с двумя концами дорожек на одном слое — соединить их прямой перемычкой' },
   { id: 'route', name: 'Автотрассировка', icon: 'route', hint: 'Две точки или группы соединений — выберите режим справа · вход в площадки по низу (K2), к SMD — по слою площадки' },
   { id: 'probe', name: 'Тест цепи', icon: 'probe', hint: 'ЛКМ по дорожке, площадке, переходу или SMD — подсветить всю электрическую цепь мигающим фиолетовым · клик мимо — снять' },
+  { id: 'comment', name: 'Комментарий ревью', icon: 'comment', hint: 'ЛКМ по плате — поставить заметку «что перерисовать» · клик по метке — изменить · в «Выборе» метку можно перетащить' },
   { id: 'track', name: 'Дорожка', icon: 'track', hint: 'ЛКМ по узлу — ответвление · ПКМ/Esc — закончить · L — сменить слой с переходом' },
   { id: 'pad', name: 'Площадка', icon: 'pad', hint: 'ЛКМ — поставить площадку (с обеих сторон, с металлизацией)' },
   { id: 'smd', name: 'SMD-площадка', icon: 'smd', hint: 'ЛКМ — поставить планарную площадку на активном слое меди' },
@@ -103,12 +104,15 @@ export const plural = (n: number, forms: [string, string, string]): string => {
 
 // ---------- панель слоёв ----------
 export function LayersPanel({
-  activeCu, setActiveCu, hidden, toggleHidden, counts,
+  activeCu, setActiveCu, hidden, toggleHidden, locked, toggleLocked, unlockAll, counts,
 }: {
   activeCu: 'k1' | 'k2';
   setActiveCu: (l: 'k1' | 'k2') => void;
   hidden: Set<LayerId>;
   toggleHidden: (l: LayerId) => void;
+  locked: Set<LayerId>;
+  toggleLocked: (l: LayerId) => void;
+  unlockAll: () => void;
   counts: Record<string, number>;
 }) {
   return (
@@ -120,7 +124,7 @@ export function LayersPanel({
         return (
           <div
             key={l.id}
-            className={'layer' + (active ? ' active' : '')}
+            className={'layer' + (active ? ' active' : '') + (locked.has(l.id) ? ' is-locked' : '')}
             data-learn={'layer-' + l.id}
             onClick={() => { if (isCu) setActiveCu(l.id as 'k1' | 'k2'); }}
             title={isCu ? 'Сделать активным слоем меди' : undefined}
@@ -130,9 +134,24 @@ export function LayersPanel({
               {l.short} <small>{l.ru} · {counts[l.id] ?? 0}</small>
             </span>
             <button
+              type="button"
+              className={'eye layer-lock' + (locked.has(l.id) ? ' on' : '')}
+              data-testid={'layer-lock-' + l.id}
+              title={locked.has(l.id)
+                ? `Разблокировать слой ${l.short}: объекты снова можно выбирать и двигать`
+                : `Заблокировать слой ${l.short}: его объекты нельзя выбрать или сдвинуть`}
+              aria-label={(locked.has(l.id) ? 'Разблокировать слой ' : 'Заблокировать слой ') + l.short}
+              aria-pressed={locked.has(l.id)}
+              onClick={(e) => { e.stopPropagation(); toggleLocked(l.id); }}
+            >
+              <Ic n={locked.has(l.id) ? 'lock' : 'unlock'} size={15} />
+            </button>
+            <button
+              type="button"
               className={'eye' + (hidden.has(l.id) ? ' off' : '')}
               data-learn={'layer-eye-' + l.id}
               title={hidden.has(l.id) ? 'Показать слой' : 'Скрыть слой'}
+              aria-label={(hidden.has(l.id) ? 'Показать слой ' : 'Скрыть слой ') + l.short}
               onClick={(e) => { e.stopPropagation(); toggleHidden(l.id); }}
             >
               <Ic n="eye" size={16} />
@@ -140,8 +159,16 @@ export function LayersPanel({
           </div>
         );
       })}
+      {locked.size > 0 && (
+        <div className="layer-lock-tools">
+          <span>Слоёв заблокировано: <b>{locked.size}</b></span>
+          <button type="button" className="btn tiny" onClick={unlockAll}>
+            <Ic n="unlock" size={14} /> Снять замки слоёв
+          </button>
+        </div>
+      )}
       <div className="hint" style={{ padding: '8px 12px' }}>
-        Активный слой меди используется для дорожек и SMD. Переключение также: клавиша <span className="kbd">L</span>.
+        Активный слой меди используется для дорожек и SMD. Замок блокирует выбор и перемещение объектов слоя; деталь или группа с заблокированным элементом блокируется целиком. Сменить K1/K2: <span className="kbd">L</span>.
       </div>
     </div>
   );
