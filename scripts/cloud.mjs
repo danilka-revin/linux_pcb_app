@@ -14,6 +14,8 @@ const COOKIE = 'psbees_session';
 const MAX_PROJECT_BYTES = 8 * 1024 * 1024;
 const DEFAULT_QUOTA_BYTES = 250 * 1024 * 1024;
 const MAX_PROJECTS = 1000;
+// Именованные версии (снимки) одного проекта. Автоматически не удаляются: их решает пользователь.
+const MAX_VERSIONS = 50;
 const JSON_HEADERS = {
   'content-type': 'application/json; charset=utf-8',
   'cache-control': 'no-store',
@@ -73,6 +75,12 @@ function parseDocument(document, name, maxBytes) {
   const bytes = Buffer.byteLength(text);
   if (bytes > maxBytes) fail(413, `Проект слишком большой (максимум ${Math.floor(maxBytes / 1048576)} МиБ).`);
   return { text, bytes, entityCount: document.entities.length };
+}
+function versionNameOf(value) {
+  if (typeof value !== 'string' || !value.trim() || value.trim().length > 120 || /[\x00-\x1f\x7f]/u.test(value)) {
+    fail(400, 'Название версии: от 1 до 120 символов без управляющих символов.');
+  }
+  return value.trim();
 }
 function versionOf(value) {
   if (!Number.isSafeInteger(value) || value < 1) fail(400, 'Не указана версия проекта. Обновите список проектов.');
@@ -176,6 +184,13 @@ export async function openCloudStore(dataDir, opts = {}) {
     );
     CREATE INDEX IF NOT EXISTS projects_owner ON projects(owner_id, updated_at DESC);
     CREATE INDEX IF NOT EXISTS projects_recent ON projects(updated_at DESC);
+    CREATE TABLE IF NOT EXISTS project_versions (
+      id TEXT PRIMARY KEY, project_id TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+      owner_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE, name TEXT NOT NULL,
+      document TEXT NOT NULL, bytes INTEGER NOT NULL, entity_count INTEGER NOT NULL, created_at INTEGER NOT NULL
+    );
+    CREATE INDEX IF NOT EXISTS project_versions_project ON project_versions(project_id, created_at DESC);
+    CREATE INDEX IF NOT EXISTS project_versions_owner ON project_versions(owner_id);
     CREATE TABLE IF NOT EXISTS settings (key TEXT PRIMARY KEY, value TEXT NOT NULL);
     INSERT OR IGNORE INTO settings (key, value) VALUES ('registration_open', '1');
     CREATE TABLE IF NOT EXISTS audit (
@@ -220,6 +235,10 @@ export async function openCloudStore(dataDir, opts = {}) {
       hashToken(token), userId, Date.now(), Date.now() + SESSION_MS);
     return token;
   };
+  const versionMeta = (row) => ({
+    id: row.id, projectId: row.project_id, name: row.name, bytes: row.bytes,
+    entityCount: row.entity_count, createdAt: row.created_at,
+  });
   const projectMeta = (row) => ({
     id: row.id, ownerId: row.owner_id, name: row.name, version: row.version,
     bytes: row.bytes, entityCount: row.entity_count, createdAt: row.created_at, updatedAt: row.updated_at,
@@ -230,8 +249,11 @@ export async function openCloudStore(dataDir, opts = {}) {
     if (!row) fail(404, 'Проект не найден.');
     return row;
   };
+  // Квота общая: проекты и их версии занимают одно место.
+  const usedBytes = (ownerId) => get(`SELECT (SELECT COALESCE(SUM(bytes),0) FROM projects WHERE owner_id=?)
+    + (SELECT COALESCE(SUM(bytes),0) FROM project_versions WHERE owner_id=?) AS bytes`, ownerId, ownerId).bytes;
   const ensureQuota = (ownerId, nextBytes, oldBytes = 0) => {
-    const used = get('SELECT COALESCE(SUM(bytes),0) AS bytes FROM projects WHERE owner_id=?', ownerId).bytes;
+    const used = usedBytes(ownerId);
     if (used - oldBytes + nextBytes > quotaBytes) fail(413, 'Квота проектов исчерпана. Скачайте или удалите ненужные проекты.');
   };
   const activeSessions = () => get('SELECT COUNT(*) AS n FROM sessions WHERE expires_at>?', Date.now()).n;
@@ -324,7 +346,43 @@ export async function openCloudStore(dataDir, opts = {}) {
     },
     listProjects(userId) {
       const rows = all('SELECT id,owner_id,name,version,bytes,entity_count,created_at,updated_at FROM projects WHERE owner_id=? ORDER BY updated_at DESC', userId);
-      return { projects: rows.map(projectMeta), usedBytes: rows.reduce((n, row) => n + row.bytes, 0), quotaBytes };
+      return { projects: rows.map(projectMeta), usedBytes: usedBytes(userId), quotaBytes };
+    },
+    listVersions(projectId, userId) {
+      ownProject(projectId, userId);
+      const rows = all('SELECT id,project_id,name,bytes,entity_count,created_at FROM project_versions WHERE project_id=? ORDER BY created_at DESC', projectId);
+      return { versions: rows.map(versionMeta) };
+    },
+    getVersion(projectId, versionId, userId) {
+      ownProject(projectId, userId);
+      const row = get('SELECT * FROM project_versions WHERE id=? AND project_id=?', versionId, projectId);
+      if (!row) fail(404, 'Версия не найдена.');
+      return { ...versionMeta(row), document: JSON.parse(row.document) };
+    },
+    createVersion(projectId, userId, nameInput, document) {
+      const name = versionNameOf(nameInput);
+      return tx(() => {
+        const project = ownProject(projectId, userId);
+        // Имя документа в снимке совпадает с названием проекта, как и при сохранении.
+        const parsed = parseDocument(document, project.name, maxProjectBytes);
+        if (get('SELECT COUNT(*) AS n FROM project_versions WHERE project_id=?', projectId).n >= MAX_VERSIONS) {
+          fail(413, `У проекта уже ${MAX_VERSIONS} версий. Удалите ненужные, чтобы сохранить новую.`);
+        }
+        ensureQuota(userId, parsed.bytes);
+        const id = randomUUID(), now = Date.now();
+        run('INSERT INTO project_versions(id,project_id,owner_id,name,document,bytes,entity_count,created_at) VALUES(?,?,?,?,?,?,?,?)',
+          id, projectId, userId, name, parsed.text, parsed.bytes, parsed.entityCount, now);
+        audit(userId, 'version.create', projectId, `${project.name}: ${name}`);
+        return versionMeta({ id, project_id: projectId, name, bytes: parsed.bytes, entity_count: parsed.entityCount, created_at: now });
+      });
+    },
+    deleteVersion(projectId, versionId, userId) {
+      tx(() => {
+        const project = ownProject(projectId, userId);
+        const result = run('DELETE FROM project_versions WHERE id=? AND project_id=?', versionId, projectId);
+        if (!result.changes) fail(404, 'Версия не найдена.');
+        audit(userId, 'version.delete', projectId, project.name);
+      });
     },
     getProject(id, userId) {
       const row = ownProject(id, userId);
@@ -381,7 +439,10 @@ export async function openCloudStore(dataDir, opts = {}) {
     adminOverview() {
       const users = get('SELECT COUNT(*) AS total, COALESCE(SUM(disabled),0) AS disabled FROM users');
       const projects = get('SELECT COUNT(*) AS total, COALESCE(SUM(bytes),0) AS bytes FROM projects');
-      return { users: users.total, disabledUsers: users.disabled, projects: projects.total, bytes: projects.bytes,
+      // версии входят в общий объём хранения (как и в квоту пользователя)
+      const versions = get('SELECT COUNT(*) AS total, COALESCE(SUM(bytes),0) AS bytes FROM project_versions');
+      return { users: users.total, disabledUsers: users.disabled, projects: projects.total, versions: versions.total,
+        bytes: projects.bytes + versions.bytes, projectBytes: projects.bytes,
         activeSessions: activeSessions(), registrationOpen: registrationOpen(), quotaBytes, maxProjectBytes };
     },
     adminUsers(url) {
@@ -389,7 +450,8 @@ export async function openCloudStore(dataDir, opts = {}) {
       const where = 'WHERE u.email LIKE ? ESCAPE \'\\\'';
       const total = get(`SELECT COUNT(*) AS n FROM users u ${where}`, q).n;
       const rows = all(`SELECT u.id,u.email,u.role,u.disabled,u.created_at,u.last_login,
-        COUNT(p.id) AS project_count, COALESCE(SUM(p.bytes),0) AS bytes
+        COUNT(p.id) AS project_count,
+        COALESCE(SUM(p.bytes),0) + COALESCE((SELECT SUM(v.bytes) FROM project_versions v WHERE v.owner_id=u.id),0) AS bytes
         FROM users u LEFT JOIN projects p ON p.owner_id=u.id ${where}
         GROUP BY u.id ORDER BY u.created_at DESC LIMIT ? OFFSET ?`, q, limit, offset);
       return { total, users: rows.map((row) => ({ id: row.id, email: row.email, role: row.role,
@@ -587,6 +649,24 @@ export async function createCloudService(dataDir, opts = {}) {
       if (method === 'PUT') return json(res, 200, { ok: true, project: store.updateProject(id, actor.id, body.name, body.document, body.version) });
       if (method === 'PATCH') return json(res, 200, { ok: true, project: store.renameProject(id, actor.id, body.name, body.version) });
       if (method === 'DELETE') { store.deleteProject(id, actor.id, body.version); return json(res, 200, { ok: true }); }
+    }
+    const versions = /^\/projects\/([0-9a-f-]{36})\/versions$/i.exec(path);
+    if (versions) {
+      if (method === 'GET') return json(res, 200, { ok: true, ...store.listVersions(versions[1], actor.id) });
+      if (method === 'POST') {
+        const body = await readJson(req);
+        stillAuthorized();
+        return json(res, 201, { ok: true, version: store.createVersion(versions[1], actor.id, body.name, body.document) });
+      }
+    }
+    const version = /^\/projects\/([0-9a-f-]{36})\/versions\/([0-9a-f-]{36})$/i.exec(path);
+    if (version) {
+      if (method === 'GET') return json(res, 200, { ok: true, version: store.getVersion(version[1], version[2], actor.id) });
+      if (method === 'DELETE') {
+        stillAuthorized();
+        store.deleteVersion(version[1], version[2], actor.id);
+        return json(res, 200, { ok: true });
+      }
     }
     if (path.startsWith('/admin')) {
       if (actor.role !== 'admin') fail(403, 'Доступно только администратору.');
