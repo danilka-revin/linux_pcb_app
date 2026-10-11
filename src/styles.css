@@ -453,6 +453,52 @@ button { font: inherit; color: inherit; background: none; border: none; }
 .group-box { margin-top: 12px; padding-top: 10px; border-top: 1px solid var(--line); }
 .group-box .sub { margin-top: 6px; }
 
+/* ---------- панель объектов (вкладка «Объекты») ---------- */
+.objects-pane { display: flex; flex-direction: column; min-height: 0; flex: 1; }
+.obj-search {
+  display: flex; align-items: center; gap: 6px; margin: 0 12px 6px;
+  padding: 0 8px; background: var(--surface-2); border: 1px solid var(--line); border-radius: 8px;
+  color: var(--muted); flex: none;
+}
+.obj-search:focus-within { border-color: var(--accent); }
+.obj-search .txt { background: none; border: none; padding: 0; height: 27px; }
+.obj-search .txt:focus { outline: none; }
+.obj-clear {
+  background: none; border: none; color: var(--muted); cursor: pointer;
+  font-size: 15px; line-height: 1; padding: 2px 3px; border-radius: 5px;
+}
+.obj-clear:hover { color: var(--text); background: var(--hover); }
+.obj-tools { display: flex; gap: 6px; padding: 0 12px 6px; flex: none; }
+.obj-tools .btn { display: flex; align-items: center; gap: 5px; flex: 1; justify-content: center; }
+.obj-status {
+  padding: 2px 12px 6px; color: var(--muted); font-size: 11px; flex: none;
+  border-bottom: 1px solid var(--line);
+}
+.obj-tree { flex: 1; min-height: 0; overflow-y: auto; overflow-x: hidden; padding: 4px 0 8px; }
+.obj-row {
+  display: flex; align-items: center; gap: 6px; padding: 3px 8px 3px 0;
+  cursor: pointer; color: var(--text-2); font-size: 12px; line-height: 1.35;
+}
+.obj-row:hover { background: var(--surface-2); }
+.obj-row:focus-visible { outline: 1px solid var(--accent); outline-offset: -1px; }
+.obj-row.active { background: var(--hover); box-shadow: inset 2px 0 0 var(--accent); color: var(--text); }
+.obj-row.hidden .obj-label { opacity: .45; text-decoration: line-through; }
+.obj-row.is-ent .obj-label { color: inherit; }
+.obj-row.lvl0 { font-weight: 600; color: var(--text); }
+.obj-caret {
+  width: 16px; height: 16px; flex: none; display: flex; align-items: center; justify-content: center;
+  background: none; border: none; color: var(--muted); cursor: pointer; transition: transform .12s;
+}
+.obj-caret.open { transform: rotate(0deg); }
+.obj-caret:not(.open) { transform: rotate(-90deg); }
+.obj-caret:hover { color: var(--text); }
+.obj-dot { width: 8px; height: 8px; border-radius: 3px; flex: none; }
+.obj-label { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.obj-n { color: var(--muted); font-size: 10.5px; font-variant-numeric: tabular-nums; flex: none; }
+.obj-eye, .obj-lock { width: 22px; height: 20px; flex: none; }
+.eye.part { opacity: .5; }
+.obj-hint { padding: 8px 12px 12px; flex: none; }
+
 .search { margin: 9px 12px 5px; }
 input, select, textarea { user-select: text; }
 .txt, .search input {
@@ -542,7 +588,12 @@ canvas { display: block; }
 .status b { color: var(--text); font-weight: 600; font-variant-numeric: tabular-nums; }
 .status .sp { flex: 1; }
 .status .lg { display: flex; align-items: center; gap: 6px; }
-.status .probe-info {
+.status .status-alert {
+  color: var(--danger-ink); background: var(--danger-bg);
+  padding: 1px 8px; border-radius: 8px; max-width: 42vw;
+  overflow: hidden; text-overflow: ellipsis;
+}
+.probe-info {
   color: var(--accent-text); font-weight: 600;
   background: var(--accent-soft);
   padding: 1px 8px; border-radius: 8px;
@@ -646,6 +697,40 @@ canvas { display: block; }
 /* Перечень типоразмеров площадок и сверловки */
 .inventory-open { display: block; width: 100%; margin-top: 10px; }
 .modal.inventory-modal { width: 740px; }
+
+/* ---------- окно «История правок» ---------- */
+.modal.history-modal { width: 620px; max-width: calc(100vw - 32px); display: flex; flex-direction: column; }
+.hist-head {
+  display: flex; justify-content: space-between; align-items: baseline; gap: 12px;
+  color: var(--muted); font-size: 11.5px; margin-bottom: 8px; flex-wrap: wrap;
+}
+.hist-head b { color: var(--text); }
+.hist-keys { font-size: 11px; }
+.hist-list {
+  flex: 1; min-height: 160px; max-height: 52vh; overflow-y: auto;
+  border: 1px solid var(--line); border-radius: 8px; background: var(--surface-2);
+}
+.hist-row {
+  display: flex; align-items: center; gap: 10px; padding: 6px 10px; cursor: pointer;
+  font-size: 12.5px; color: var(--text-2); border-bottom: 1px solid var(--line);
+}
+.hist-row:last-child { border-bottom: none; }
+.hist-row:hover { background: var(--hover); }
+.hist-row.current { color: var(--text); font-weight: 600; background: var(--accent-soft); }
+.hist-row.undone { opacity: .55; }
+.hist-row.undone .hist-label { text-decoration: line-through; }
+.hist-row.picked { box-shadow: inset 2px 0 0 var(--accent); }
+.hist-n {
+  width: 26px; flex: none; text-align: right; color: var(--muted);
+  font-variant-numeric: tabular-nums; font-size: 11px;
+}
+.hist-label { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.hist-label small { color: var(--muted); font-weight: 400; }
+.hist-time { color: var(--muted); font-size: 11px; font-variant-numeric: tabular-nums; flex: none; }
+.hist-ent { color: var(--muted); font-size: 11px; font-variant-numeric: tabular-nums; width: 54px; text-align: right; flex: none; }
+.hist-ent small { color: var(--accent-text); }
+.hist-foot-hint { margin-right: auto; color: var(--muted); font-size: 11.5px; align-self: center; }
+.hist-hint { padding: 10px 0 0; }
 .inventory-board { overflow-wrap: anywhere; }
 .inventory-totals { display: grid; grid-template-columns: repeat(4, 1fr); gap: 8px; margin: 16px 0; }
 .inventory-totals > div { padding: 12px; border: 1px solid var(--line); border-radius: 8px; background: var(--surface-2); }

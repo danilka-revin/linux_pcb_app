@@ -21,7 +21,7 @@ import {
   pruneGroups, remapGroups, renameGroup, ungroupAll, ungroupSelection,
 } from './pcb/group';
 import {
-  bboxArray, CANVAS_UI, COLORS, drawEnt, drawFlat, renderPrint, setCanvasTheme, toWorld, zOrdered,
+  bboxArray, CANVAS_UI, COLORS, drawEnt, drawFlat, renderPrint, setCanvasTheme, skippedId, toWorld, zOrdered,
   type ThemeId, type View,
 } from './pcb/render';
 import { noteFrame, perfDpr } from './perf';
@@ -61,7 +61,7 @@ import { DEFAULT_PREFS, usePrefs } from './ui/prefs';
 // Горячие клавиши настраиваются пользователем (окно настроек → «Горячие клавиши»).
 import { comboOf, reverseHotkeys } from './ui/hotkeys';
 import {
-  DEFAULT_SIDES, LEFT_TAB_NAMES, LEFT_TABS, clampW, loadUi, normalizeSides, saveUi,
+  DEFAULT_SIDES, LEFT_TAB_NAMES, LEFT_TABS, UI_REV, clampW, loadUi, normalizeSides, saveUi,
   type LeftTabId, type UiState,
 } from './ui/uiconf';
 import { GenPanel, MacroTree, genSpecText } from './ui/genpanel';
@@ -90,6 +90,13 @@ import { ProjectVersionsDialog } from './cloud/versions';
 import { findOnBoard, type FindHit } from './pcb/find';
 import { netLengths, lengthenNet, alignBus, type NetLength } from './pcb/lengths';
 import { FindPanel } from './ui/find';
+// История правок состояниями (см. pcb/history.ts): список операций,
+// «отменить до операции N» и возврат вперёд одним щелчком.
+import { historyRows, makeStep, newHistory, pushStep, stepLabel, undoDepth, type HistStep } from './pcb/history';
+// Панель объектов: дерево всего на плате с поиском, скрытием и блокировкой.
+import { ObjectPanel } from './ui/objects';
+import { HistoryDialog } from './ui/history';
+import { newEntsLabel, type ObjNode } from './pcb/objtree';
 
 declare global {
   interface Window {
@@ -417,6 +424,14 @@ export default function App({ cloudUser, onLogout }: { cloudUser?: CloudUser; on
   const [view, setView] = useState<View>({ s: 8, ox: 80, oy: 500, mir: false });
   const [defs, setDefsState] = useState<Defs>(loadDefs);
   const [hidden, setHidden] = useState<Set<M.LayerId>>(new Set());
+  // ---------------- панель объектов (src/ui/objects.tsx) ----------------
+  // Скрытые объекты холст не рисует, заблокированные — не даёт выбрать мышью.
+  // Наборы живут в окне (как и выделение) и в документ не попадают: это рабочий
+  // режим просмотра, а не свойство платы.
+  const [hiddenEnts, setHiddenEnts] = useState<Set<string>>(new Set());
+  const [lockedEnts, setLockedEnts] = useState<Set<string>>(new Set());
+  /** сколько раз открывали поиск по объектам (перевести фокус в строку) */
+  const [objFocus, setObjFocus] = useState(0);
   const [activeCu, setActiveCu] = useState<'k1' | 'k2'>('k1');
   const [mouse, setMouse] = useState<CursorState>({ px: -100, py: -100, wx: 0, wy: 0, rx: 0, ry: 0, alt: false, sh: false });
   const [size, setSize] = useState({ w: 640, h: 480 });
@@ -520,7 +535,7 @@ export default function App({ cloudUser, onLogout }: { cloudUser?: CloudUser; on
   const [lenInfo, setLenInfo] = useState<{ msg: string; ok: boolean | null }>({ msg: '', ok: null });
   const [routeA, setRouteA] = useState<RouteEnd | null>(null);
   const [routeMsg, setRouteMsg] = useState<{ msg: string; ok: boolean | null }>({ msg: '', ok: null });
-  const [dialog, setDialog] = useState<'new' | 'export' | 'cnc' | 'panelize' | 'about' | 'inventory' | 'stats' | 'imgimport' | 'uib' | 'colors' | 'grid' | 'close' | 'cloud' | 'account' | 'versions' | 'board-preview' | 'autoplace' | 'settings' | 'tour' | null>(null);
+  const [dialog, setDialog] = useState<'new' | 'export' | 'cnc' | 'panelize' | 'about' | 'inventory' | 'stats' | 'imgimport' | 'uib' | 'colors' | 'grid' | 'close' | 'cloud' | 'account' | 'versions' | 'board-preview' | 'autoplace' | 'settings' | 'tour' | 'history' | null>(null);
   // подтверждение опасного действия (удаление по настройке «Подтверждать удаление»)
   const [confirmAsk, setConfirmAsk] = useState<{ title: string; text: string; ok: string; onOk: () => void } | null>(null);
   const [boardPreviewTab, setBoardPreviewTab] = useState<'2d' | '3d'>('2d');
@@ -552,8 +567,10 @@ export default function App({ cloudUser, onLogout }: { cloudUser?: CloudUser; on
       .catch(() => setAppVer(null));
   }, []);
 
-  const past = useRef<M.Doc[]>([]);
-  const future = useRef<M.Doc[]>([]);
+  /** состояния платы по порядку: последнее — текущее (см. src/pcb/history.ts) */
+  const past = useRef<HistStep[]>(newHistory(doc, 'Плата открыта'));
+  /** отменённые состояния: последнее — ближайшее к возврату (Ctrl+Y) */
+  const future = useRef<HistStep[]>([]);
   const drag = useRef<Drag | null>(null);
   const [dragTick, setDragTick] = useState(0);
   const dragTickRef = useRef(0);
@@ -615,42 +632,79 @@ export default function App({ cloudUser, onLogout }: { cloudUser?: CloudUser; on
   const groupCount = (doc.groups ?? []).length;
 
   // ---------------- история ----------------
-  const commit = useCallback((next: M.Doc) => {
-    past.current.push(doc);
-    if (past.current.length > historyLimit(doc, prefsRef.current.historyDepth)) past.current.shift();
+  // Состояния платы по порядку (см. src/pcb/history.ts): последний элемент
+  // «past» — текущий документ, «future» — отменённые состояния для повтора.
+  // Список, а не пара стеков «до/после», нужен окну «История правок»: там видно
+  // все операции и можно отменить сразу до нужной.
+  const commit = useCallback((next: M.Doc, label?: string) => {
+    past.current = pushStep(
+      past.current, makeStep(next, label),
+      historyLimit(next, prefsRef.current.historyDepth),
+    );
     future.current = [];
     setDoc(next);
-  }, [doc]);
+  }, []);
+
+  /** Новая история — открыли другой документ (файл, облако, новая плата). */
+  const resetHistory = useCallback((d: M.Doc, label?: string) => {
+    past.current = newHistory(d, label);
+    future.current = [];
+  }, []);
 
   const pruneSel = useCallback((d: M.Doc) => {
     const ids = new Set(d.entities.map((e) => e.id));
     setSel((s) => new Set([...s].filter((id) => ids.has(id))));
   }, []);
 
-  const undo = useCallback(() => {
-    if (!past.current.length) return;
-    future.current.push(doc);
-    const prev = past.current.pop()!;
-    setDoc(prev);
-    pruneSel(prev);
+  /** Переход истории к другому состоянию: чистим всё, что зависит от геометрии. */
+  const applyHistoryDoc = useCallback((d: M.Doc) => {
+    setDoc(d);
+    pruneSel(d);
     setDraft(null);
     setRouteA(null); setRouteMsg({ msg: '', ok: null });
     // Индекс узла после отмены может указывать на другую геометрию.
     setEditNode(null);
     setTrackMsg({ msg: '', ok: null });
-  }, [doc, pruneSel]);
+  }, [pruneSel]);
+
+  const undo = useCallback(() => {
+    if (past.current.length < 2) return;
+    const back = past.current.pop()!;
+    future.current = [...future.current, back];
+    applyHistoryDoc(past.current[past.current.length - 1].doc);
+  }, [applyHistoryDoc]);
 
   const redo = useCallback(() => {
-    if (!future.current.length) return;
-    past.current.push(doc);
-    const next = future.current.pop()!;
-    setDoc(next);
-    pruneSel(next);
-    setDraft(null);
-    setRouteA(null); setRouteMsg({ msg: '', ok: null });
-    setEditNode(null);
-    setTrackMsg({ msg: '', ok: null });
-  }, [doc, pruneSel]);
+    const next = future.current.pop();
+    if (!next) return;
+    past.current = [...past.current, next];
+    applyHistoryDoc(next.doc);
+  }, [applyHistoryDoc]);
+
+  /**
+   * «Отменить до операции N»: возвращаемся к состоянию `step` (номер строки в
+   * списке истории), отменяя сразу все операции после него.
+   */
+  const undoTo = useCallback((step: number) => {
+    const target = Math.max(0, Math.min(Math.round(step), past.current.length - 1));
+    const moved: HistStep[] = [];
+    while (past.current.length - 1 > target) moved.push(past.current.pop()!);
+    if (!moved.length) return;
+    // future хранит состояния от ближнего к дальнему: первым к возврату — шаг target+1
+    future.current = [...future.current, ...moved.reverse()];
+    applyHistoryDoc(past.current[past.current.length - 1].doc);
+  }, [applyHistoryDoc]);
+
+  /** «Вернуть до операции N»: повторяем отменённые операции до состояния `step`. */
+  const redoTo = useCallback((step: number) => {
+    const target = Math.max(0, Math.round(step));
+    let moved = false;
+    while (past.current.length <= target && future.current.length) {
+      past.current = [...past.current, future.current.pop()!];
+      moved = true;
+    }
+    if (moved) applyHistoryDoc(past.current[past.current.length - 1].doc);
+  }, [applyHistoryDoc]);
 
   // ---------------- автосохранение ----------------
   // Пишет черновик не сразу, а когда правки прекратились: интервал задаётся
@@ -760,8 +814,11 @@ export default function App({ cloudUser, onLogout }: { cloudUser?: CloudUser; on
   // точки, к которым «прилипает» курсор при привязке к объектам: концы, середины,
   // центры и пересечения строятся один раз при изменении платы, а не на каждый кадр
   const snapPts = useMemo(
-    () => (defs.snapOn && defs.snapObj ? collectSnapTagged(expanded) : null),
-    [defs.snapOn, defs.snapObj, expanded],
+    // скрытые в панели «Объекты» примитивы не притягивают курсор: их не видно
+    () => (defs.snapOn && defs.snapObj
+      ? collectSnapTagged(hiddenEnts.size ? expanded.filter((e) => !skippedId(hiddenEnts, e.id)) : expanded)
+      : null),
+    [defs.snapOn, defs.snapObj, expanded, hiddenEnts],
   );
 
   const routePrimitives = expanded;
@@ -801,24 +858,31 @@ export default function App({ cloudUser, onLogout }: { cloudUser?: CloudUser; on
   }), [view]);
 
   const entVisible = useCallback((e: M.Entity): boolean => {
+    if (hiddenEnts.has(e.id)) return false;   // скрыт в панели «Объекты»
     if (e.kind === 'pad' || e.kind === 'via') return !(hidden.has('k1') && hidden.has('k2'));
     if (e.kind === 'hole') return true;
     if (e.kind === 'comp') return expandComp(e).some((c) => entVisible(c));
     return !hidden.has((e as { layer: M.LayerId }).layer);
-  }, [hidden]);
+  }, [hidden, hiddenEnts]);
 
-  const hitAt = useCallback((p: M.Pt): string | null => {
+  /**
+   * Объект под курсором. Заблокированные (панель «Объекты») пропускаются —
+   * их нельзя ни выбрать, ни сдвинуть; для подсказки их можно запросить
+   * отдельно (includeLocked).
+   */
+  const hitAt = useCallback((p: M.Pt, includeLocked = false): string | null => {
     const tol = 3.5 / view.s + 0.05;
     const ents = doc.entities;
     for (let i = ents.length - 1; i >= 0; i--) {
       const e = ents[i];
       if (!entVisible(e)) continue;
+      if (!includeLocked && lockedEnts.has(e.id)) continue;
       if (e.kind === 'comp') {
         if (expandComp(e).some((c) => M.hitEnt(c, p, tol))) return e.id;
       } else if (M.hitEnt(e, p, tol)) return e.id;
     }
     return null;
-  }, [doc, entVisible, view.s]);
+  }, [doc, entVisible, view.s, lockedEnts]);
 
   // ---------------- правка дорожек звеньями (как в Sprint-Layout) ----------------
   /** Узлы видны только у одиночной выбранной дорожки/полигона. */
@@ -879,7 +943,7 @@ export default function App({ cloudUser, onLogout }: { cloudUser?: CloudUser; on
     const nd = M.cloneDoc(doc);
     const t = nd.entities.find((x) => x.id === entId);
     if (t && (t.kind === 'track' || t.kind === 'poly')) t.pts = nx;
-    commit(nd);
+    commit(nd, 'Удалён узел');
     setEditNode(null);
     setTrackMsg({ msg: '', ok: null });
   }, [doc, commit]);
@@ -892,7 +956,7 @@ export default function App({ cloudUser, onLogout }: { cloudUser?: CloudUser; on
     if (!t || (t.kind !== 'track' && t.kind !== 'poly') || !t.pts[editNode]) return;
     if (t.kind === 'track') moveTrackNode(nd.entities, t.id, editNode, { x, y });
     else t.pts[editNode] = { x, y };
-    commit(nd);
+    commit(nd, 'Сдвинут узел');
   }, [doc, commit, editEnt, editNode]);
 
   /** «Разрыв»: вырезать зазор под амперметр в точке клика */
@@ -938,7 +1002,7 @@ export default function App({ cloudUser, onLogout }: { cloudUser?: CloudUser; on
       ? { ...g, ids: g.ids.flatMap((id) => (id === hit.id ? bornTracks : [id])) }
       : g));
     nd.groups = pruneGroups(nd.groups, new Set(nd.entities.map((e) => e.id)));
-    commit(nd);
+    commit(nd, 'Разрыв дорожки');
     setSel(new Set(born.map((e) => e.id)));
     setTrackMsg({
       msg: `Разрыв готов: зазор ${M.fmt(gap)} мм, кусков: ${bornTracks.length}. Цепляйте амперметр; запаять обратно — инструмент «Пайка» (S).`,
@@ -979,17 +1043,17 @@ export default function App({ cloudUser, onLogout }: { cloudUser?: CloudUser; on
       if (keep) nd.groups = nd.groups.map((g) => (g.id === keep ? { ...g, ids: [...g.ids, merged.id] } : g));
     }
     nd.groups = pruneGroups(nd.groups, new Set(nd.entities.map((e) => e.id)));
-    commit(nd);
+    commit(nd, 'Пайка дорожек');
     setSel(new Set([merged.id]));
     const added = Math.hypot(a.pt.x - b.pt.x, a.pt.y - b.pt.y);
     setTrackMsg({ msg: `Запаяно: перемычка ${M.fmt(added)} мм на слое ${a.ent.layer.toUpperCase()}.`, ok: true });
   };
 
-  const addEnts = useCallback((ents: M.Entity[], keepTool = true) => {
+  const addEnts = useCallback((ents: M.Entity[], label?: string) => {
     const nd = M.cloneDoc(doc);
     nd.entities.push(...ents);
-    commit(nd);
-    void keepTool;
+    commit(nd, label ?? newEntsLabel(ents));
+    // подпись операции видна в списке истории правок
   }, [doc, commit]);
 
   // ---------------- черновики дорожек/полигонов ----------------
@@ -1091,7 +1155,7 @@ export default function App({ cloudUser, onLogout }: { cloudUser?: CloudUser; on
     const cx = (b[0] + b[2]) / 2, cy = (b[1] + b[3]) / 2;
     const nd = M.cloneDoc(doc);
     nd.entities.forEach((e) => { if (selRef.current.has(e.id)) M.rotateEnt90(e, cx, cy); });
-    commit(nd);
+    commit(nd, 'Поворот выделенного');
   }, [doc, commit, selBbox]);
 
   const mirrorSel = useCallback(() => {
@@ -1100,16 +1164,17 @@ export default function App({ cloudUser, onLogout }: { cloudUser?: CloudUser; on
     const cx = (b[0] + b[2]) / 2;
     const nd = M.cloneDoc(doc);
     nd.entities.forEach((e) => { if (selRef.current.has(e.id)) M.mirrorEnt(e, cx); });
-    commit(nd);
+    commit(nd, 'Перенос на другую сторону');
   }, [doc, commit, selBbox]);
 
   const doDeleteSel = useCallback(() => {
     if (!selRef.current.size) return;
+    const n = selRef.current.size;
     const nd = M.cloneDoc(doc);
     nd.entities = nd.entities.filter((e) => !selRef.current.has(e.id));
     // группы теряют удалённые элементы; в группе меньше двух элементов смысла нет
     nd.groups = pruneGroups(nd.groups, new Set(nd.entities.map((e) => e.id)));
-    commit(nd);
+    commit(nd, n > 1 ? `Удалено объектов: ${n}` : 'Удалён объект');
     setSel(new Set());
     setEditNode(null);
   }, [doc, commit]);
@@ -1149,7 +1214,7 @@ export default function App({ cloudUser, onLogout }: { cloudUser?: CloudUser; on
     // копия группы едет вместе с копией элементов
     const extra = remapGroups(doc.groups, idMap, ' (копия)');
     if (extra.length) nd.groups = [...(nd.groups ?? []), ...extra];
-    commit(nd);
+    commit(nd, clones.length > 1 ? `Дублировано объектов: ${clones.length}` : 'Дублирован объект');
     setSel(new Set(clones.map((c) => c.id)));
   }, [doc, commit, defs.grid]);
 
@@ -1158,7 +1223,7 @@ export default function App({ cloudUser, onLogout }: { cloudUser?: CloudUser; on
   const groupSel = useCallback((): string | null => {
     const r = groupSelection(doc, selRef.current);
     if (!r) return null;
-    commit(r.doc);
+    commit(r.doc, `Связано в группу: ${r.group.name}`);
     setSel(new Set(r.group.ids));
     return r.group.name;
   }, [doc, commit]);
@@ -1167,25 +1232,25 @@ export default function App({ cloudUser, onLogout }: { cloudUser?: CloudUser; on
   const ungroupSel = useCallback((): string[] | null => {
     const r = ungroupSelection(doc, selRef.current);
     if (!r) return null;
-    commit(r.doc);
+    commit(r.doc, `Разгруппировано: ${r.names.join(', ')}`);
     return r.names;
   }, [doc, commit]);
 
   /** Распустить одну группу из списка слева. */
   const ungroupOne = useCallback((g: M.Group) => {
     const r = ungroupSelection(doc, g.ids);
-    if (r) commit(r.doc);
+    if (r) commit(r.doc, `Разгруппировано: ${g.name}`);
   }, [doc, commit]);
 
   /** Распустить все группы на плате. */
   const ungroupAllGroups = useCallback(() => {
     const r = ungroupAll(doc);
-    if (r) commit(r.doc);
+    if (r) commit(r.doc, 'Разгруппировано всё');
   }, [doc, commit]);
 
   const renameGroupCb = useCallback((groupId: string, name: string) => {
     const nd = renameGroup(doc, groupId, name);
-    if (nd) commit(nd);
+    if (nd) commit(nd, `Группа переименована: ${name}`);
   }, [doc, commit]);
 
   /** Выделить группу целиком (клик по строке в списке групп). */
@@ -1198,13 +1263,14 @@ export default function App({ cloudUser, onLogout }: { cloudUser?: CloudUser; on
     if (!selRef.current.size) return;
     const nd = M.cloneDoc(doc);
     nd.entities.forEach((e) => { if (selRef.current.has(e.id)) M.translateEnt(e, dx, dy); });
-    commit(nd);
+    const step = M.fmt(Math.abs(dx || dy), 3);
+    commit(nd, `Сдвиг выделенного на ${step} мм`);
   }, [doc, commit]);
 
   const patchEnt = useCallback((id: string, patch: Record<string, unknown>) => {
     const nd = M.cloneDoc(doc);
     nd.entities = nd.entities.map((e) => (e.id === id ? ({ ...e, ...patch } as M.Entity) : e));
-    commit(nd);
+    commit(nd, 'Правка свойств объекта');
   }, [doc, commit]);
 
   const setDocSize = useCallback((w: number, h: number) => {
@@ -1215,7 +1281,7 @@ export default function App({ cloudUser, onLogout }: { cloudUser?: CloudUser; on
     );
     nd.w = w; nd.h = h;
     if (outline && outline.kind === 'rect') { outline.w = w; outline.h = h; }
-    commit(nd);
+    commit(nd, `Размер платы: ${M.fmt(w)} × ${M.fmt(h)} мм`);
   }, [doc, commit]);
 
   // ---------------- буфер обмена ----------------
@@ -1260,7 +1326,7 @@ export default function App({ cloudUser, onLogout }: { cloudUser?: CloudUser; on
     nd.entities.push(...clones);
     const extra = remapGroups(pasteGroups.current, idMap, ' (копия)');
     if (extra.length) nd.groups = [...(nd.groups ?? []), ...extra];
-    commit(nd);
+    commit(nd, `Вставлено объектов: ${clones.length}`);
     setSel(new Set(clones.map((c) => c.id)));
     setPasteTpl(null);
   }, [pasteTpl, doc, commit]);
@@ -1364,7 +1430,7 @@ export default function App({ cloudUser, onLogout }: { cloudUser?: CloudUser; on
     if (savingCloud.current) throw new CloudError('Дождитесь окончания сохранения на сервере.', 409);
     const { project: latest } = await cloudApi<{ project: CloudProjectDetail }>(`/projects/${project.id}`);
     if (!prepareReplace()) return false;
-    past.current = []; future.current = [];
+    resetHistory(latest.document, 'Проект загружен из облака');
     setDoc(latest.document); syncedCloudDoc.current = latest.document;
     setActiveCloud(latest); activeCloudRef.current = latest;
     if (cloudUser) { rememberDraft(cloudUser.id, latest.document); rememberCloud(cloudUser.id, latest); }
@@ -1435,8 +1501,8 @@ export default function App({ cloudUser, onLogout }: { cloudUser?: CloudUser; on
           // деталь рисует генератор по строке описания (.lmk грузится в библиотеку)
           const { doc: nd, warnings } = lay6ToDoc(ab);
           if (!prepareReplace()) return;
-          if (cloudUser) { past.current = []; future.current = []; setDoc(nd); rememberDraft(cloudUser.id, nd); }
-          else commit(nd);
+          if (cloudUser) { resetHistory(nd, 'Открыт файл Sprint-Layout'); setDoc(nd); rememberDraft(cloudUser.id, nd); }
+          else commit(nd, 'Открыт файл Sprint-Layout');
           setSel(new Set());
           setTimeout(() => fit(nd), 50);
           if (warnings.length)
@@ -1452,7 +1518,7 @@ export default function App({ cloudUser, onLogout }: { cloudUser?: CloudUser; on
         if (nd.groups?.length) nd.groups = pruneGroups(nd.groups, new Set(nd.entities.map((e) => e.id)));
         if (!prepareReplace()) return;
         if (cloudUser) { past.current = []; future.current = []; setDoc(nd); rememberDraft(cloudUser.id, nd); }
-        else commit(nd);
+        else commit(nd, 'Открыт проект (JSON)');
         setSel(new Set());
         setTimeout(() => fit(nd), 50);
       } catch {
@@ -1563,15 +1629,15 @@ export default function App({ cloudUser, onLogout }: { cloudUser?: CloudUser; on
     if (copyGroups.length) nd.groups = [...(nd.groups ?? []), ...copyGroups];
     nd.w = doc.w + (cols - 1) * gx;
     nd.h = doc.h + (rows - 1) * gy;
-    commit(nd);
+    commit(nd, `Размножено: ${cols} × ${rows}`);
     setTimeout(() => fit(), 50);
   }, [doc, commit, fit]);
 
   const newBoardDlg = useCallback((name: string, w: number, h: number) => {
     if (!prepareReplace()) return;
     const next = M.newBoard(w, h, name);
-    if (cloudUser) { past.current = []; future.current = []; setDoc(next); rememberDraft(cloudUser.id, next); }
-    else commit(next);
+    if (cloudUser) { resetHistory(next, 'Создана плата'); setDoc(next); rememberDraft(cloudUser.id, next); }
+    else commit(next, 'Создана плата');
     setSel(new Set()); setDraft(null); setRouteA(null);
     setDialog(null);
     setTimeout(() => fit(next), 50);
@@ -1715,14 +1781,81 @@ export default function App({ cloudUser, onLogout }: { cloudUser?: CloudUser; on
     if (!net) return;
     const r = lengthenNet(doc.entities, nets, netId, target, meanderOptsFor(net, height));
     setLenInfo({ msg: r.message, ok: r.complete });
-    if (r.teeth) commit({ ...doc, entities: r.entities });
+    if (r.teeth) commit({ ...doc, entities: r.entities }, 'Выравнивание длины цепи');
   }, [doc, commit, meanderOptsFor]);
   const alignBusApp = useCallback((bus: string, height: number) => {
     const nets = doc.nets ?? [];
     const r = alignBus(doc.entities, nets, bus, (net) => meanderOptsFor(net, height));
     setLenInfo({ msg: r.message, ok: r.aligned });
-    if (r.results.some((x) => x.after > x.before)) commit({ ...doc, entities: r.entities });
+    if (r.results.some((x) => x.after > x.before)) commit({ ...doc, entities: r.entities }, 'Выравнивание шины');
   }, [doc, commit, meanderOptsFor]);
+
+  // ---------------- панель объектов: скрытие, блокировка, переход ----------
+  /** Скрыть/показать объекты: скрытое снимается с выделения, чтобы не «слепло». */
+  const setObjectsHidden = useCallback((ids: string[], hide: boolean) => {
+    setHiddenEnts((prev) => {
+      const n = new Set(prev);
+      for (const id of ids) { if (hide) n.add(id); else n.delete(id); }
+      return n;
+    });
+    if (!hide) return;
+    setSel((s) => {
+      const n = new Set(s);
+      let cut = false;
+      for (const id of ids) if (n.delete(id)) cut = true;
+      return cut ? n : s;
+    });
+  }, []);
+
+  /**
+   * Замок: элемент группы запирает всю группу — иначе группу нельзя было бы
+   * сдвинуть целиком (группа двигается только вместе). С выделения снимаем.
+   */
+  const setObjectsLocked = useCallback((ids: string[], lock: boolean) => {
+    const all = lock ? [...expandSelection(doc.groups, ids)] : ids;
+    setLockedEnts((prev) => {
+      const n = new Set(prev);
+      for (const id of all) { if (lock) n.add(id); else n.delete(id); }
+      return n;
+    });
+    if (!lock) return;
+    setSel((s) => {
+      const n = new Set(s);
+      let cut = false;
+      for (const id of all) if (n.delete(id)) cut = true;
+      return cut ? n : s;
+    });
+  }, [doc.groups]);
+
+  /** «Показать всё» из панели: возвращаем и объекты, и скрытые слои. */
+  const showAllObjects = useCallback(() => {
+    setHiddenEnts(new Set());
+    setHidden(new Set());
+  }, []);
+
+  const unlockAllObjects = useCallback(() => setLockedEnts(new Set()), []);
+
+  /** Показать область платы так, чтобы объект занял заметную часть окна. */
+  const zoomToBox = useCallback((box: [number, number, number, number]) => {
+    const w = Math.max(box[2] - box[0], 2), h = Math.max(box[3] - box[1], 2);
+    // как в «Найти на плате»: объект занимает примерно 40 % окна
+    const s = M.clamp(Math.min((size.w * 0.4) / w, (size.h * 0.4) / h), 1, 60);
+    const cx = (box[0] + box[2]) / 2, cy = (box[1] + box[3]) / 2;
+    setView((v) => ({ ...v, s, ox: size.w / 2 - (v.mir ? -cx : cx) * s, oy: size.h / 2 + cy * s }));
+  }, [size]);
+
+  /**
+   * Клик по строке панели «Объекты»: выделить (скрытое — сначала показать,
+   * иначе выделение было бы не видно) и перевести вид к габариту строки.
+   */
+  const pickObjNode = useCallback((node: ObjNode) => {
+    if (!node.ids.length) return;
+    if (node.ids.some((id) => hiddenEnts.has(id))) setObjectsHidden(node.ids, false);
+    setSel(new Set(node.ids));
+    setEditNode(null);
+    setTrackMsg({ msg: '', ok: null });
+    if (node.box) zoomToBox(node.box);
+  }, [hiddenEnts, setObjectsHidden, zoomToBox]);
 
   // переход к точке (мм) без смены масштаба
   const locateAt = useCallback((x: number, y: number) => {
@@ -1741,14 +1874,14 @@ export default function App({ cloudUser, onLogout }: { cloudUser?: CloudUser; on
   // восстановление версии — обычная правка через commit, поэтому отменяется Ctrl+Z
   const restoreVersion = useCallback((snap: M.Doc) => {
     const next = M.cloneDoc(snap);
-    commit(next);
+    commit(next, 'Восстановлена версия проекта');
     setSel(new Set()); setDraft(null); setRouteA(null);
     setDialog(null);
     setTimeout(() => fit(next), 50);
   }, [commit, fit]);
 
   const changeNets = useCallback((nets: M.Net[]) => {
-    commit({ ...doc, nets });
+    commit({ ...doc, nets }, 'Изменены группы соединений');
     setRouteMsg({ msg: '', ok: null });
   }, [doc, commit]);
   const cancelRouting = useCallback(() => {
@@ -1796,7 +1929,7 @@ export default function App({ cloudUser, onLogout }: { cloudUser?: CloudUser; on
     if (docRef.current !== snapshot) {
       setRouteMsg({ msg: 'Плата изменилась. Рассчитайте варианты заново.', ok: false }); return;
     }
-    if (r.ents.length) commit({ ...snapshot, entities: [...snapshot.entities, ...r.ents] });
+    if (r.ents.length) commit({ ...snapshot, entities: [...snapshot.entities, ...r.ents] }, 'Применён вариант автотрассировки');
     setSel(new Set());
     const details = r.unresolved.map((n) => `«${n.name}»: ${n.missing}`).join('; ');
     const rip = r.rips ? ` Переложено дорожек: ${r.rips}.` : '';
@@ -1814,7 +1947,7 @@ export default function App({ cloudUser, onLogout }: { cloudUser?: CloudUser; on
       const owner = nets.find((n) => n.id !== net.id && n.pads.includes(id));
       if (owner) { setRouteMsg({ msg: `Эта площадка уже в группе «${owner.name}». Сначала уберите её оттуда.`, ok: false }); return; }
       const pads = net.pads.includes(id) ? net.pads.filter((p) => p !== id) : [...net.pads, id];
-      commit({ ...doc, nets: nets.map((n) => n.id === net.id ? { ...n, pads } : n) });
+      commit({ ...doc, nets: nets.map((n) => n.id === net.id ? { ...n, pads } : n) }, `Цепь «${net.name}»: площадок ${pads.length}`);
       setRouteMsg({ msg: `«${net.name}»: ${pads.length} площадок. Добавьте остальные или создайте следующую группу.`, ok: null });
       return;
     }
@@ -1832,7 +1965,7 @@ export default function App({ cloudUser, onLogout }: { cloudUser?: CloudUser; on
       end = { x: newPad.x, y: newPad.y, layers: ['k2'], r: newPad.size / 2, entId: newPad.id, tht: true };
     }
     if (!routeA) {
-      if (newPad) commit(base);
+      if (newPad) commit(base, 'Добавлена площадка под дорожку');
       setRouteA(end);
       setRouteMsg({ msg: `Первый контакт (${end.kind === 'smd' ? 'SMD' : end.tht ? 'PTH' : 'переход'}, ${end.layers.join('/').toUpperCase()}): ` + M.fmt(end.x) + '; ' + M.fmt(end.y) + ' — выберите вторую', ok: null });
       return;
@@ -1843,14 +1976,14 @@ export default function App({ cloudUser, onLogout }: { cloudUser?: CloudUser; on
       allowTop: defs.rtAllowTop, angle: defs.rtAngle,
     });
     if (!r.ok) {
-      if (newPad) commit(base); // площадку всё равно оставляем
+      if (newPad) commit(base, 'Добавлена площадка под дорожку');
       setRouteMsg({ msg: r.msg, ok: false });
       setRouteA(null);
       return;
     }
     const nd = M.cloneDoc(base);
     nd.entities.push(...r.ents);
-    commit(nd);
+    commit(nd, `Автотрассировка: ${r.ents.length} прим.`);
     setSel(new Set(r.ents.map((x) => x.id)));
     setRouteMsg({ msg: r.msg, ok: r.drc === 0 });
     setRouteA(null);
@@ -1895,6 +2028,16 @@ export default function App({ cloudUser, onLogout }: { cloudUser?: CloudUser; on
         setEditNode(null);
         setTrackMsg({ msg: '', ok: null });
         const hitId = hitAt(w);
+        // под курсором только заблокированный объект: объясняем, почему «не выбирается»
+        if (!hitId) {
+          const lockedId = hitAt(w, true);
+          if (lockedId && lockedEnts.has(lockedId)) {
+            setTrackMsg({
+              msg: 'Объект заблокирован: его нельзя выбрать и сдвинуть. Снимите замок в панели «Объекты» слева.',
+              ok: false,
+            });
+          }
+        }
         if (hitId) {
           // клик по элементу группы выбирает (и двигает) всю группу
           const grp = groupIdx.get(hitId);
@@ -2131,26 +2274,21 @@ export default function App({ cloudUser, onLogout }: { cloudUser?: CloudUser; on
     drag.current = null;
     if (!d) return;
     if (d.mode === 'move' && d.moved) {
-      past.current.push(d.doc0);
-      if (past.current.length > historyLimit(d.doc0, prefsRef.current.historyDepth)) past.current.shift();
-      future.current = [];
       // финальный коммит — только один раз, а не каждый кадр
       const nd = M.cloneDoc(d.doc0);
       nd.entities.forEach((ent) => {
         if (selRef.current.has(ent.id)) M.translateEnt(ent, d.dx, d.dy);
       });
-      setDoc(nd);
+      const n = selRef.current.size;
+      commit(nd, n > 1 ? `Перемещение элементов: ${n}` : 'Перемещение объекта');
       setDragTick(t => t + 1);
     } else if (d.mode === 'node' && d.moved && d.preview) {
-      past.current.push(d.doc0);
-      if (past.current.length > historyLimit(d.doc0, prefsRef.current.historyDepth)) past.current.shift();
-      future.current = [];
       const nd = M.cloneDoc(d.doc0);
       const t = nd.entities.find((x) => x.id === d.entId);
       if (t && (t.kind === 'track' || t.kind === 'poly') && t.pts[d.idx]) {
         if (t.kind === 'track') moveTrackNode(nd.entities, t.id, d.idx, d.preview);
         else t.pts[d.idx] = d.preview;
-        setDoc(nd);
+        commit(nd, 'Сдвинут узел');
       }
       setDragTick(t => t + 1);
     } else if (d.mode === 'marquee') {
@@ -2160,6 +2298,7 @@ export default function App({ cloudUser, onLogout }: { cloudUser?: CloudUser; on
         const ns = new Set<string>();
         for (const ent of doc.entities) {
           if (!entVisible(ent)) continue;
+          if (lockedEnts.has(ent.id)) continue;   // замок из панели «Объекты»
           const b = M.entBBox(ent);
           if (b[0] <= x2 && b[2] >= x1 && b[1] <= y2 && b[3] >= y1) ns.add(ent.id);
         }
@@ -2199,7 +2338,7 @@ export default function App({ cloudUser, onLogout }: { cloudUser?: CloudUser; on
     const ins = insertNodeAtEnt(target, p, e.altKey);
     if (!ins) return;
     setEditNode(ins.idx);
-    if (ins.added) commit(ins.next);
+    if (ins.added) commit(ins.next, 'Добавлен узел дорожки');
     setTrackMsg({ msg: NODE_HINT, ok: true });
   };
 
@@ -2266,7 +2405,11 @@ export default function App({ cloudUser, onLogout }: { cloudUser?: CloudUser; on
       // ---------------- правка ----------------
       case 'edit.undo': undo(); return;
       case 'edit.redo': redo(); return;
-      case 'edit.selectAll': setSel(new Set(doc.entities.map((en) => en.id))); return;
+      // скрытые и заблокированные объекты в «выделить всё» не попадают:
+      // иначе их случайно сдвинут или удалят вместе с остальным
+      case 'edit.selectAll':
+        setSel(new Set(doc.entities.filter((en) => entVisible(en) && !lockedEnts.has(en.id)).map((en) => en.id)));
+        return;
       case 'edit.copy': copySel(); return;
       case 'edit.paste': startPaste(); return;
       case 'edit.duplicate': duplicateSel(); return;
@@ -2288,6 +2431,9 @@ export default function App({ cloudUser, onLogout }: { cloudUser?: CloudUser; on
       case 'edit.nudgeUp': nudge(0, stepNudge); return;
       case 'edit.nudgeDown': nudge(0, -stepNudge); return;
       case 'edit.find': setFindOpen(true); setFindFocus((f) => f + 1); return;
+      case 'edit.history': setDialog('history'); return;
+      // панель «Объекты» слева: сразу в строку поиска — ищем объект на плате
+      case 'edit.objects': setLeftTab('objects'); setObjFocus((f) => f + 1); return;
 
       // ---------------- вид ----------------
       case 'view.fit': fit(); return;
@@ -2498,14 +2644,17 @@ export default function App({ cloudUser, onLogout }: { cloudUser?: CloudUser; on
         x1: Math.min(cA.x, cB.x) - clipPad, x2: Math.max(cA.x, cB.x) + clipPad,
         y1: Math.min(cA.y, cB.y) - clipPad, y2: Math.max(cA.y, cB.y) + clipPad,
       } as const;
+      // объекты, скрытые в панели «Объекты», не рисуются (геометрия платы,
+      // DRC и экспорт их по-прежнему видят)
+      const skip = hiddenEnts.size ? hiddenEnts : null;
       const dragNow = drag.current;
       if (dragNow?.mode === 'move' && dragNow.moved && dragFilter?.mode === 'move') {
         // во время перетаскивания не рисуем выбранное в базе — оно в оверлее
-        drawFlat(ctx, view, dragFilter.ents, hidden, clip);
+        drawFlat(ctx, view, dragFilter.ents, hidden, clip, null, skip);
       } else if (dragNow?.mode === 'node' && dragNow.moved && dragFilter?.mode === 'node') {
-        drawFlat(ctx, view, dragFilter.ents, hidden, clip);
+        drawFlat(ctx, view, dragFilter.ents, hidden, clip, null, skip);
       } else {
-        drawFlat(ctx, view, zEnts, hidden, clip, zBoxes);
+        drawFlat(ctx, view, zEnts, hidden, clip, zBoxes, skip);
       }
 
       // выделение
@@ -2608,7 +2757,7 @@ export default function App({ cloudUser, onLogout }: { cloudUser?: CloudUser; on
       noteFrame(performance.now() - t0);
     });
   }, [
-    doc, zEnts, substrate, view, hidden, sel, gridConf, defs.showAxes,
+    doc, zEnts, substrate, view, hidden, hiddenEnts, sel, gridConf, defs.showAxes,
     defs.rtHoleClear, size, tool, routeMode, activeNet, netGeometry, theme, colors, toPx,
     selGroups, dragTick, perfLevel.level,
   ]);
@@ -3376,8 +3525,21 @@ export default function App({ cloudUser, onLogout }: { cloudUser?: CloudUser; on
       ),
       undo: (
         <div className="tb-group" key="undo">
-          {tb('undo', 'Отменить (Ctrl+Z)', undo, { disabled: !past.current.length })}
+          {tb('undo', 'Отменить (Ctrl+Z)', undo, { disabled: undoDepth(past.current) === 0 })}
           {tb('redo', 'Повторить (Ctrl+Y)', redo, { disabled: !future.current.length })}
+          <MenuBtn
+            icon="history"
+            title={undoDepth(past.current) === 0
+              ? 'История правок списком: пока пусто — сделайте пару правок'
+              : `История правок списком — отменить сразу до нужной операции (Ctrl+Shift+H). Шагов: ${undoDepth(past.current)}`}
+            learn="tb-history"
+            items={[
+              { icon: 'undo', label: 'Отменить (Ctrl+Z)', kbd: 'Ctrl+Z', onClick: undo },
+              { icon: 'redo', label: 'Повторить (Ctrl+Y)', kbd: 'Ctrl+Y', onClick: redo },
+              { sep: true },
+              { icon: 'history', label: 'История правок списком…', kbd: 'Ctrl+Shift+H', onClick: () => setDialog('history') },
+            ]}
+          />
         </div>
       ),
       group: (
@@ -3630,6 +3792,22 @@ export default function App({ cloudUser, onLogout }: { cloudUser?: CloudUser; on
         </div>
       </>
     );
+    const renderObjectsPane = () => (
+      <ObjectPanel
+        doc={doc}
+        sel={sel}
+        hiddenEnts={hiddenEnts}
+        lockedEnts={lockedEnts}
+        hiddenLayers={hidden}
+        onPick={pickObjNode}
+        onToggleHidden={setObjectsHidden}
+        onToggleLocked={setObjectsLocked}
+        onShowAll={showAllObjects}
+        onUnlockAll={unlockAllObjects}
+        // 0 — «ещё не вызывали»: иначе при старте фокус улетал бы в поиск
+        onFocusSearch={objFocus || undefined}
+      />
+    );
     const renderGroupsPane = () => (
       <GroupsPanel
         groups={doc.groups ?? []}
@@ -3656,8 +3834,9 @@ export default function App({ cloudUser, onLogout }: { cloudUser?: CloudUser; on
             </div>
           )}
           {activeLeft === 'layers' ? renderLayersPane()
-            : activeLeft === 'lib' ? renderGenPane()
-            : renderGroupsPane()}
+            : activeLeft === 'objects' ? renderObjectsPane()
+              : activeLeft === 'lib' ? renderGenPane()
+                : renderGroupsPane()}
         </div>
       </div>
     );
@@ -3667,6 +3846,8 @@ export default function App({ cloudUser, onLogout }: { cloudUser?: CloudUser; on
     placeFromGen, placeFromCatalog, saveCatalogToLibrary, pickMacro, editMacro, saveGenToLibrary, updateGenMacro, exportLibJson, patchStore,
     // вкладка «Группы»
     groupCount, selGroup, selGroups, canGroupSel, groupSel, selectGroup, ungroupOne, ungroupAllGroups, renameGroupCb,
+    // вкладка «Объекты»
+    hiddenEnts, lockedEnts, objFocus, pickObjNode, setObjectsHidden, setObjectsLocked, showAllObjects, unlockAllObjects,
   ]);
 
   const rightColumn = useMemo(() => (
@@ -3723,7 +3904,7 @@ export default function App({ cloudUser, onLogout }: { cloudUser?: CloudUser; on
           <NI label="Минимальный зазор, мм" value={defs.drcClear} min={0} step={0.05}
             on={v => setDefs({ drcClear: v })} />
           <ClearanceExceptions violations={boardClearance} ignored={doc.ignoredClearance ?? []}
-            onChange={ignoredClearance => commit({ ...doc, ignoredClearance })}
+            onChange={ignoredClearance => commit({ ...doc, ignoredClearance }, 'Исключения контроля зазоров')}
             onLocate={v => {
               const x = (v.a.x + v.b.x) / 2, y = (v.a.y + v.b.y) / 2;
               setHidden(old => { const next = new Set(old); next.delete(v.layer); return next; });
@@ -3809,7 +3990,7 @@ export default function App({ cloudUser, onLogout }: { cloudUser?: CloudUser; on
     setPrefs({ ...DEFAULT_PREFS });
     setDefs({ ...DEFAULT_DEFS });
     setColors({});
-    persistUi({ ids: [], hidden: [], sides: DEFAULT_SIDES });
+    persistUi({ ids: [], hidden: [], sides: DEFAULT_SIDES, rev: UI_REV });
   }, [setPrefs, setDefs, setColors, persistUi]);
 
   /** Удалить черновик платы из браузера и начать с чистой платы. */
@@ -3823,7 +4004,7 @@ export default function App({ cloudUser, onLogout }: { cloudUser?: CloudUser; on
         setConfirmAsk(null);
         try { (cloudUser ? sessionStorage : localStorage).removeItem(draftKey(cloudUser?.id)); } catch { /* ignore */ }
         const next = M.newBoard(prefs.newW, prefs.newH, prefs.newName);
-        past.current = []; future.current = [];
+        resetHistory(next, 'Создана плата');
         setDoc(next);
         setSel(new Set()); setDraft(null); setRouteA(null); setProbe(null);
         setEditNode(null); setTrackMsg({ msg: '', ok: null }); setRouteMsg({ msg: '', ok: null });
@@ -3923,6 +4104,12 @@ export default function App({ cloudUser, onLogout }: { cloudUser?: CloudUser; on
             ⚡ цепь: {plur(probe.pads, ['площадка', 'площадки', 'площадок'])} · {plur(probe.smd, ['SMD', 'SMD', 'SMD'])} · {plur(probe.vias, ['переход', 'перехода', 'переходов'])} · {plur(probe.tracks, ['дорожка', 'дорожки', 'дорожек'])}
           </span>
         )}
+        {/* «плохое» сообщение инструмента не всегда попадает в панель свойств
+            (например, клик по заблокированному объекту — выделения нет),
+            поэтому важное видно и в строке состояния */}
+        {trackMsg.msg && trackMsg.ok === false && (
+          <span className="status-alert" title={trackMsg.msg}>{trackMsg.msg}</span>
+        )}
         {prefs.statusHint && <span>{toolMeta.name}: {toolMeta.hint}</span>}
         <span className="lg" title={cloudUser ? `${activeCloud?.name ?? 'Черновик'}: ${cloudSaveLabel(cloudStatus)}${cloudMessage ? ' · ' + cloudMessage : ''}` : 'Локальный режим без сервера проектов'}>
           <span className={'pulse' + (cloudUser && (cloudStatus === 'error' || cloudStatus === 'conflict') ? ' cloud-pulse-error' : '')} />
@@ -3932,7 +4119,7 @@ export default function App({ cloudUser, onLogout }: { cloudUser?: CloudUser; on
 
       {dialog === 'autoplace' && <AutoPlaceDialog doc={doc} selected={sel} clearance={defs.rtClear}
         onClose={() => setDialog(null)} onApply={(r) => {
-          commit({ ...doc, entities: r.entities, groups: pruneGroups(doc.groups, new Set(r.entities.map((e) => e.id))) });
+          commit({ ...doc, entities: r.entities, groups: pruneGroups(doc.groups, new Set(r.entities.map((e) => e.id))) }, 'Автокомпоновка компонентов');
           setDraft(null); setRouteA(null); setProbe(null); setRouteMsg({ msg: '', ok: null });
           setDialog(null); fit();
         }} />}
@@ -3962,6 +4149,12 @@ export default function App({ cloudUser, onLogout }: { cloudUser?: CloudUser; on
       {dialog === 'new' && <NewBoardDialog
         defaults={{ name: prefs.newName, w: prefs.newW, h: prefs.newH }}
         onOk={newBoardDlg} onClose={() => setDialog(null)} />}
+      {dialog === 'history' && <HistoryDialog
+        rows={historyRows(past.current, future.current)}
+        limit={historyLimit(doc, prefs.historyDepth)}
+        onUndoTo={undoTo}
+        onRedoTo={redoTo}
+        onClose={() => setDialog(null)} />}
       {dialog === 'export' && (
         <ExportDialog
           defaults={{ layer: prefs.pngLayer, mirror: prefs.pngMirror, drill: prefs.pngDrill, dpi: prefs.pngDpi }}
