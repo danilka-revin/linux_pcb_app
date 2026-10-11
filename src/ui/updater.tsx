@@ -12,6 +12,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { Modal } from './widgets';
 import { Ic } from './icons';
 import { PerfBuilder } from './perf';
+import { DEFAULT_SIDES, LEFT_TABS, type LeftTabId } from './uiconf';
 
 export type UpdatePhase = 'idle' | 'checking' | 'ready' | 'running' | 'done' | 'error' | 'cancelled';
 
@@ -686,7 +687,8 @@ export function UiBuilder({
 }
 
 /** Вкладки левой колонки, которые расставляет конструктор интерфейса. */
-export type SideTabId = 'layers' | 'lib' | 'groups';
+/** Вкладки левой колонки: список общий с редактором (см. ui/uiconf.ts). */
+export type SideTabId = LeftTabId;
 
 /** Настройка боковых колонок: левая колонка (Слои/Детали/Группы) и правая («Свойства»). */
 export function SideBuilder({
@@ -779,7 +781,7 @@ export function SideBuilder({
       )}
 
       <div className="uib-meta">
-        <button className="btn tiny" onClick={() => onChange({ leftTabs: ['layers', 'lib'], leftW: 250, rightW: 274, showRight: true })}>
+        <button className="btn tiny" onClick={() => onChange({ leftTabs: [...DEFAULT_SIDES.leftTabs], leftW: DEFAULT_SIDES.leftW, rightW: DEFAULT_SIDES.rightW, showRight: DEFAULT_SIDES.showRight })}>
           Настройки по умолчанию
         </button>
       </div>
@@ -787,7 +789,8 @@ export function SideBuilder({
   );
 }
 
-const LEFT_TAB_CHECK: string[] = ['layers', 'lib'];
+/** Вкладки, которые можно вернуть после скрытия (все известные). */
+const LEFT_TAB_CHECK: string[] = LEFT_TABS.map((t) => t.id);
 
 export function UiBuilderDialog({
   ids, names, hidden, onChange, onClose, sideTabs, sideNames, leftW, rightW, showRight, onSides, pinned,

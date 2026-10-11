@@ -25,7 +25,7 @@ import {
 import type { Defs } from './panels';
 import type { ThemeId } from '../pcb/render';
 import { LAYERS, fmt, type LayerId } from '../pcb/model';
-import type { SidesConf } from './uiconf';
+import { LEFT_TAB_NAMES, type SidesConf } from './uiconf';
 import type { Prefs, PrintLayer } from './prefs';
 import {
   DEFAULT_HOTKEYS, HOTKEYS, HOTKEY_BY_ID, HOTKEY_GROUP_ORDER, addHotkey, assignHotkey,
@@ -896,7 +896,7 @@ export function SettingsWindow(props: SettingsWindowProps) {
             <Block title="Боковые колонки">
               <SideBuilder
                 sideTabs={ui.sides.leftTabs}
-                sideNames={{ layers: 'Слои', lib: 'Детали', groups: 'Группы' }}
+                sideNames={LEFT_TAB_NAMES}
                 leftW={ui.sides.leftW}
                 rightW={ui.sides.rightW}
                 showRight={ui.sides.showRight}

@@ -93,7 +93,27 @@ export interface DrawOpts {
   passes?: Set<string>;   // ограничение "проходов" для печати
   omitDrills?: boolean;   // предпросмотр рисует отверстия отдельным последним проходом
   drillMarks?: boolean;   // для печати: белые точки в центрах отверстий
+  /**
+   * id объектов, скрытых из панели объектов (см. ui/objects.tsx). У детали
+   * скрыт id компонента, а её примитивы в развёрнутом виде имеют id «compId:i» —
+   * поэтому проверяется и id целиком, и его часть до двоеточия.
+   */
+  skip?: Set<string>;
 }
+
+/**
+ * Скрыт ли примитив в панели объектов. У развёрнутой детали id примитива —
+ * «compId:i», а в наборе скрытых лежит id компонента, поэтому проверяем и
+ * часть id до двоеточия. Функция общая с редактором (см. src/App.tsx).
+ */
+export function skippedId(skip: Set<string> | null | undefined, id: string): boolean {
+  if (!skip || !skip.size) return false;
+  if (skip.has(id)) return true;
+  const cut = id.indexOf(':');
+  return cut > 0 && skip.has(id.slice(0, cut));
+}
+
+const skipped = (o: DrawOpts, id: string): boolean => skippedId(o.skip, id);
 
 function passOf(e: Entity): string {
   switch (e.kind) {
@@ -112,6 +132,7 @@ export function layerColor(l: LayerId | 'both'): string {
 export function drawEnt(
   ctx: CanvasRenderingContext2D, v: View, e: Entity, o: DrawOpts,
 ): void {
+  if (o.skip && skipped(o, e.id)) return;
   if (e.kind === 'comp') {
     // expandComp уже кэширует? разворачиваем без лишних аллокаций
     const subs = expandComp(e);
@@ -385,6 +406,8 @@ export function bboxArray(ents: Entity[]): Float32Array {
  * вызовов canvas-API).
  * boxes — необязательная таблица габаритов из bboxArray для того же списка
  * (если список отфильтрован, таблица не подходит — не передавайте её).
+ * skip — id объектов, скрытых пользователем в панели объектов: они не рисуются,
+ * но остаются в документе (геометрия платы, DRC и экспорт их видят).
  */
 export function drawFlat(
   ctx: CanvasRenderingContext2D,
@@ -393,8 +416,9 @@ export function drawFlat(
   hidden?: Set<LayerId>,
   clip?: ClipRect | null,
   boxes?: Float32Array | null,
+  skip?: Set<string> | null,
 ): void {
-  const o: DrawOpts = { hidden };
+  const o: DrawOpts = { hidden, skip: skip && skip.size ? skip : undefined };
   const len = ents.length;
   if (!clip) {
     for (let i = 0; i < len; i++) drawEnt(ctx, v, ents[i], o);
