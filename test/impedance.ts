@@ -1,0 +1,20 @@
+import assert from 'node:assert/strict';
+import { differentialImpedance, microstripImpedance, solveDifferentialWidth } from '../src/pcb/impedance';
+
+const stack = { dielectricMm: .18, dielectricEr: 4.2, copperUm: 35 };
+const zThin = microstripImpedance(.15, stack);
+const zWide = microstripImpedance(.4, stack);
+assert(zThin > zWide && zWide > 0 && Number.isFinite(zWide), 'wider microstrip lowers impedance');
+const tight = differentialImpedance(.22, .12, stack);
+const wideGap = differentialImpedance(.22, .5, stack);
+assert(tight.differentialOhm < wideGap.differentialOhm, 'more spacing weakens pair coupling');
+assert(tight.differentialOhm > tight.singleEndedOhm, 'pair differential impedance is positive and coupled');
+const width = solveDifferentialWidth(100, .2, stack);
+assert(width !== null && width >= .03 && width <= 5);
+const solved = differentialImpedance(width!, .2, stack);
+assert(Math.abs(solved.differentialOhm - 100) < 1e-8, 'bounded bisection solves target');
+assert.equal(solveDifferentialWidth(1, .2, stack), null, 'unreachable target returns null');
+assert.equal(microstripImpedance(0, stack), 0);
+assert.equal(differentialImpedance(.2, -1, stack).differentialOhm, 0);
+assert.equal(solveDifferentialWidth(100, .2, { ...stack, dielectricEr: 1 }), null);
+console.log('Differential impedance: microstrip trend, pair coupling, target solver and invalid inputs OK');

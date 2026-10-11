@@ -88,7 +88,7 @@ const base = (): Doc => ({
   const a = base();
   const b = base();
   b.nets = [
-    { id: 'n1', name: 'GND_PWR', pads: ['p1', 'p2'], bus: 'PWR' },  // переименована и с шиной
+    { id: 'n1', name: 'GND_PWR', pads: ['p1', 'p2'], bus: 'PWR', rules: { w: 0.25, clear: 0.3 } },  // переименована, настроена и с шиной
     { id: 'n2', name: 'VCC', pads: [] },                           // новая
   ];
   b.w = 120;
@@ -98,10 +98,32 @@ const base = (): Doc => ({
   assert.equal(renamed?.type, 'changed');
   assert.match(renamed!.detail, /имя «GND» → «GND_PWR»/);
   assert.match(renamed!.detail, /шина «» → «PWR»/);
+  assert.match(renamed!.detail, /правила трассировки изменены/);
   assert.equal(d.nets.find((n) => n.name === 'VCC')?.type, 'added');
 
   const dropped = diffDocs(b, a).nets.find((n) => n.type === 'removed');
   assert.equal(dropped?.name, 'VCC');
+  assert.match(diffSummary(d), /размер платы изменён/);
+}
+
+// ------------------------------------ дифф-пары и производственные параметры
+{
+  const a = base();
+  const b = base();
+  a.diffPairs = [{ id: 'dp1', name: 'USB', positiveNetId: 'n1', negativeNetId: 'n2', targetOhm: 90, widthMm: .2, gapMm: .2, maxSkewMm: .25 }];
+  b.diffPairs = [{ ...a.diffPairs[0], targetOhm: 100, widthMm: .18 }];
+  a.panelInfo = { cols: 1, rows: 1, breakawayTabs: false, vCuts: [] };
+  b.panelInfo = { cols: 2, rows: 1, breakawayTabs: false, vCuts: [] };
+  const d = diffDocs(a, b);
+  assert.equal(d.diffPairs.length, 1);
+  assert.equal(d.diffPairs[0].type, 'changed');
+  assert.match(d.diffPairs[0].detail, /Zdiff 90 → 100 Ω/);
+  assert.match(d.diffPairs[0].detail, /ширина 0.2 → 0.18 мм/);
+  assert.equal(d.panelChanged, true);
+  assert.match(diffSummary(d), /дифференциальных пар: 1/);
+  assert.match(diffSummary(d), /параметры панелизации изменены/);
+  b.diffPairs = [];
+  assert.equal(diffDocs(a, b).diffPairs[0].type, 'removed');
 }
 
 // -------------------------------------------- список изменений ограничен

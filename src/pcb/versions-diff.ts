@@ -37,6 +37,12 @@ export interface CommentChange {
   y: number;
 }
 
+export interface DifferentialPairChange {
+  type: ChangeType;
+  name: string;
+  detail: string;
+}
+
 export interface VersionDiff {
   /** всего изменений по типам */
   added: number;
@@ -48,7 +54,10 @@ export interface VersionDiff {
   trackLength: { before: number; after: number };
   /** размер платы поменялся */
   sizeChanged: boolean;
+  /** производственные параметры панелизации изменились */
+  panelChanged: boolean;
   nets: NetChange[];
+  diffPairs: DifferentialPairChange[];
   /** заметки ревью сравниваются отдельно от производственной геометрии */
   comments: CommentChange[];
   /** список изменений (ограничен, чтобы большой диф не забивал окно) */
@@ -66,7 +75,7 @@ const KIND_LABEL: Record<Entity['kind'], string> = {
 const LIST_LIMIT = 300;
 
 const labelOf = (e: Entity): string => {
-  if (e.kind === 'comp') return `деталь ${e.name || e.id}`;
+  if (e.kind === 'comp') return `деталь ${e.ref ? `${e.ref} · ` : ''}${e.value || e.name || e.id}`;
   if (e.kind === 'text') return `текст «${e.text.slice(0, 24)}»`;
   if (e.kind === 'track') return `дорожка ${e.layer.toUpperCase()}`;
   return KIND_LABEL[e.kind];
@@ -95,7 +104,11 @@ const trackLen = (doc: Doc): number => {
   return sum;
 };
 
-const netSig = (n: Net): string => stable({ name: n.name, pads: [...n.pads].sort(), bus: n.bus ?? '' });
+const netSig = (n: Net): string => stable({ name: n.name, pads: [...n.pads].sort(), bus: n.bus ?? '', rules: n.rules ?? {} });
+const pairSig = (p: NonNullable<Doc['diffPairs']>[number]): string => stable({
+  name: p.name, positiveNetId: p.positiveNetId, negativeNetId: p.negativeNetId,
+  targetOhm: p.targetOhm, widthMm: p.widthMm, gapMm: p.gapMm, maxSkewMm: p.maxSkewMm,
+});
 
 /** Сравнение: «было» — a, «стало» — b. */
 export function diffDocs(a: Doc, b: Doc): VersionDiff {
@@ -105,7 +118,8 @@ export function diffDocs(a: Doc, b: Doc): VersionDiff {
     added: 0, removed: 0, changed: 0, byKind: {},
     trackLength: { before: trackLen(a), after: trackLen(b) },
     sizeChanged: a.w !== b.w || a.h !== b.h,
-    nets: [], comments: [], changes: [], truncated: false,
+    panelChanged: stable(a.panelInfo ?? null) !== stable(b.panelInfo ?? null),
+    nets: [], diffPairs: [], comments: [], changes: [], truncated: false,
   };
   const bump = (kind: Entity['kind'], type: ChangeType): void => {
     const row = out.byKind[kind] ?? (out.byKind[kind] = { added: 0, removed: 0, changed: 0 });
@@ -144,12 +158,33 @@ export function diffDocs(a: Doc, b: Doc): VersionDiff {
       if (old.name !== n.name) parts.push(`имя «${old.name}» → «${n.name}»`);
       if (old.pads.length !== n.pads.length) parts.push(`площадок ${old.pads.length} → ${n.pads.length}`);
       if ((old.bus ?? '') !== (n.bus ?? '')) parts.push(`шина «${old.bus ?? ''}» → «${n.bus ?? ''}»`);
+      if (stable(old.rules ?? {}) !== stable(n.rules ?? {})) parts.push('правила трассировки изменены');
       if (!parts.length) parts.push('состав площадок');
       out.nets.push({ type: 'changed', name: n.name, detail: parts.join(', ') });
     }
   }
   for (const n of a.nets ?? []) {
     if (!netB.has(n.id)) out.nets.push({ type: 'removed', name: n.name, detail: '' });
+  }
+
+  const pairsA = new Map((a.diffPairs ?? []).map((pair) => [pair.id, pair] as const));
+  const pairsB = new Map((b.diffPairs ?? []).map((pair) => [pair.id, pair] as const));
+  for (const pair of b.diffPairs ?? []) {
+    const old = pairsA.get(pair.id);
+    if (!old) out.diffPairs.push({ type: 'added', name: pair.name, detail: `цель ${pair.targetOhm} Ω, ширина ${pair.widthMm} мм, зазор ${pair.gapMm} мм` });
+    else if (pairSig(old) !== pairSig(pair)) {
+      const changes: string[] = [];
+      if (old.name !== pair.name) changes.push(`имя «${old.name}» → «${pair.name}»`);
+      if (old.positiveNetId !== pair.positiveNetId || old.negativeNetId !== pair.negativeNetId) changes.push('состав цепей изменён');
+      if (old.targetOhm !== pair.targetOhm) changes.push(`Zdiff ${old.targetOhm} → ${pair.targetOhm} Ω`);
+      if (old.widthMm !== pair.widthMm) changes.push(`ширина ${old.widthMm} → ${pair.widthMm} мм`);
+      if (old.gapMm !== pair.gapMm) changes.push(`зазор ${old.gapMm} → ${pair.gapMm} мм`);
+      if (old.maxSkewMm !== pair.maxSkewMm) changes.push(`допуск skew ${old.maxSkewMm} → ${pair.maxSkewMm} мм`);
+      out.diffPairs.push({ type: 'changed', name: pair.name, detail: changes.join(', ') });
+    }
+  }
+  for (const pair of a.diffPairs ?? []) {
+    if (!pairsB.has(pair.id)) out.diffPairs.push({ type: 'removed', name: pair.name, detail: '' });
   }
 
   // Заметки ревью — аннотации к рабочему файлу, но не примитивы платы.
@@ -176,12 +211,15 @@ export function diffDocs(a: Doc, b: Doc): VersionDiff {
 /** Текст сводки для строки под результатом сравнения. */
 export function diffSummary(d: VersionDiff): string {
   const total = d.added + d.removed + d.changed;
-  if (!total && !d.nets.length && !d.comments.length && !d.sizeChanged) return 'Версии совпадают: различий нет.';
+  if (!total && !d.nets.length && !d.diffPairs.length && !d.comments.length && !d.sizeChanged && !d.panelChanged) return 'Версии совпадают: различий нет.';
   const parts: string[] = [];
   if (d.added) parts.push(`добавлено ${d.added}`);
   if (d.removed) parts.push(`удалено ${d.removed}`);
   if (d.changed) parts.push(`изменено ${d.changed}`);
+  if (d.sizeChanged) parts.push('размер платы изменён');
+  if (d.panelChanged) parts.push('параметры панелизации изменены');
   if (d.nets.length) parts.push(`цепей: ${d.nets.length}`);
+  if (d.diffPairs.length) parts.push(`дифференциальных пар: ${d.diffPairs.length}`);
   if (d.comments.length) parts.push(`комментариев: ${d.comments.length}`);
   return parts.join(', ');
 }

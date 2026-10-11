@@ -183,6 +183,7 @@ function DiffView({ title, result, onLocate }: { title: string; result: VersionD
     <div className="versions-stats">
       <span>Дорожки: {mm(result.trackLength.before)} → {mm(result.trackLength.after)}</span>
       {result.sizeChanged && <span>Размер платы изменён</span>}
+      {result.panelChanged && <span>Параметры панелизации изменены</span>}
     </div>
     {kinds.length > 0 && <ul className="versions-kinds">
       {kinds.map(([kind, c]) => <li key={kind}>{kindName(kind)}: +{c.added} / −{c.removed} / ~{c.changed}</li>)}
@@ -190,6 +191,10 @@ function DiffView({ title, result, onLocate }: { title: string; result: VersionD
     {result.nets.length > 0 && <div className="versions-nets">
       <h4>Цепи</h4>
       <ul>{result.nets.map((n, i) => <li key={i}>{KIND_CHANGE[n.type]}: <b>{n.name}</b>{n.detail ? ` — ${n.detail}` : ''}</li>)}</ul>
+    </div>}
+    {result.diffPairs.length > 0 && <div className="versions-nets">
+      <h4>Дифференциальные пары</h4>
+      <ul>{result.diffPairs.map((pair, i) => <li key={i}>{KIND_CHANGE[pair.type]}: <b>{pair.name}</b>{pair.detail ? ` — ${pair.detail}` : ''}</li>)}</ul>
     </div>}
     {result.comments.length > 0 && <div className="versions-nets versions-comments">
       <h4>Комментарии ревью</h4>

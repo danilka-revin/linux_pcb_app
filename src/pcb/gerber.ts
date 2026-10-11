@@ -206,15 +206,35 @@ export function excellon(doc: Doc): string {
   return out.join('\n') + '\n';
 }
 
+function panelVCutGerber(doc: Doc): string {
+  const cuts = doc.panelInfo?.vCuts ?? [];
+  const out = ['G04 PSBees panel V-CUT guide (review with the fabricator) *',
+    'G04 Separate guide layer; not a routing profile *', '%FSLAX34Y34*%', '%MOMM*%', '%LPD*%', '%ADD10C,0.1*%', 'G01*', 'D10*'];
+  const n = (v: number): string => Math.round(v * 10000).toString();
+  for (const cut of cuts) {
+    out.push(`X${n(cut.x1)}Y${n(cut.y1)}D02*`);
+    out.push(`X${n(cut.x2)}Y${n(cut.y2)}D01*`);
+  }
+  out.push('M02*');
+  return out.join('\n') + '\n';
+}
+
 /** Все файлы производства */
 export function productionFiles(doc: Doc): { name: string; data: string }[] {
   const base = doc.name.replace(/[^\wа-яА-ЯёЁ-]+/g, '_') || 'board';
-  return [
+  const outlineDoc = doc.panelInfo?.railBounds ? {
+    ...doc,
+    entities: [...doc.entities, { id: 'psbees-panel-rail', kind: 'rect' as const,
+      ...doc.panelInfo.railBounds, filled: false, th: 0.1, layer: 'outline' as const }],
+  } : doc;
+  const files = [
     { name: `${base}_K1_verh.gtl`, data: gerberLayer(doc, 'k1', 'Top copper (K1)') },
     { name: `${base}_K2_niz.gbl`, data: gerberLayer(doc, 'k2', 'Bottom copper (K2)') },
     { name: `${base}_SH1_verh.gto`, data: gerberLayer(doc, 's1', 'Top silkscreen (S1)') },
     { name: `${base}_SH2_niz.gbo`, data: gerberLayer(doc, 's2', 'Bottom silkscreen (S2)') },
-    { name: `${base}_kontur.gm1`, data: gerberLayer(doc, 'outline', 'Board outline') },
+    { name: `${base}_kontur.gm1`, data: gerberLayer(outlineDoc, 'outline', 'Board outline + panel rails') },
     { name: `${base}_sverlovka.xln`, data: excellon(doc) },
   ];
+  if (doc.panelInfo?.vCuts.length) files.push({ name: `${base}_V-CUT-guide.gbr`, data: panelVCutGerber(doc) });
+  return files;
 }

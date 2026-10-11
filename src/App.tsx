@@ -91,6 +91,14 @@ import { CloudAccountDialog, CloudProjectsDialog, cloudSaveLabel, type CloudSave
 import { ProjectVersionsDialog } from './cloud/versions';
 import { findOnBoard, type FindHit } from './pcb/find';
 import { netLengths, lengthenNet, alignBus, type NetLength } from './pcb/lengths';
+import { nextReference, componentRows, metadataPatch, bomCsv, pickPlaceCsv, assemblySvg, type ComponentRow } from './pcb/component-data';
+import { panelizeDoc, type PanelizeOptions } from './pcb/panelize';
+import { type KicadNetlistImport } from './pcb/kicad-netlist';
+import { DrcDialog } from './ui/drc';
+import { ManufacturingDialog } from './ui/manufacturing';
+import { NetlistImportDialog } from './ui/netlist-import';
+import { DifferentialPairsDialog } from './ui/differential-pairs';
+import { GerberPreviewDialog } from './ui/gerber-preview';
 import { FindPanel } from './ui/find';
 // История правок состояниями (см. pcb/history.ts): список операций,
 // «отменить до операции N» и возврат вперёд одним щелчком.
@@ -542,7 +550,7 @@ export default function App({ cloudUser, onLogout }: { cloudUser?: CloudUser; on
   const [lenInfo, setLenInfo] = useState<{ msg: string; ok: boolean | null }>({ msg: '', ok: null });
   const [routeA, setRouteA] = useState<RouteEnd | null>(null);
   const [routeMsg, setRouteMsg] = useState<{ msg: string; ok: boolean | null }>({ msg: '', ok: null });
-  const [dialog, setDialog] = useState<'new' | 'export' | 'cnc' | 'panelize' | 'about' | 'inventory' | 'stats' | 'imgimport' | 'uib' | 'colors' | 'grid' | 'close' | 'cloud' | 'account' | 'versions' | 'board-preview' | 'autoplace' | 'settings' | 'tour' | 'history' | null>(null);
+  const [dialog, setDialog] = useState<'new' | 'export' | 'cnc' | 'panelize' | 'about' | 'inventory' | 'stats' | 'imgimport' | 'uib' | 'colors' | 'grid' | 'close' | 'cloud' | 'account' | 'versions' | 'board-preview' | 'autoplace' | 'settings' | 'tour' | 'history' | 'drc' | 'bom' | 'netlist' | 'cam' | 'diffpairs' | null>(null);
   // подтверждение опасного действия (удаление по настройке «Подтверждать удаление»)
   const [confirmAsk, setConfirmAsk] = useState<{ title: string; text: string; ok: string; onOk: () => void } | null>(null);
   const [boardPreviewTab, setBoardPreviewTab] = useState<'2d' | '3d'>('2d');
@@ -1649,6 +1657,52 @@ export default function App({ cloudUser, onLogout }: { cloudUser?: CloudUser; on
     download(`${base}_gerber.zip`, makeZip(productionFiles(doc)));
   }, [doc]);
 
+  const applyComponentRows = useCallback((rows: ComponentRow[]) => {
+    const patchById = new Map(rows.map((row) => [row.id, metadataPatch(row)]));
+    const next = M.cloneDoc(doc);
+    for (const entity of next.entities) if (entity.kind === 'comp') {
+      const patch = patchById.get(entity.id);
+      if (patch) Object.assign(entity, patch);
+    }
+    commit(next, 'Обновлены данные компонентов');
+  }, [doc, commit]);
+
+  const applyNetlistImport = useCallback((result: KicadNetlistImport) => {
+    const next = M.cloneDoc(doc);
+    for (const entity of next.entities) if (entity.kind === 'comp') {
+      const patch = result.componentUpdates.get(entity.id);
+      if (patch) Object.assign(entity, patch);
+    }
+    next.nets = result.nets;
+    commit(next, `Импортирована netlist KiCad: ${result.nets.length} цепей`);
+    setRouteMode('nets'); setTool('route'); setDialog(null);
+    const importNotes = result.warnings.length ? ` ${result.warnings.slice(0, 2).join(' ')}` : '';
+    setTrackMsg({ msg: `Импортировано цепей: ${result.nets.length}; выводов сопоставлено: ${result.matchedPads}.${importNotes}`, ok: result.warnings.length === 0 });
+  }, [doc, commit, setTool]);
+
+  const applyDifferentialPairs = useCallback((pairs: M.DifferentialPair[]) => {
+    const next = M.cloneDoc(doc);
+    const previousByNet = new Map<string, M.DifferentialPair>();
+    for (const pair of next.diffPairs ?? []) {
+      previousByNet.set(pair.positiveNetId, pair); previousByNet.set(pair.negativeNetId, pair);
+    }
+    next.diffPairs = pairs;
+    const byNet = new Map<string, M.DifferentialPair>();
+    for (const pair of pairs) { byNet.set(pair.positiveNetId, pair); byNet.set(pair.negativeNetId, pair); }
+    next.nets = (next.nets ?? []).map((net) => {
+      const pair = byNet.get(net.id);
+      if (pair) return { ...net, bus: pair.name, rules: { ...(net.rules ?? {}), w: pair.widthMm } };
+      const previous = previousByNet.get(net.id);
+      if (!previous) return net;
+      const clean: M.Net = { ...net, rules: net.rules ? { ...net.rules } : undefined };
+      if (clean.bus === previous.name) delete clean.bus;
+      if (clean.rules?.w === previous.widthMm) delete clean.rules.w;
+      if (clean.rules && !Object.keys(clean.rules).length) delete clean.rules;
+      return clean;
+    });
+    commit(next, 'Обновлены дифференциальные пары');
+  }, [doc, commit]);
+
   const exportPng = useCallback((o: ExportPngOpts) => {
     const cv = renderPrint(doc, o.layer, o.mirror, o.dpi, o.drill);
     cv.toBlob((b) => {
@@ -1656,31 +1710,16 @@ export default function App({ cloudUser, onLogout }: { cloudUser?: CloudUser; on
     }, 'image/png');
   }, [doc]);
 
-  const panelize = useCallback((cols: number, rows: number, gx: number, gy: number) => {
-    const nd = M.cloneDoc(doc);
-    const copies: M.Entity[] = [];
-    const copyGroups: M.Group[] = [];
-    for (let r = 0; r < rows; r++) {
-      for (let c = 0; c < cols; c++) {
-        if (r === 0 && c === 0) continue;
-        const idMap = new Map<string, string>();
-        for (const e of doc.entities) {
-          const k = JSON.parse(JSON.stringify(e)) as M.Entity;
-          k.id = M.uid();
-          M.translateEnt(k, c * gx, r * gy);
-          copies.push(k);
-          idMap.set(e.id, k.id);
-        }
-        // группы размножаются вместе с платой: в каждой ячейке своя копия
-        copyGroups.push(...remapGroups(doc.groups, idMap, ` · ячейка ${r * cols + c + 1}`));
-      }
+  const panelize = useCallback((options: PanelizeOptions) => {
+    if (doc.panelInfo) {
+      setTrackMsg({ msg: 'Эта плата уже является панелью. Для новой панели откройте исходный проект платы.', ok: false });
+      return;
     }
-    nd.entities.push(...copies);
-    if (copyGroups.length) nd.groups = [...(nd.groups ?? []), ...copyGroups];
-    nd.w = doc.w + (cols - 1) * gx;
-    nd.h = doc.h + (rows - 1) * gy;
-    commit(nd, `Размножено: ${cols} × ${rows}`);
-    setTimeout(() => fit(), 50);
+    const result = panelizeDoc(doc, options);
+    commit(result.doc, `Панелизация: ${options.cols} × ${options.rows}`);
+    setTrackMsg({ msg: result.warnings.join(' ')
+      || `Создана панель ${options.cols} × ${options.rows}. Перед заказом проверьте контур и производственные требования.`, ok: result.warnings.length ? false : true });
+    setTimeout(() => fit(result.doc), 50);
   }, [doc, commit, fit]);
 
   const newBoardDlg = useCallback((name: string, w: number, h: number) => {
@@ -1726,13 +1765,14 @@ export default function App({ cloudUser, onLogout }: { cloudUser?: CloudUser; on
     if (!place) return null;
     const comp: M.Comp = {
       id: M.uid(), kind: 'comp', lib: '', name: place.name,
+      ref: nextReference(place.name, doc.entities), value: place.name, footprint: place.name,
       x: at.x, y: at.y, rot: placeRot, side: placeSide,
       bl: place.bl.map((v) => v) as [number, number, number, number],
       ents: place.ents.map((e) => ({ ...JSON.parse(JSON.stringify(e)), id: M.uid() } as M.Entity)),
     };
     addEnts([comp]);
     return comp.id;
-  }, [place, placeRot, placeSide, addEnts]);
+  }, [place, placeRot, placeSide, doc.entities, addEnts]);
 
   // «Добавить на плату» из окна предпросмотра: ставим деталь в центр видимой
   // области (с привязкой к сетке — как при обычном клике) и выделяем, чтобы
@@ -3664,6 +3704,12 @@ export default function App({ cloudUser, onLogout }: { cloudUser?: CloudUser; on
               { icon: 'fit', label: 'Автокомпоновка компонентов…', onClick: () => setDialog('autoplace') },
               { icon: 'panel', label: 'Размножить плату (панелизация)…', onClick: () => setDialog('panelize') },
               { sep: true },
+              { icon: 'probe', label: 'Проверка перед производством (DRC)…', onClick: () => setDialog('drc') },
+              { icon: 'gerber', label: 'Просмотр Gerber / Excellon…', onClick: () => setDialog('cam') },
+              { icon: 'inventory', label: 'BOM и комплект для сборки…', onClick: () => setDialog('bom') },
+              { icon: 'route', label: 'Импорт netlist KiCad (.net)…', onClick: () => setDialog('netlist') },
+              { icon: 'track', label: 'Дифференциальные пары / импеданс…', onClick: () => setDialog('diffpairs') },
+              { sep: true },
               { icon: 'inventory', label: 'Перечень площадок и отверстий…', onClick: () => setDialog('inventory') },
               { icon: 'inventory', label: 'Статистика платы…', onClick: () => setDialog('stats') },
               { icon: 'png', label: 'Изображение → шелкография…', onClick: () => setDialog('imgimport') },
@@ -4379,8 +4425,14 @@ export default function App({ cloudUser, onLogout }: { cloudUser?: CloudUser; on
           onTab={setBoardPreviewTab} onClose={() => setDialog(null)} />
       </Suspense>}
       {dialog === 'panelize' && (
-        <PanelizeDialog defX={doc.w + 2} defY={doc.h + 2} onOk={(c, r, gx, gy) => { panelize(c, r, gx, gy); setDialog(null); }} onClose={() => setDialog(null)} />
+        <PanelizeDialog defX={doc.w + 2} defY={doc.h + 2} onOk={(options) => { panelize(options); setDialog(null); }} onClose={() => setDialog(null)} />
       )}
+      {dialog === 'drc' && <DrcDialog doc={doc} onLocate={(x, y) => locateAt(x, y)} onClose={() => setDialog(null)} />}
+      {dialog === 'bom' && <ManufacturingDialog doc={doc} onApply={applyComponentRows} onClose={() => setDialog(null)} />}
+      {dialog === 'netlist' && <NetlistImportDialog doc={doc} onApply={applyNetlistImport} onClose={() => setDialog(null)} />}
+      {dialog === 'cam' && <GerberPreviewDialog doc={doc} onClose={() => setDialog(null)} />}
+      {dialog === 'diffpairs' && <DifferentialPairsDialog doc={doc} onApply={applyDifferentialPairs}
+        onAlignBus={(bus) => alignBusApp(bus, 1.2)} onClose={() => setDialog(null)} />}
       {dialog === 'inventory' && <InventoryDialog doc={doc} onClose={() => setDialog(null)} />}
       {dialog === 'stats' && <StatsDialog doc={doc} onClose={() => setDialog(null)} />}
       {dialog === 'imgimport' && (

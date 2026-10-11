@@ -10,11 +10,14 @@ import { bboxOf, type LibEl } from './footprint';
  */
 export function libElsToEnts(els: LibEl[]): Entity[] {
   const out: Entity[] = [];
+  let generatedPin = 0;
   els.forEach((el, i) => {
     const id = `l${i}`;
     switch (el.kind) {
-      case 'pad': out.push({ kind: 'pad', id, x: el.x, y: el.y, shape: el.shape, size: el.size, drill: el.drill }); break;
-      case 'smd': out.push({ kind: 'smd', id, x: el.x, y: el.y, w: el.w, h: el.h, rot: ((el.rot % 180) + 180) % 180, layer: el.layer }); break;
+      case 'pad': out.push({ kind: 'pad', id, x: el.x, y: el.y, shape: el.shape, size: el.size, drill: el.drill,
+        pin: el.pin || String(++generatedPin) }); break;
+      case 'smd': out.push({ kind: 'smd', id, x: el.x, y: el.y, w: el.w, h: el.h, rot: ((el.rot % 180) + 180) % 180, layer: el.layer,
+        pin: el.pin || String(++generatedPin) }); break;
       case 'hole': out.push({ kind: 'hole', id, x: el.x, y: el.y, d: el.d }); break;
       case 'line': out.push({ kind: 'line', id, x1: el.x1, y1: el.y1, x2: el.x2, y2: el.y2, w: el.w, layer: el.layer }); break;
       case 'rect': out.push({ kind: 'rect', id, x: el.x, y: el.y, w: el.w, h: el.h, filled: false, th: el.th, layer: el.layer }); break;
