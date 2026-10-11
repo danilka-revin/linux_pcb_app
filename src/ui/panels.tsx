@@ -11,7 +11,7 @@ import { Ic } from './icons';
 
 export type ToolId =
   | 'select' | 'cut' | 'solder' | 'track' | 'pad' | 'smd' | 'via' | 'hole' | 'line' | 'rect'
-  | 'circle' | 'fill' | 'text' | 'ruler' | 'dim' | 'comp' | 'route' | 'probe' | 'comment';
+  | 'circle' | 'fill' | 'text' | 'ruler' | 'dim' | 'comp' | 'route' | 'probe' | 'comment' | 'thermal';
 
 export const TOOLS: { id: ToolId; name: string; icon: string; hint: string }[] = [
   { id: 'select', name: 'Выбор', icon: 'select', hint: 'ЛКМ — выбрать/двигать · рамка — выделить · двойной клик по звену — добавить узел · тяните узел для изменения формы · двойной клик/ПКМ/Del по узлу — удалить · Esc — снять выбор узла' },
@@ -19,6 +19,7 @@ export const TOOLS: { id: ToolId; name: string; icon: string; hint: string }[] =
   { id: 'solder', name: 'Пайка', icon: 'solder', hint: 'ЛКМ рядом с двумя концами дорожек на одном слое — соединить их прямой перемычкой' },
   { id: 'route', name: 'Автотрассировка', icon: 'route', hint: 'Две точки или группы соединений — выберите режим справа · вход в площадки по низу (K2), к SMD — по слою площадки' },
   { id: 'probe', name: 'Тест цепи', icon: 'probe', hint: 'ЛКМ по дорожке, площадке, переходу или SMD — подсветить всю электрическую цепь мигающим фиолетовым · клик мимо — снять' },
+  { id: 'thermal', name: 'Тепловизор', icon: 'thermo', hint: 'ЛКМ по дорожке, площадке или переходу — цепь раскрасится по нагреву при заданном токе, пунктир покажет направление тока · клик мимо — снять' },
   { id: 'comment', name: 'Комментарий ревью', icon: 'comment', hint: 'ЛКМ по плате — поставить заметку «что перерисовать» · клик по метке — изменить · в «Выборе» метку можно перетащить' },
   { id: 'track', name: 'Дорожка', icon: 'track', hint: 'ЛКМ по узлу — ответвление · ПКМ/Esc — закончить · L — сменить слой с переходом' },
   { id: 'pad', name: 'Площадка', icon: 'pad', hint: 'ЛКМ — поставить площадку (с обеих сторон, с металлизацией)' },
@@ -83,6 +84,7 @@ export interface Defs {
   // расчёт дорожки (IPC-2221)
   copperUm: number;            // толщина меди, мкм (35 = 1 oz)
   tempRise: number;            // допустимый нагрев дорожки, °C
+  thermalA: number;             // ток цепи для «Тепловизора», А
   // автотрассировка
   rtW: number;          // ширина дорожки
   rtClear: number;      // зазор до дорожек/меди

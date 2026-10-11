@@ -3,6 +3,9 @@ import type { Entity, Pt, Track } from './model';
 export interface TrackClearanceViolation {
   /** Geometry-bound identity: editing a segment or the rule re-enables its warning. */
   key: string;
+  /** id дорожек-участников (для автопочинки) */
+  aId: string;
+  bId: string;
   a: Pt;
   b: Pt;
   gap: number;
@@ -69,7 +72,7 @@ export function trackClearance(entities: Entity[], limit: number, candidates?: T
             ...[JSON.stringify(p), JSON.stringify(q)].sort()]);
           const key = JSON.stringify([a.layer, limit, ...[segmentKey(a, p, q), segmentKey(b, r, s)].sort()]);
           result.push({ key, a: at(x, dir, distance ? Math.min(a.w / 2 / distance, .5) : 0),
-            b: at(y, dir, distance ? -Math.min(b.w / 2 / distance, .5) : 0), gap, layer: a.layer });
+            b: at(y, dir, distance ? -Math.min(b.w / 2 / distance, .5) : 0), gap, layer: a.layer, aId: a.id, bId: b.id });
         }
       }
     });
@@ -143,7 +146,7 @@ export function trackClearance(entities: Entity[], limit: number, candidates?: T
         const segmentKey = (t: Track, p: Pt, q: Pt) => t.id + ':' + t.w + ':' + p.x.toFixed(3) + ',' + p.y.toFixed(3) + '-' + q.x.toFixed(3) + ',' + q.y.toFixed(3);
         const key = a.layer + ':' + limit + ':' + [segmentKey(a, p, q), segmentKey(b, r, s)].sort().join('|');
         result.push({ key, a: at(x, dir, distance ? Math.min(a.w / 2 / distance, .5) : 0),
-          b: at(y, dir, distance ? -Math.min(b.w / 2 / distance, .5) : 0), gap, layer: a.layer });
+          b: at(y, dir, distance ? -Math.min(b.w / 2 / distance, .5) : 0), gap, layer: a.layer, aId: a.id, bId: b.id });
       }
     }
   };

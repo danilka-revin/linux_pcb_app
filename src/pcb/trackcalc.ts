@@ -46,6 +46,17 @@ export function ipc2221Current(widthMm: number, thicknessUm: number, tempRiseC =
   return k * Math.pow(rise, 0.44) * Math.pow(areaMil2, 0.725);
 }
 
+/**
+ * Обратная задача IPC-2221: насколько нагреется дорожка (°C) при заданном
+ * токе. ΔT = (I / (k · A^0,725))^(1/0,44). Возвращает 0 при нулевом токе.
+ */
+export function ipc2221TempRise(currentA: number, widthMm: number, thicknessUm: number, external = true): number {
+  if (!(currentA > 0) || !(widthMm > 0) || !(thicknessUm > 0)) return 0;
+  const areaMil2 = (widthMm / MM_PER_MIL) * (thicknessUm / 25.4);
+  const k = external ? 0.048 : 0.024;
+  return Math.pow(currentA / (k * Math.pow(areaMil2, 0.725)), 1 / 0.44);
+}
+
 /** Сопротивление участка дорожки, Ом (медь при 20 °C). */
 export function trackResistance(widthMm: number, lengthMm: number, thicknessUm: number): number {
   if (!(widthMm > 0) || !(thicknessUm > 0) || !(lengthMm > 0)) return 0;

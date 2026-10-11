@@ -2,6 +2,7 @@
 import { useMemo, useState } from 'react';
 import type { Doc } from '../pcb/model';
 import { DEFAULT_DRC_RULES, DRC_PRESETS, runBoardDrc, type DrcRules, type DrcViolation } from '../pcb/drc';
+import { canRepair } from '../pcb/drc-repair';
 import { download } from '../pcb/zip';
 import { Modal } from './widgets';
 
@@ -23,11 +24,22 @@ const RULE_FIELDS: [keyof DrcRules, string, number][] = [
   ['minSilkWidth', 'Минимальная толщина шелкографии, мм', 0.01],
 ];
 
-export function DrcDialog({ doc, onLocate, onClose }: { doc: Doc; onLocate: (x: number, y: number) => void; onClose: () => void }) {
+export function DrcDialog({ doc, onLocate, onClose, onRepair }: {
+  doc: Doc;
+  onLocate: (x: number, y: number) => void;
+  onClose: () => void;
+  /** автопочинка нарушения зазора: вернуть итог для показа в диалоге */
+  onRepair?: (v: DrcViolation, ruleMm: number) => { ok: boolean; msg: string };
+}) {
   const [rules, setRules] = useState<DrcRules>({ ...DEFAULT_DRC_RULES });
   const [profile, setProfile] = useState('factory');
   const [filter, setFilter] = useState<'all' | 'error' | 'warning'>('all');
   const [limit, setLimit] = useState(120);
+  const [fixMsg, setFixMsg] = useState<{ ok: boolean; msg: string } | null>(null);
+  const doFix = (item: DrcViolation): void => {
+    if (!onRepair) return;
+    setFixMsg(onRepair(item, rules.minClearance));
+  };
   const result = useMemo(() => runBoardDrc(doc, rules), [doc, rules]);
   const errors = result.filter((v) => v.severity === 'error').length;
   const warnings = result.length - errors;
@@ -60,12 +72,15 @@ export function DrcDialog({ doc, onLocate, onClose }: { doc: Doc; onLocate: (x: 
     </label>)}</div>
     <div className="drc-list" role="list" aria-label="Найденные нарушения">
       {!visible.length && <div className="empty-state">Нарушений по выбранным правилам не найдено.</div>}
-      {visible.slice(0, limit).map((item) => <button type="button" key={item.id} className={'drc-item ' + item.severity} role="listitem"
-        onClick={() => { onClose(); onLocate(item.x, item.y); }} title="Перейти к проблеме на плате">
+      {fixMsg && <div className={'drc-fix-msg ' + (fixMsg.ok ? 'ok' : 'bad')} role="status">{fixMsg.msg}</div>}
+      {visible.slice(0, limit).map((item) => <div key={item.id} className={'drc-item ' + item.severity} role="listitem">
         <span className="drc-severity">{item.severity === 'error' ? 'ОШИБКА' : 'ПРОВЕРИТЬ'}</span>
-        <span className="drc-copy"><b>{item.rule}</b><span>{item.message}</span><small>X {fmt(item.x)} · Y {fmt(item.y)} мм{item.layer ? ` · ${item.layer}` : ''}</small></span>
-        <span aria-hidden="true">↗</span>
-      </button>)}
+        <span className="drc-copy"><b>{item.rule}</b><span>{item.message}</span><small>X {fmt(item.x)} · Y {fmt(item.y)} мм{item.layer ? ` · ${item.layer}` : ''}</small>
+          {onRepair && item.rule === 'copper-clearance' && canRepair(doc, item.entities) &&
+            <button type="button" className="btn drc-fix" title="Переложить дорожку в обход препятствия (остальные объекты не трогаем)" onClick={() => doFix(item)}>⚒ Исправить обходом</button>}
+        </span>
+        <button type="button" className="drc-goto" onClick={() => { onClose(); onLocate(item.x, item.y); }} title="Перейти к проблеме на плате" aria-label="Перейти к проблеме">↗</button>
+      </div>)}
       {visible.length > limit && <button className="btn" onClick={() => setLimit((n) => n + 120)}>Показать ещё {Math.min(120, visible.length - limit)}</button>}
     </div>
     <div className="hint">Проверка намеренно консервативна. Контакт меди в одной точке может быть ожидаемым соединением; без достоверной netlist-метки невозможна полная проверка коротких замыканий. Для панели с breakaway-tabs edge clearance проверяйте на исходной плате до панелизации.</div>

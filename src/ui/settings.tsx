@@ -32,6 +32,7 @@ import {
   clearHotkey, comboLabel, comboOf, hotkeyOwners, isReservedCombo, removeHotkey, type HotkeyMap,
 } from './hotkeys';
 import { LearnSettingsPanel } from './tour';
+import { AiSettingsPanel } from './ai-settings';
 import type { PracticeId } from './coach';
 
 export type { PrintLayer };
@@ -59,6 +60,7 @@ const SECTIONS: Section[] = [
   { id: 'files', icon: 'save', title: 'Файлы и экспорт', hint: 'Новая плата, печать 1:1, Gerber', keys: 'файлы экспорт png gerber печать лут новая плата dpi' },
   { id: 'hotkeys', icon: 'keyboard', title: 'Горячие клавиши', hint: 'Свои сочетания для любых действий', keys: 'горячие клавиши shortcuts назначить привязка ctrl alt shift del r m f g' },
   { id: 'data', icon: 'cloud', title: 'Данные и сброс', hint: 'Перенос настроек, черновик, сброс', keys: 'данные сброс импорт экспорт настроек черновик очистить хранилище' },
+  { id: 'ai', icon: 'spark', title: 'ИИ-помощник', hint: 'DeepSeek, OpenAI, Ollama: умный режим пчелы', keys: 'ии ии-помощник deepseek дипсик openai chatgpt опенроутер openrouter ollama оллама модель ключ api нейросеть умный агент' },
 ];
 
 const GRID_STYLES: GridStyle[] = ['dots', 'lines', 'cross', 'none'];
@@ -1444,6 +1446,10 @@ export function SettingsWindow(props: SettingsWindowProps) {
             })}
           </>
         );
+
+      // ---------------- ИИ-помощник ----------------
+      case 'ai':
+        return <AiSettingsPanel />;
 
       // ---------------- Данные и сброс ----------------
       default:

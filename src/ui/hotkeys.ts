@@ -73,6 +73,7 @@ export const HOTKEYS: HotkeyDef[] = [
   { id: 'tool.dim', group: 'Инструменты', title: 'Размер (размерная линия)', def: ['U'] },
   { id: 'tool.route', group: 'Инструменты', title: 'Автотрассировка', def: ['9'] },
   { id: 'tool.probe', group: 'Инструменты', title: 'Тест цепи', def: ['0'] },
+  { id: 'tool.thermal', group: 'Инструменты', title: 'Тепловизор (ток и нагрев цепи)', def: ['T'] },
   { id: 'tool.comment', group: 'Инструменты', title: 'Комментарий ревью', def: ['C'] },
   { id: 'tool.cut', group: 'Инструменты', title: 'Разрыв дорожки', def: ['X'] },
   { id: 'tool.solder', group: 'Инструменты', title: 'Пайка', def: ['S'] },
@@ -104,6 +105,7 @@ export const HOTKEYS: HotkeyDef[] = [
   { id: 'app.about', group: 'Окна и программа', title: 'О программе', def: [] },
   { id: 'app.tour', group: 'Окна и программа', title: 'Обучение — Настройки → Обучение', def: [] },
   { id: 'app.settings', group: 'Окна и программа', title: 'Настройки (это окно)', def: ['Ctrl+,'] },
+  { id: 'app.copilot', group: 'Окна и программа', title: 'PCB-помощник — команды словами', def: ['Ctrl+K'] },
   { id: 'app.cancel', group: 'Окна и программа', title: 'Отменить действие / снять выбор', def: ['Esc'] },
 ];
 
