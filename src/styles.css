@@ -424,8 +424,14 @@ button { font: inherit; color: inherit; background: none; border: none; }
 .layer { display: flex; align-items: center; gap: 9px; padding: 7px 12px; cursor: pointer; border-radius: 0; }
 .layer:hover { background: var(--surface-2); }
 .layer.active { background: var(--hover); box-shadow: inset 2px 0 0 var(--accent); }
-.layer .nm { flex: 1; }
+.layer .nm { flex: 1; min-width: 0; }
 .layer .nm small { display: block; color: var(--muted); font-size: 11px; }
+.layer.is-locked .nm small { color: var(--accent-text); }
+.layer-lock { opacity: .6; }
+.layer-lock.on { opacity: 1; color: var(--accent-text); background: var(--accent-soft); }
+.layer-lock.on:hover { background: var(--accent-soft); }
+.layer-lock-tools { display: flex; align-items: center; justify-content: space-between; gap: 6px; padding: 4px 12px 8px; color: var(--muted); font-size: 11px; }
+.layer-lock-tools .btn { display: inline-flex; align-items: center; gap: 4px; }
 .sw { width: 14px; height: 14px; border-radius: 4px; border: 1px solid var(--sw-line); flex: none; }
 .eye { opacity: .85; width: 26px; height: 24px; border-radius: 6px; display: flex; align-items: center; justify-content: center; cursor: pointer; color: var(--text-2); }
 .eye:hover { background: var(--surface-2); }
@@ -498,6 +504,36 @@ button { font: inherit; color: inherit; background: none; border: none; }
 .obj-eye, .obj-lock { width: 22px; height: 20px; flex: none; }
 .eye.part { opacity: .5; }
 .obj-hint { padding: 8px 12px 12px; flex: none; }
+
+/* ---------- заметки ревью на плате ---------- */
+.comments-pane { display: flex; flex-direction: column; min-height: 0; flex: 1; }
+.review-tools { padding: 2px 12px 8px; flex: none; }
+.review-tools .btn { display: flex; align-items: center; justify-content: center; gap: 6px; width: 100%; }
+.review-summary { color: var(--muted); font-size: 11px; padding: 3px 12px 8px; border-bottom: 1px solid var(--line); flex: none; }
+.review-list { flex: 1; min-height: 0; overflow-y: auto; padding: 5px 7px 9px; }
+.review-item { display: flex; gap: 3px; align-items: stretch; padding: 4px; border: 1px solid transparent; border-radius: 9px; }
+.review-item:hover { background: var(--surface-2); }
+.review-item.active { border-color: var(--accent); background: var(--hover); }
+.review-item.resolved { opacity: .73; }
+.review-main { flex: 1; min-width: 0; display: flex; align-items: flex-start; gap: 8px; padding: 5px 3px; color: var(--text); text-align: left; background: none; cursor: pointer; }
+.review-main:hover { background: none; }
+.review-pin { width: 20px; height: 20px; border-radius: 50%; display: grid; place-items: center; flex: none; color: #fff; background: #c29223; font-size: 13px; font-weight: 800; }
+.review-item.resolved .review-pin { background: #78947d; }
+.review-copy { min-width: 0; display: flex; flex-direction: column; gap: 3px; }
+.review-copy b { font-size: 11px; }
+.review-copy > span { color: var(--text-2); font-size: 11.5px; line-height: 1.4; overflow-wrap: anywhere; }
+.review-copy small { color: var(--muted); font-size: 10px; }
+.review-actions { display: flex; flex-direction: column; gap: 1px; flex: none; }
+.review-action { width: 24px; height: 23px; }
+.review-action.danger:hover { color: var(--danger-ink); background: var(--danger-bg); }
+.review-hint { padding: 8px 12px 12px; flex: none; }
+.comment-editor { width: 500px; max-width: 94vw; }
+.comment-editor > p { margin: -4px 0 14px; }
+.comment-editor-label { display: block; margin-bottom: 6px; color: var(--text-2); font-size: 12px; font-weight: 600; }
+.comment-editor-text { display: block; height: auto; min-height: 120px; resize: vertical; padding: 9px 10px; line-height: 1.45; }
+.comment-coordinates { margin-top: 7px; color: var(--muted); font-size: 11px; }
+.comment-editor .foot { align-items: center; }
+.comment-modal { z-index: 120; }
 
 .search { margin: 9px 12px 5px; }
 input, select, textarea { user-select: text; }

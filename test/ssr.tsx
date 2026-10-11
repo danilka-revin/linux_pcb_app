@@ -186,7 +186,8 @@ for (const m of ['lib-preview', 'DIP-8', '0;0']) {
   for (const m of [
     "case 'edit.group': groupSel(); return;",
     "case 'edit.ungroup': ungroupSel(); return;",
-    'expandSelection(doc.groups, ns)',
+    'expandSelection(doc.groups, [...ids])',
+    'if (!entityBlocked(id, objectLocks, layerLocks)) out.add(id);',
     'nd.groups = pruneGroups(nd.groups',
   ]) {
     if (!app.includes(m)) throw new Error(`группировка: в App.tsx нет «${m}»`);

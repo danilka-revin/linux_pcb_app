@@ -73,6 +73,7 @@ export const HOTKEYS: HotkeyDef[] = [
   { id: 'tool.dim', group: 'Инструменты', title: 'Размер (размерная линия)', def: ['U'] },
   { id: 'tool.route', group: 'Инструменты', title: 'Автотрассировка', def: ['9'] },
   { id: 'tool.probe', group: 'Инструменты', title: 'Тест цепи', def: ['0'] },
+  { id: 'tool.comment', group: 'Инструменты', title: 'Комментарий ревью', def: ['C'] },
   { id: 'tool.cut', group: 'Инструменты', title: 'Разрыв дорожки', def: ['X'] },
   { id: 'tool.solder', group: 'Инструменты', title: 'Пайка', def: ['S'] },
   { id: 'tool.smd', group: 'Инструменты', title: 'SMD-площадка', def: [] },

@@ -8,6 +8,8 @@ import { pickTrackNode, terminalPath, trackNodeTerminal, type TrackNodeTerminal 
 import { Fragment, Suspense, lazy, useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from 'react';
 import * as M from './pcb/model';
 import { expandComp, expandDoc, libElsToEnts } from './pcb/expand';
+import { lockedByLayer } from './pcb/locking';
+import { drawBoardComment, hitBoardComment, normalizeBoardComments } from './pcb/board-comments';
 import { bboxOf as libBBox } from './pcb/footprint';
 import { lay6ToDoc, docToLay6, hasLay6Magic, lmkToEnts } from './pcb/lay6';
 import {
@@ -95,6 +97,7 @@ import { FindPanel } from './ui/find';
 import { historyRows, makeStep, newHistory, pushStep, stepLabel, undoDepth, type HistStep } from './pcb/history';
 // Панель объектов: дерево всего на плате с поиском, скрытием и блокировкой.
 import { ObjectPanel } from './ui/objects';
+import { CommentsPanel, CommentEditorDialog, type CommentDraft } from './ui/comments';
 import { HistoryDialog } from './ui/history';
 import { newEntsLabel, type ObjNode } from './pcb/objtree';
 
@@ -213,7 +216,8 @@ type Drag =
   | { mode: 'pan'; startPx: { x: number; y: number }; view0: View }
   | { mode: 'move'; startWorld: M.Pt; doc0: M.Doc; moved: boolean; dx: number; dy: number; guides?: AlignGuide[]; statics?: M.Pt[] }
   | { mode: 'marquee'; startWorld: M.Pt; curWorld: M.Pt }
-  | { mode: 'node'; entId: string; idx: number; doc0: M.Doc; moved: boolean; startWorld: M.Pt; preview?: M.Pt; cache?: M.Entity };
+  | { mode: 'node'; entId: string; idx: number; doc0: M.Doc; moved: boolean; startWorld: M.Pt; preview?: M.Pt; cache?: M.Entity }
+  | { mode: 'comment'; commentId: string; moved: boolean; startWorld: M.Pt; origin: M.Pt; preview: M.Pt };
 
 /** Что писать справа после того, как узел поставлен двойным кликом. */
 const NODE_HINT = 'Узел поставлен — тяните его мышью или задайте X/Y справа.';
@@ -280,7 +284,7 @@ const PINNED_GROUPS: string[] = ['undo'];
  */
 const TOOL_GROUPS: ToolId2[][] = [
   ['select'],
-  ['route', 'probe'],
+  ['route', 'probe', 'comment'],
   ['track', 'cut', 'solder', 'pad', 'smd', 'via', 'hole'],
   ['line', 'rect', 'circle', 'fill', 'text'],
   ['ruler', 'dim', 'comp'],
@@ -288,7 +292,7 @@ const TOOL_GROUPS: ToolId2[][] = [
 /** Цифровые горячие клавиши инструментов (для подсказок) */
 const TOOL_KEYS: Partial<Record<ToolId2, string>> = {
   select: '1', track: '2', pad: '3', via: '4', hole: '5',
-  line: '6', text: '7', ruler: '8', route: '9', probe: '0',
+  line: '6', text: '7', ruler: '8', route: '9', probe: '0', comment: 'C',
   cut: 'X', solder: 'S', dim: 'U',
 };
 
@@ -370,6 +374,7 @@ function loadDoc(userId?: string, restore = true): M.Doc {
       const d = JSON.parse(raw);
       if (d && Array.isArray(d.entities) && typeof d.w === 'number') {
         const nd = d as M.Doc;
+        nd.comments = normalizeBoardComments(nd.comments);
         if (nd.groups?.length) nd.groups = pruneGroups(nd.groups, new Set(nd.entities.map((e) => e.id)));
         return nd;
       }
@@ -424,12 +429,14 @@ export default function App({ cloudUser, onLogout }: { cloudUser?: CloudUser; on
   const [view, setView] = useState<View>({ s: 8, ox: 80, oy: 500, mir: false });
   const [defs, setDefsState] = useState<Defs>(loadDefs);
   const [hidden, setHidden] = useState<Set<M.LayerId>>(new Set());
+  const [lockedLayers, setLockedLayers] = useState<Set<M.LayerId>>(new Set());
   // ---------------- панель объектов (src/ui/objects.tsx) ----------------
   // Скрытые объекты холст не рисует, заблокированные — не даёт выбрать мышью.
-  // Наборы живут в окне (как и выделение) и в документ не попадают: это рабочий
-  // режим просмотра, а не свойство платы.
+  // Блокировки — рабочий режим окна, комментарии же хранятся в документе и ревью.
   const [hiddenEnts, setHiddenEnts] = useState<Set<string>>(new Set());
   const [lockedEnts, setLockedEnts] = useState<Set<string>>(new Set());
+  const [activeCommentId, setActiveCommentId] = useState<string | null>(null);
+  const [commentEdit, setCommentEdit] = useState<CommentDraft | null>(null);
   /** сколько раз открывали поиск по объектам (перевести фокус в строку) */
   const [objFocus, setObjFocus] = useState(0);
   const [activeCu, setActiveCu] = useState<'k1' | 'k2'>('k1');
@@ -611,10 +618,35 @@ export default function App({ cloudUser, onLogout }: { cloudUser?: CloudUser; on
   selRef.current = sel;
 
   const setDefs = useCallback((p: Partial<Defs>) => setDefsState((d) => ({ ...d, ...p })), []);
+  /** Слои/объектные замки и скрытие относятся к окну, сбрасываем их при открытии другой платы. */
+  const resetBoardViewFlags = useCallback(() => {
+    setHidden(new Set()); setLockedLayers(new Set());
+    setHiddenEnts(new Set()); setLockedEnts(new Set());
+    setActiveCommentId(null); setCommentEdit(null);
+  }, []);
 
   // ---------------- группы элементов (см. src/pcb/group.ts) ----------------
   /** индекс «id элемента → группа»: клик по элементу выбирает всю его группу */
   const groupIdx = useMemo(() => groupIndex(doc.groups), [doc]);
+  const entityById = useMemo(() => new Map(doc.entities.map((entity) => [entity.id, entity])), [doc.entities]);
+  /** Слойный или объектный замок распространяется на группу целиком. */
+  const entityBlocked = useCallback((id: string, objectLocks = lockedEnts, layerLocks = lockedLayers): boolean => {
+    const blocked = (memberId: string): boolean => {
+      if (objectLocks.has(memberId)) return true;
+      const entity = entityById.get(memberId);
+      return !!entity && lockedByLayer(entity, layerLocks);
+    };
+    if (blocked(id)) return true;
+    const group = groupIdx.get(id);
+    return !!group && group.ids.some(blocked);
+  }, [entityById, groupIdx, lockedEnts, lockedLayers]);
+  /** Выбирает только целые незаблокированные группы/объекты. */
+  const unlockedSelection = useCallback((ids: Iterable<string>, objectLocks = lockedEnts, layerLocks = lockedLayers): Set<string> => {
+    const expandedIds = expandSelection(doc.groups, [...ids]);
+    const out = new Set<string>();
+    for (const id of expandedIds) if (!entityBlocked(id, objectLocks, layerLocks)) out.add(id);
+    return out;
+  }, [doc.groups, entityBlocked, lockedEnts, lockedLayers]);
   /** группы, которых касается текущее выделение */
   const selGroups = useMemo((): M.Group[] => {
     const out: M.Group[] = [];
@@ -783,16 +815,18 @@ export default function App({ cloudUser, onLogout }: { cloudUser?: CloudUser; on
     let alive = true;
     void cloudApi<{ project: CloudProjectDetail }>(`/projects/${saved.id}`).then(({ project }) => {
       if (!alive || generation !== restoreGeneration.current || activeCloudRef.current) return;
+      const incoming = M.cloneDoc(project.document);
+      incoming.comments = normalizeBoardComments(incoming.comments);
       let hasDraft = false;
       try { hasDraft = !!sessionStorage.getItem(draftKey(userId)); } catch { /* ignore */ }
-      const matches = !hasDraft || JSON.stringify(docRef.current) === JSON.stringify(project.document);
-      syncedCloudDoc.current = project.document;
+      const matches = !hasDraft || JSON.stringify(docRef.current) === JSON.stringify(incoming);
+      syncedCloudDoc.current = incoming;
       activeCloudRef.current = project; setActiveCloud(project);
       rememberCloud(userId, project);
       if (matches) {
-        setDoc(project.document); rememberDraft(userId, project.document);
+        setDoc(incoming); rememberDraft(userId, incoming); resetBoardViewFlags();
         setCloudStatus('saved'); setCloudMessage('');
-        setTimeout(() => fitRef.current(project.document), 50);
+        setTimeout(() => fitRef.current(incoming), 50);
       } else {
         setCloudStatus('conflict');
         setCloudMessage('Черновик этой вкладки отличается от серверной платы. Сохраните копию или загрузите версию с сервера.');
@@ -803,7 +837,7 @@ export default function App({ cloudUser, onLogout }: { cloudUser?: CloudUser; on
       else { setCloudStatus('error'); setCloudMessage(cloudError(error)); }
     });
     return () => { alive = false; };
-  }, [cloudUser]);
+  }, [cloudUser, resetBoardViewFlags]);
 
   // ---------------- сетка и привязка ----------------
   // настройки сетки живут в общих настройках инструментов (defs), см. ui/grid.tsx
@@ -876,13 +910,13 @@ export default function App({ cloudUser, onLogout }: { cloudUser?: CloudUser; on
     for (let i = ents.length - 1; i >= 0; i--) {
       const e = ents[i];
       if (!entVisible(e)) continue;
-      if (!includeLocked && lockedEnts.has(e.id)) continue;
+      if (!includeLocked && entityBlocked(e.id)) continue;
       if (e.kind === 'comp') {
         if (expandComp(e).some((c) => M.hitEnt(c, p, tol))) return e.id;
       } else if (M.hitEnt(e, p, tol)) return e.id;
     }
     return null;
-  }, [doc, entVisible, view.s, lockedEnts]);
+  }, [doc, entVisible, view.s, entityBlocked]);
 
   // ---------------- правка дорожек звеньями (как в Sprint-Layout) ----------------
   /** Узлы видны только у одиночной выбранной дорожки/полигона. */
@@ -928,6 +962,7 @@ export default function App({ cloudUser, onLogout }: { cloudUser?: CloudUser; on
 
   /** удалить узел (двойной клик / ПКМ / Del / кнопка справа) — одним действием в истории */
   const deleteEditNode = useCallback((entId: string, idx: number) => {
+    if (entityBlocked(entId)) return;
     const ent = doc.entities.find((x) => x.id === entId);
     if (!ent || (ent.kind !== 'track' && ent.kind !== 'poly')) return;
     const nx = deleteNode(ent.pts, idx, ent.kind === 'poly');
@@ -946,18 +981,18 @@ export default function App({ cloudUser, onLogout }: { cloudUser?: CloudUser; on
     commit(nd, 'Удалён узел');
     setEditNode(null);
     setTrackMsg({ msg: '', ok: null });
-  }, [doc, commit]);
+  }, [doc, commit, entityBlocked]);
 
   /** двигать выбранный узел числами (поля справа) */
   const patchEditNode = useCallback((x: number, y: number) => {
-    if (!editEnt || editNode == null) return;
+    if (!editEnt || editNode == null || entityBlocked(editEnt.id)) return;
     const nd = M.cloneDoc(doc);
     const t = nd.entities.find((e) => e.id === editEnt.id);
     if (!t || (t.kind !== 'track' && t.kind !== 'poly') || !t.pts[editNode]) return;
     if (t.kind === 'track') moveTrackNode(nd.entities, t.id, editNode, { x, y });
     else t.pts[editNode] = { x, y };
     commit(nd, 'Сдвинут узел');
-  }, [doc, commit, editEnt, editNode]);
+  }, [doc, commit, editEnt, editNode, entityBlocked]);
 
   /** «Разрыв»: вырезать зазор под амперметр в точке клика */
   const cutAt = (w: M.Pt) => {
@@ -1144,47 +1179,52 @@ export default function App({ cloudUser, onLogout }: { cloudUser?: CloudUser; on
   }, [editEnt, editNode, startBranch]);
 
   // ---------------- операции с выделением ----------------
-  const selBbox = useCallback((): [number, number, number, number] | null => {
-    const list = doc.entities.filter((e) => selRef.current.has(e.id)).map(M.entBBox);
+  const selBbox = useCallback((ids: Iterable<string> = selRef.current): [number, number, number, number] | null => {
+    const allowed = unlockedSelection(ids);
+    const list = doc.entities.filter((e) => allowed.has(e.id)).map(M.entBBox);
     return list.length ? M.unionBBox(list) : null;
-  }, [doc]);
+  }, [doc, unlockedSelection]);
 
   const rotateSel = useCallback(() => {
-    const b = selBbox();
-    if (!b) return;
+    const ids = unlockedSelection(selRef.current);
+    const b = selBbox(ids);
+    if (!b || !ids.size) return;
     const cx = (b[0] + b[2]) / 2, cy = (b[1] + b[3]) / 2;
     const nd = M.cloneDoc(doc);
-    nd.entities.forEach((e) => { if (selRef.current.has(e.id)) M.rotateEnt90(e, cx, cy); });
+    nd.entities.forEach((e) => { if (ids.has(e.id)) M.rotateEnt90(e, cx, cy); });
     commit(nd, 'Поворот выделенного');
-  }, [doc, commit, selBbox]);
+  }, [doc, commit, selBbox, unlockedSelection]);
 
   const mirrorSel = useCallback(() => {
-    const b = selBbox();
-    if (!b) return;
+    const ids = unlockedSelection(selRef.current);
+    const b = selBbox(ids);
+    if (!b || !ids.size) return;
     const cx = (b[0] + b[2]) / 2;
     const nd = M.cloneDoc(doc);
-    nd.entities.forEach((e) => { if (selRef.current.has(e.id)) M.mirrorEnt(e, cx); });
+    nd.entities.forEach((e) => { if (ids.has(e.id)) M.mirrorEnt(e, cx); });
     commit(nd, 'Перенос на другую сторону');
-  }, [doc, commit, selBbox]);
+  }, [doc, commit, selBbox, unlockedSelection]);
 
   const doDeleteSel = useCallback(() => {
-    if (!selRef.current.size) return;
-    const n = selRef.current.size;
+    const ids = unlockedSelection(selRef.current);
+    if (!ids.size) return;
+    const n = ids.size;
     const nd = M.cloneDoc(doc);
-    nd.entities = nd.entities.filter((e) => !selRef.current.has(e.id));
+    nd.entities = nd.entities.filter((e) => !ids.has(e.id));
     // группы теряют удалённые элементы; в группе меньше двух элементов смысла нет
     nd.groups = pruneGroups(nd.groups, new Set(nd.entities.map((e) => e.id)));
     commit(nd, n > 1 ? `Удалено объектов: ${n}` : 'Удалён объект');
     setSel(new Set());
     setEditNode(null);
-  }, [doc, commit]);
+  }, [doc, commit, unlockedSelection]);
 
   const deleteSel = useCallback(() => {
-    if (!selRef.current.size) return;
+    const count = unlockedSelection(selRef.current).size;
+    if (!count) return;
     // Настройка «Подтверждать удаление»: сначала вопрос, плату трогаем только
     // после ответа — история отмены не замусоривается лишними шагами.
     if (prefsRef.current.confirmDelete) {
-      const n = selRef.current.size;
+      const n = count;
       setConfirmAsk({
         title: 'Удалить выделенное?',
         text: `Будет удалено элементов: ${n}. Действие можно отменить (Ctrl+Z).`,
@@ -1194,15 +1234,16 @@ export default function App({ cloudUser, onLogout }: { cloudUser?: CloudUser; on
       return;
     }
     doDeleteSel();
-  }, [doDeleteSel]);
+  }, [doDeleteSel, unlockedSelection]);
 
   const duplicateSel = useCallback(() => {
-    if (!selRef.current.size) return;
+    const selectedIds = unlockedSelection(selRef.current);
+    if (!selectedIds.size) return;
     const nd = M.cloneDoc(doc);
     const clones: M.Entity[] = [];
     const idMap = new Map<string, string>();
     for (const e of nd.entities) {
-      if (selRef.current.has(e.id)) {
+      if (selectedIds.has(e.id)) {
         const c = JSON.parse(JSON.stringify(e)) as M.Entity;
         c.id = M.uid();
         M.translateEnt(c, defs.grid * 2, defs.grid * 2);
@@ -1216,7 +1257,7 @@ export default function App({ cloudUser, onLogout }: { cloudUser?: CloudUser; on
     if (extra.length) nd.groups = [...(nd.groups ?? []), ...extra];
     commit(nd, clones.length > 1 ? `Дублировано объектов: ${clones.length}` : 'Дублирован объект');
     setSel(new Set(clones.map((c) => c.id)));
-  }, [doc, commit, defs.grid]);
+  }, [doc, commit, defs.grid, unlockedSelection]);
 
   // ---------------- операции с группами ----------------
   /** Связать выделенное в группу (Ctrl+Shift+G). */
@@ -1255,23 +1296,27 @@ export default function App({ cloudUser, onLogout }: { cloudUser?: CloudUser; on
 
   /** Выделить группу целиком (клик по строке в списке групп). */
   const selectGroup = useCallback((g: M.Group) => {
-    const alive = new Set(doc.entities.map((e) => e.id));
-    setSel(new Set(g.ids.filter((id) => alive.has(id))));
-  }, [doc]);
+    const allowed = unlockedSelection(g.ids);
+    setSel(allowed);
+    if (!allowed.size) setTrackMsg({ msg: 'Группа содержит заблокированный объект или слой: снимите замок, чтобы выбрать и сдвинуть её.', ok: false });
+    else setTrackMsg({ msg: '', ok: null });
+  }, [unlockedSelection]);
 
   const nudge = useCallback((dx: number, dy: number) => {
-    if (!selRef.current.size) return;
+    const ids = unlockedSelection(selRef.current);
+    if (!ids.size) return;
     const nd = M.cloneDoc(doc);
-    nd.entities.forEach((e) => { if (selRef.current.has(e.id)) M.translateEnt(e, dx, dy); });
+    nd.entities.forEach((e) => { if (ids.has(e.id)) M.translateEnt(e, dx, dy); });
     const step = M.fmt(Math.abs(dx || dy), 3);
     commit(nd, `Сдвиг выделенного на ${step} мм`);
-  }, [doc, commit]);
+  }, [doc, commit, unlockedSelection]);
 
   const patchEnt = useCallback((id: string, patch: Record<string, unknown>) => {
+    if (entityBlocked(id)) return;
     const nd = M.cloneDoc(doc);
     nd.entities = nd.entities.map((e) => (e.id === id ? ({ ...e, ...patch } as M.Entity) : e));
     commit(nd, 'Правка свойств объекта');
-  }, [doc, commit]);
+  }, [doc, commit, entityBlocked]);
 
   const setDocSize = useCallback((w: number, h: number) => {
     const nd = M.cloneDoc(doc);
@@ -1286,14 +1331,15 @@ export default function App({ cloudUser, onLogout }: { cloudUser?: CloudUser; on
 
   // ---------------- буфер обмена ----------------
   const copySel = useCallback(() => {
-    if (!selRef.current.size) return;
+    const ids = unlockedSelection(selRef.current);
+    if (!ids.size) return;
     clipboard.current = doc.entities
-      .filter((e) => selRef.current.has(e.id))
+      .filter((e) => ids.has(e.id))
       .map((e) => JSON.parse(JSON.stringify(e)) as M.Entity);
     // в буфер уходит и группа, если она попала в выделение целиком
     const picked = new Set(clipboard.current.map((e) => e.id));
     clipboardGroups.current = (doc.groups ?? []).filter((g) => g.ids.every((id) => picked.has(id)));
-  }, [doc]);
+  }, [doc, unlockedSelection]);
 
   const startPaste = useCallback(() => {
     if (!clipboard.current.length) return;
@@ -1346,7 +1392,7 @@ export default function App({ cloudUser, onLogout }: { cloudUser?: CloudUser; on
     if (!cloudUser) return true;
     if (savingCloud.current) { alert('Дождитесь окончания сохранения на сервере.'); return false; }
     const current = activeCloudRef.current, snapshot = docRef.current;
-    const localWork = !current && (snapshot.entities.length > 1 || snapshot.name !== 'Плата' || snapshot.w !== 100 || snapshot.h !== 80 || !!snapshot.nets?.length);
+    const localWork = !current && (snapshot.entities.length > 1 || snapshot.name !== 'Плата' || snapshot.w !== 100 || snapshot.h !== 80 || !!snapshot.nets?.length || !!snapshot.comments?.length);
     if ((current && snapshot !== syncedCloudDoc.current) || localWork) {
       if (!window.confirm('Текущая плата ещё не сохранена в облаке. Скачать её локальную копию и продолжить?')) return false;
       saveFile();
@@ -1396,7 +1442,7 @@ export default function App({ cloudUser, onLogout }: { cloudUser?: CloudUser; on
     if (!cloudUser) return;
     const onLeave = (event: BeforeUnloadEvent) => {
       rememberDraft(cloudUser.id, docRef.current);
-      const hasLocalWork = !activeCloud && (doc.entities.length > 1 || doc.name !== 'Плата');
+      const hasLocalWork = !activeCloud && (doc.entities.length > 1 || doc.name !== 'Плата' || !!doc.comments?.length);
       if (savingCloud.current || (activeCloud && doc !== syncedCloudDoc.current) || hasLocalWork) {
         event.preventDefault(); event.returnValue = '';
       }
@@ -1430,15 +1476,17 @@ export default function App({ cloudUser, onLogout }: { cloudUser?: CloudUser; on
     if (savingCloud.current) throw new CloudError('Дождитесь окончания сохранения на сервере.', 409);
     const { project: latest } = await cloudApi<{ project: CloudProjectDetail }>(`/projects/${project.id}`);
     if (!prepareReplace()) return false;
-    resetHistory(latest.document, 'Проект загружен из облака');
-    setDoc(latest.document); syncedCloudDoc.current = latest.document;
+    const incoming = M.cloneDoc(latest.document);
+    incoming.comments = normalizeBoardComments(incoming.comments);
+    resetHistory(incoming, 'Проект загружен из облака');
+    setDoc(incoming); syncedCloudDoc.current = incoming;
     setActiveCloud(latest); activeCloudRef.current = latest;
-    if (cloudUser) { rememberDraft(cloudUser.id, latest.document); rememberCloud(cloudUser.id, latest); }
+    if (cloudUser) { rememberDraft(cloudUser.id, incoming); rememberCloud(cloudUser.id, latest); }
     setCloudStatus('saved'); setCloudMessage('');
-    setSel(new Set()); setDraft(null); setRouteA(null); setActiveNet(null);
-    setTimeout(() => fit(latest.document), 50);
+    setSel(new Set()); setDraft(null); setRouteA(null); setActiveNet(null); resetBoardViewFlags();
+    setTimeout(() => fit(incoming), 50);
     return true;
-  }, [prepareReplace, fit, cloudUser]);
+  }, [prepareReplace, fit, cloudUser, resetBoardViewFlags]);
 
   const reloadCloud = useCallback(async (): Promise<boolean> => {
     const project = activeCloudRef.current;
@@ -1482,7 +1530,7 @@ export default function App({ cloudUser, onLogout }: { cloudUser?: CloudUser; on
   const logoutCloud = useCallback(async () => {
     if (!onLogout) return;
     if (savingCloud.current) throw new CloudError('Дождитесь окончания сохранения на сервере.', 409);
-    if ((activeCloud && doc !== syncedCloudDoc.current) || (!activeCloud && (doc.entities.length > 1 || doc.name !== 'Плата'))) {
+    if ((activeCloud && doc !== syncedCloudDoc.current) || (!activeCloud && (doc.entities.length > 1 || doc.name !== 'Плата' || !!doc.comments?.length))) {
       if (!window.confirm('Есть несохранённая плата. Скачать локальную копию и выйти?')) return;
       saveFile();
     }
@@ -1503,7 +1551,7 @@ export default function App({ cloudUser, onLogout }: { cloudUser?: CloudUser; on
           if (!prepareReplace()) return;
           if (cloudUser) { resetHistory(nd, 'Открыт файл Sprint-Layout'); setDoc(nd); rememberDraft(cloudUser.id, nd); }
           else commit(nd, 'Открыт файл Sprint-Layout');
-          setSel(new Set());
+          setSel(new Set()); resetBoardViewFlags();
           setTimeout(() => fit(nd), 50);
           if (warnings.length)
             alert('Файл Sprint-Layout открыт с замечаниями:\n• ' + warnings.slice(0, 6).join('\n• ') + (warnings.length > 6 ? `\n…и ещё ${warnings.length - 6}` : ''));
@@ -1513,21 +1561,23 @@ export default function App({ cloudUser, onLogout }: { cloudUser?: CloudUser; on
         if (!d || !Array.isArray(d.entities) || typeof d.w !== 'number')
           throw new Error('формат');
         const nd = d as M.Doc;
+        nd.comments = normalizeBoardComments(nd.comments);
         nd.entities.forEach((e) => { if (!e.id) e.id = M.uid(); });
         // группы из чужого файла могут ссылаться на отсутствующие элементы
         if (nd.groups?.length) nd.groups = pruneGroups(nd.groups, new Set(nd.entities.map((e) => e.id)));
         if (!prepareReplace()) return;
         if (cloudUser) { past.current = []; future.current = []; setDoc(nd); rememberDraft(cloudUser.id, nd); }
         else commit(nd, 'Открыт проект (JSON)');
-        setSel(new Set());
+        setSel(new Set()); resetBoardViewFlags();
         setTimeout(() => fit(nd), 50);
       } catch {
         alert('Не удалось открыть файл: неверный формат проекта.');
       }
     });
-  }, [commit, fit, cloudUser, prepareReplace]);
+  }, [commit, fit, cloudUser, prepareReplace, resetBoardViewFlags]);
 
   const exportLay6 = useCallback(() => {
+    if (doc.comments?.length && !window.confirm('Формат Sprint-Layout .lay6 не хранит комментарии ревью. Для сохранения заметок оставьте копию проекта .laypcb.json. Продолжить экспорт?')) return;
     const base = (doc.name || 'board').replace(/[^\wа-яА-ЯёЁ-]+/g, '_');
     download(`${base}.lay6`, new Blob([docToLay6(doc, expandDoc(doc.entities)).slice().buffer], { type: 'application/octet-stream' }));
   }, [doc]);
@@ -1638,10 +1688,11 @@ export default function App({ cloudUser, onLogout }: { cloudUser?: CloudUser; on
     const next = M.newBoard(w, h, name);
     if (cloudUser) { resetHistory(next, 'Создана плата'); setDoc(next); rememberDraft(cloudUser.id, next); }
     else commit(next, 'Создана плата');
+    resetBoardViewFlags();
     setSel(new Set()); setDraft(null); setRouteA(null);
     setDialog(null);
     setTimeout(() => fit(next), 50);
-  }, [commit, fit, cloudUser, prepareReplace]);
+  }, [commit, fit, cloudUser, prepareReplace, resetBoardViewFlags]);
 
   const savePrimary = useCallback(() => {
     if (!cloudUser) { saveFile(); return; }
@@ -1813,19 +1864,22 @@ export default function App({ cloudUser, onLogout }: { cloudUser?: CloudUser; on
    */
   const setObjectsLocked = useCallback((ids: string[], lock: boolean) => {
     const all = lock ? [...expandSelection(doc.groups, ids)] : ids;
-    setLockedEnts((prev) => {
-      const n = new Set(prev);
-      for (const id of all) { if (lock) n.add(id); else n.delete(id); }
-      return n;
-    });
-    if (!lock) return;
-    setSel((s) => {
-      const n = new Set(s);
-      let cut = false;
-      for (const id of all) if (n.delete(id)) cut = true;
-      return cut ? n : s;
-    });
-  }, [doc.groups]);
+    const next = new Set(lockedEnts);
+    for (const id of all) { if (lock) next.add(id); else next.delete(id); }
+    setLockedEnts(next);
+    if (lock) setSel((s) => unlockedSelection(s, next, lockedLayers));
+  }, [doc.groups, lockedEnts, lockedLayers, unlockedSelection]);
+
+  /** Замок слоя — не даёт выбрать/двинуть его объекты; группы блокируются целиком. */
+  const toggleLayerLocked = useCallback((layer: M.LayerId) => {
+    const next = new Set(lockedLayers);
+    const lock = !next.has(layer);
+    if (lock) next.add(layer); else next.delete(layer);
+    setLockedLayers(next);
+    if (lock) setSel((s) => unlockedSelection(s, lockedEnts, next));
+  }, [lockedLayers, lockedEnts, unlockedSelection]);
+
+  const unlockAllLayers = useCallback(() => setLockedLayers(new Set()), []);
 
   /** «Показать всё» из панели: возвращаем и объекты, и скрытые слои. */
   const showAllObjects = useCallback(() => {
@@ -1850,12 +1904,79 @@ export default function App({ cloudUser, onLogout }: { cloudUser?: CloudUser; on
    */
   const pickObjNode = useCallback((node: ObjNode) => {
     if (!node.ids.length) return;
+    const allowed = unlockedSelection(node.ids);
     if (node.ids.some((id) => hiddenEnts.has(id))) setObjectsHidden(node.ids, false);
-    setSel(new Set(node.ids));
+    setSel(allowed);
     setEditNode(null);
-    setTrackMsg({ msg: '', ok: null });
+    setTrackMsg(allowed.size
+      ? { msg: '', ok: null }
+      : { msg: 'Объект или его слой заблокирован. Снимите замок во вкладке «Слои» или «Объекты».', ok: false });
     if (node.box) zoomToBox(node.box);
-  }, [hiddenEnts, setObjectsHidden, zoomToBox]);
+  }, [hiddenEnts, setObjectsHidden, zoomToBox, unlockedSelection]);
+
+  const focusComment = useCallback((comment: M.BoardComment) => {
+    setActiveCommentId(comment.id);
+    zoomToBox([comment.x - 1, comment.y - 1, comment.x + 1, comment.y + 1]);
+  }, [zoomToBox]);
+
+  const editComment = useCallback((comment: M.BoardComment) => {
+    setActiveCommentId(comment.id);
+    setCommentEdit({ id: comment.id, x: comment.x, y: comment.y, text: comment.text });
+  }, []);
+
+  const beginComment = useCallback(() => {
+    setLeftTab('comments');
+    setTool('comment');
+    setTrackMsg({ msg: 'Щёлкните по плате, чтобы поставить метку ревью. Введите, что нужно проверить или перерисовать.', ok: null });
+  }, [setTool]);
+
+  const saveComment = useCallback((text: string) => {
+    if (!commentEdit) return;
+    const next = M.cloneDoc(doc);
+    const comments = normalizeBoardComments(next.comments);
+    let id = commentEdit.id;
+    if (id) {
+      const index = comments.findIndex((comment) => comment.id === id);
+      if (index < 0) return;
+      comments[index] = { ...comments[index], text };
+    } else {
+      id = M.uid();
+      comments.push({ id, x: commentEdit.x, y: commentEdit.y, text, resolved: false });
+    }
+    next.comments = comments;
+    commit(next, commentEdit.id ? 'Изменён комментарий ревью' : 'Добавлен комментарий ревью');
+    setActiveCommentId(id);
+    setCommentEdit(null);
+    setLeftTab('comments');
+    setTrackMsg({ msg: '', ok: null });
+  }, [commentEdit, doc, commit]);
+
+  const deleteComment = useCallback((comment: M.BoardComment) => {
+    const next = M.cloneDoc(doc);
+    next.comments = (next.comments ?? []).filter((item) => item.id !== comment.id);
+    commit(next, 'Удалён комментарий ревью');
+    setActiveCommentId((id) => id === comment.id ? null : id);
+    setCommentEdit((draft) => draft?.id === comment.id ? null : draft);
+  }, [doc, commit]);
+
+  const toggleCommentResolved = useCallback((comment: M.BoardComment) => {
+    const next = M.cloneDoc(doc);
+    next.comments = (next.comments ?? []).map((item) => item.id === comment.id
+      ? { ...item, resolved: !item.resolved }
+      : item);
+    commit(next, comment.resolved ? 'Комментарий снова открыт' : 'Комментарий выполнен');
+  }, [doc, commit]);
+
+  const commentAt = useCallback((px: number, py: number): M.BoardComment | null => {
+    const ctx = overRef.current?.getContext('2d');
+    if (!ctx) return null;
+    return hitBoardComment(ctx, view, doc.comments ?? [], px, py, size.w, size.h);
+  }, [doc.comments, view, size]);
+
+  useEffect(() => {
+    if (activeCommentId && !(doc.comments ?? []).some((comment) => comment.id === activeCommentId))
+      setActiveCommentId(null);
+  }, [doc.comments, activeCommentId]);
 
   // переход к точке (мм) без смены масштаба
   const locateAt = useCallback((x: number, y: number) => {
@@ -1874,6 +1995,7 @@ export default function App({ cloudUser, onLogout }: { cloudUser?: CloudUser; on
   // восстановление версии — обычная правка через commit, поэтому отменяется Ctrl+Z
   const restoreVersion = useCallback((snap: M.Doc) => {
     const next = M.cloneDoc(snap);
+    next.comments = normalizeBoardComments(next.comments);
     commit(next, 'Восстановлена версия проекта');
     setSel(new Set()); setDraft(null); setRouteA(null);
     setDialog(null);
@@ -2014,10 +2136,32 @@ export default function App({ cloudUser, onLogout }: { cloudUser?: CloudUser; on
 
     if (pasteTpl) { dropPaste(sp); return; }
 
+    const comment = commentAt(px, py);
+    if (tool === 'comment') {
+      if (comment) {
+        setActiveCommentId(comment.id);
+        setCommentEdit({ id: comment.id, x: comment.x, y: comment.y, text: comment.text });
+      } else {
+        setActiveCommentId(null);
+        setCommentEdit({ id: null, x: sp.x, y: sp.y, text: '' });
+      }
+      return;
+    }
+    if (tool === 'select' && comment) {
+      setSel(new Set());
+      setEditNode(null);
+      setActiveCommentId(comment.id);
+      drag.current = {
+        mode: 'comment', commentId: comment.id, moved: false, startWorld: w,
+        origin: { x: comment.x, y: comment.y }, preview: { x: comment.x, y: comment.y },
+      };
+      return;
+    }
+
     switch (tool) {
       case 'select': {
         // Узел одиночной дорожки/полигона выбирается и тянется прямо здесь.
-        if (editEnt && !e.shiftKey) {
+        if (editEnt && !e.shiftKey && !entityBlocked(editEnt.id)) {
           const ni = findNode(editEnt, w);
           if (ni != null) {
             setEditNode(ni);
@@ -2031,9 +2175,9 @@ export default function App({ cloudUser, onLogout }: { cloudUser?: CloudUser; on
         // под курсором только заблокированный объект: объясняем, почему «не выбирается»
         if (!hitId) {
           const lockedId = hitAt(w, true);
-          if (lockedId && lockedEnts.has(lockedId)) {
+          if (lockedId && entityBlocked(lockedId)) {
             setTrackMsg({
-              msg: 'Объект заблокирован: его нельзя выбрать и сдвинуть. Снимите замок в панели «Объекты» слева.',
+              msg: 'Объект заблокирован замком объекта или слоя: его нельзя выбрать и сдвинуть. Снимите замок во вкладке «Слои» или «Объекты» слева.',
               ok: false,
             });
           }
@@ -2252,6 +2396,13 @@ export default function App({ cloudUser, onLogout }: { cloudUser?: CloudUser; on
       d.moved = true;
       d.preview = target;
       if (first) setDragTick(t => t + 1);
+    } else if (d.mode === 'comment') {
+      const dx = m.rx - d.startWorld.x, dy = m.ry - d.startWorld.y;
+      if (!d.moved && Math.hypot(dx, dy) * view.s < 4) return;
+      const first = !d.moved;
+      d.moved = true;
+      d.preview = snapPt({ x: d.origin.x + dx, y: d.origin.y + dy }, m.alt);
+      if (first) setDragTick(t => t + 1);
     }
   }, [view.s, defs.grid, snapPt]);
 
@@ -2291,6 +2442,19 @@ export default function App({ cloudUser, onLogout }: { cloudUser?: CloudUser; on
         commit(nd, 'Сдвинут узел');
       }
       setDragTick(t => t + 1);
+    } else if (d.mode === 'comment') {
+      const comment = (doc.comments ?? []).find((item) => item.id === d.commentId);
+      if (!comment) return;
+      setActiveCommentId(comment.id);
+      if (d.moved && (Math.abs(d.preview.x - comment.x) > 1e-6 || Math.abs(d.preview.y - comment.y) > 1e-6)) {
+        const next = M.cloneDoc(doc);
+        next.comments = (next.comments ?? []).map((item) => item.id === comment.id
+          ? { ...item, x: d.preview.x, y: d.preview.y }
+          : item);
+        commit(next, 'Перемещена метка ревью');
+      } else if (!d.moved) {
+        setCommentEdit({ id: comment.id, x: comment.x, y: comment.y, text: comment.text });
+      }
     } else if (d.mode === 'marquee') {
       const x1 = Math.min(d.startWorld.x, d.curWorld.x), x2 = Math.max(d.startWorld.x, d.curWorld.x);
       const y1 = Math.min(d.startWorld.y, d.curWorld.y), y2 = Math.max(d.startWorld.y, d.curWorld.y);
@@ -2298,13 +2462,13 @@ export default function App({ cloudUser, onLogout }: { cloudUser?: CloudUser; on
         const ns = new Set<string>();
         for (const ent of doc.entities) {
           if (!entVisible(ent)) continue;
-          if (lockedEnts.has(ent.id)) continue;   // замок из панели «Объекты»
+          if (entityBlocked(ent.id)) continue;   // замок объекта/его слоя, включая группу
           const b = M.entBBox(ent);
           if (b[0] <= x2 && b[2] >= x1 && b[1] <= y2 && b[3] >= y1) ns.add(ent.id);
         }
         // группа попадает в рамку целиком: достаточно задеть один её элемент
-        const full = expandSelection(doc.groups, ns);
-        if (e.shiftKey) setSel((s) => new Set([...s, ...full]));
+        const full = unlockedSelection(ns);
+        if (e.shiftKey) setSel((s) => unlockedSelection([...s, ...full]));
         else setSel(full);
       }
     }
@@ -2364,7 +2528,7 @@ export default function App({ cloudUser, onLogout }: { cloudUser?: CloudUser; on
       if (e.code === 'Escape') { routeWorker.current.terminate(); routeWorker.current = null; setRouting(null); setRouteMsg({ msg: 'Трассировка отменена. Плата не изменена.', ok: null }); }
       e.preventDefault(); return;
     }
-    if (dialog || preview || routeVariants) return;   // окно открыто — плату не трогаем
+    if (dialog || preview || routeVariants || commentEdit) return;   // окно открыто — плату не трогаем
     const t = e.target as HTMLElement;
     if (t && (t.tagName === 'INPUT' || t.tagName === 'TEXTAREA' || t.tagName === 'SELECT' || t.isContentEditable)) return;
 
@@ -2408,7 +2572,7 @@ export default function App({ cloudUser, onLogout }: { cloudUser?: CloudUser; on
       // скрытые и заблокированные объекты в «выделить всё» не попадают:
       // иначе их случайно сдвинут или удалят вместе с остальным
       case 'edit.selectAll':
-        setSel(new Set(doc.entities.filter((en) => entVisible(en) && !lockedEnts.has(en.id)).map((en) => en.id)));
+        setSel(unlockedSelection(doc.entities.filter(entVisible).map((en) => en.id)));
         return;
       case 'edit.copy': copySel(); return;
       case 'edit.paste': startPaste(); return;
@@ -2479,8 +2643,8 @@ export default function App({ cloudUser, onLogout }: { cloudUser?: CloudUser; on
       default: return;
     }
   }, [
-    hotkeyIndex, dialog, routeVariants, doc, undo, redo, savePrimary, copySel, startPaste,
-    duplicateSel, finishOrCancel, deleteSel, place, preview, rotateSel, mirrorSel, draft,
+    hotkeyIndex, dialog, routeVariants, commentEdit, doc, undo, redo, savePrimary, copySel, startPaste,
+    duplicateSel, finishOrCancel, deleteSel, place, preview, rotateSel, mirrorSel, draft, unlockedSelection,
     activeCu, mouse.wx, mouse.wy, fit, zoomAt, size, nudge, defs.grid, defs.gridUnit,
     defs.snapOn, defs.drcEnabled, setDefs, setTool, groupSel, ungroupSel, tool, editEnt,
     editNode, deleteEditNode, setTheme, setPrefs,
@@ -2752,6 +2916,13 @@ export default function App({ cloudUser, onLogout }: { cloudUser?: CloudUser; on
         });
         ctx.restore();
       }
+
+      // Комментарии ревью — отдельные экранные карточки, не геометрия Gerber/ЧПУ.
+      const movingComment = drag.current?.mode === 'comment' && drag.current.moved ? drag.current.commentId : null;
+      for (const comment of doc.comments ?? []) {
+        if (comment.id === movingComment) continue;
+        drawBoardComment(ctx, view, comment, size, comment.id === activeCommentId);
+      }
       // Сообщаем профилю качества, сколько занял кадр: если стабильно тяжело,
       // уровень опустится сам (см. src/perf.ts).
       noteFrame(performance.now() - t0);
@@ -2759,7 +2930,7 @@ export default function App({ cloudUser, onLogout }: { cloudUser?: CloudUser; on
   }, [
     doc, zEnts, substrate, view, hidden, hiddenEnts, sel, gridConf, defs.showAxes,
     defs.rtHoleClear, size, tool, routeMode, activeNet, netGeometry, theme, colors, toPx,
-    selGroups, dragTick, perfLevel.level,
+    selGroups, dragTick, activeCommentId, perfLevel.level,
   ]);
 
   // «Тест цепи»: отдельный слой мигает через CSS, не перерисовывая плату
@@ -2842,6 +3013,12 @@ export default function App({ cloudUser, onLogout }: { cloudUser?: CloudUser; on
       const ctx = cv.getContext('2d')!;
       ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
       ctx.clearRect(0, 0, size.w, size.h);
+
+      const commentDrag = drag.current;
+      if (commentDrag?.mode === 'comment' && commentDrag.moved) {
+        const comment = (doc.comments ?? []).find((item) => item.id === commentDrag.commentId);
+        if (comment) drawBoardComment(ctx, view, { ...comment, ...commentDrag.preview }, size, true);
+      }
 
       // Подсветка контакта, к которому привяжется дорожка (включая выводы макросов).
       if ((tool === 'track' || tool === 'route') && mouse.px >= 0 && mouse.py >= 0) {
@@ -3432,7 +3609,7 @@ export default function App({ cloudUser, onLogout }: { cloudUser?: CloudUser; on
   const updButton = upd.Button;
   const closeApplication = useCallback(() => {
     if (cloudUser && (savingCloud.current || (activeCloud && doc !== syncedCloudDoc.current)
-      || (!activeCloud && (doc.entities.length > 1 || doc.name !== 'Плата')))) {
+      || (!activeCloud && (doc.entities.length > 1 || doc.name !== 'Плата' || !!doc.comments?.length)))) {
       if (!window.confirm('Изменения ещё не сохранены на сервере. Скачать локальную копию и закрыть?')) return;
       saveFile();
     }
@@ -3704,7 +3881,9 @@ export default function App({ cloudUser, onLogout }: { cloudUser?: CloudUser; on
       <>
         <LayersPanel
           activeCu={activeCu} setActiveCu={setActiveCu}
-          hidden={hidden} toggleHidden={toggleHidden} counts={counts}
+          hidden={hidden} toggleHidden={toggleHidden}
+          locked={lockedLayers} toggleLocked={toggleLayerLocked} unlockAll={unlockAllLayers}
+          counts={counts}
         />
         <div style={{ flex: 1 }} />
         <div className="hint" style={{ padding: '0 12px 10px' }}>
@@ -3808,6 +3987,17 @@ export default function App({ cloudUser, onLogout }: { cloudUser?: CloudUser; on
         onFocusSearch={objFocus || undefined}
       />
     );
+    const renderCommentsPane = () => (
+      <CommentsPanel
+        comments={doc.comments ?? []}
+        activeId={activeCommentId}
+        onAdd={beginComment}
+        onPick={focusComment}
+        onEdit={editComment}
+        onDelete={deleteComment}
+        onToggleResolved={toggleCommentResolved}
+      />
+    );
     const renderGroupsPane = () => (
       <GroupsPanel
         groups={doc.groups ?? []}
@@ -3835,14 +4025,16 @@ export default function App({ cloudUser, onLogout }: { cloudUser?: CloudUser; on
           )}
           {activeLeft === 'layers' ? renderLayersPane()
             : activeLeft === 'objects' ? renderObjectsPane()
-              : activeLeft === 'lib' ? renderGenPane()
-                : renderGroupsPane()}
+              : activeLeft === 'comments' ? renderCommentsPane()
+                : activeLeft === 'lib' ? renderGenPane()
+                  : renderGroupsPane()}
         </div>
       </div>
     );
   }, [
-    sidesConf, leftTab, activeCu, hidden, counts, doc, substrate, sel, place, preview, gen, query, store, tree,
-    cloudUser, libTab, libFilter, collapsed, editId, toggleHidden, setQuery, setLeftTab,
+    sidesConf, leftTab, activeCu, hidden, lockedLayers, counts, doc, substrate, sel, place, preview, gen, query, store, tree,
+    activeCommentId, beginComment, focusComment, editComment, deleteComment, toggleCommentResolved,
+    cloudUser, libTab, libFilter, collapsed, editId, toggleHidden, toggleLayerLocked, unlockAllLayers, setQuery, setLeftTab,
     placeFromGen, placeFromCatalog, saveCatalogToLibrary, pickMacro, editMacro, saveGenToLibrary, updateGenMacro, exportLibJson, patchStore,
     // вкладка «Группы»
     groupCount, selGroup, selGroups, canGroupSel, groupSel, selectGroup, ungroupOne, ungroupAllGroups, renameGroupCb,
@@ -4006,13 +4198,14 @@ export default function App({ cloudUser, onLogout }: { cloudUser?: CloudUser; on
         const next = M.newBoard(prefs.newW, prefs.newH, prefs.newName);
         resetHistory(next, 'Создана плата');
         setDoc(next);
+        resetBoardViewFlags();
         setSel(new Set()); setDraft(null); setRouteA(null); setProbe(null);
         setEditNode(null); setTrackMsg({ msg: '', ok: null }); setRouteMsg({ msg: '', ok: null });
         setDialog(null);
         setTimeout(() => fit(next), 50);
       },
     });
-  }, [cloudUser, prefs.newW, prefs.newH, prefs.newName, fit]);
+  }, [cloudUser, prefs.newW, prefs.newH, prefs.newName, fit, resetBoardViewFlags]);
 
   // ---------------- разметка ----------------
   return (
@@ -4117,6 +4310,16 @@ export default function App({ cloudUser, onLogout }: { cloudUser?: CloudUser; on
         </span>
       </div>}
 
+      {commentEdit && <CommentEditorDialog
+        draft={commentEdit}
+        onSave={saveComment}
+        onDelete={commentEdit.id ? () => {
+          const comment = (doc.comments ?? []).find((item) => item.id === commentEdit.id);
+          if (comment) deleteComment(comment);
+          else setCommentEdit(null);
+        } : undefined}
+        onClose={() => setCommentEdit(null)}
+      />}
       {dialog === 'autoplace' && <AutoPlaceDialog doc={doc} selected={sel} clearance={defs.rtClear}
         onClose={() => setDialog(null)} onApply={(r) => {
           commit({ ...doc, entities: r.entities, groups: pruneGroups(doc.groups, new Set(r.entities.map((e) => e.id))) }, 'Автокомпоновка компонентов');

@@ -191,6 +191,14 @@ function DiffView({ title, result, onLocate }: { title: string; result: VersionD
       <h4>Цепи</h4>
       <ul>{result.nets.map((n, i) => <li key={i}>{KIND_CHANGE[n.type]}: <b>{n.name}</b>{n.detail ? ` — ${n.detail}` : ''}</li>)}</ul>
     </div>}
+    {result.comments.length > 0 && <div className="versions-nets versions-comments">
+      <h4>Комментарии ревью</h4>
+      <ul>{result.comments.map((comment) => <li key={comment.type + comment.id}>
+        <span className={'versions-tag ' + comment.type}>{KIND_CHANGE[comment.type]}</span>
+        <span>{comment.detail.slice(0, 120)}</span>
+        <button className="btn tiny" onClick={() => onLocate(comment.x, comment.y)} title="Показать метку на плате">Показать</button>
+      </li>)}</ul>
+    </div>}
     {result.changes.length > 0 && <>
       <h4>Изменения</h4>
       <ul className="versions-changes">
