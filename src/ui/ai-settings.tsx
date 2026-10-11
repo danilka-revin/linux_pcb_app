@@ -129,6 +129,12 @@ export function AiSettingsPanel() {
         )}
         <p className="set-note">{preset.hint}</p>
         <p className="set-note">
+          Запрос уйдёт на <code>{resolved.url || '…'}</code> с моделью <code>{resolved.model || '…'}</code>.
+          {resolved.baseUrl && !/\/v\d+$/.test(resolved.baseUrl) && !resolved.baseUrl.includes('deepseek.com') ? (
+            <> Если провайдер отвечает <b>404</b> — допиши к адресу <code>/v1</code>.</>
+          ) : null}
+        </p>
+        <p className="set-note">
           Ключ хранится <b>только в этом браузере</b> и никому не отправляется, кроме выбранного
           API. В файл «Перенос настроек» он не попадает — на другом компьютере введи его заново.
         </p>
