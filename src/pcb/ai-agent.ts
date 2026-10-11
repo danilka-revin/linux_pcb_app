@@ -23,30 +23,49 @@ export interface AiPreset {
   hint: string;
 }
 
+// Адреса указаны ТАК, как их ждёт провайдер: почти всем нужен хвост /v1 —
+// без него OpenAI-совместимый шлюз отвечает 404 на /chat/completions.
+// Имена моделей — действующие на момент правки (устаревшие дают ту же 404).
 export const AI_PRESETS: AiPreset[] = [
   {
     id: 'deepseek',
     title: 'DeepSeek',
     baseUrl: 'https://api.deepseek.com',
-    model: 'deepseek-chat',
+    model: 'deepseek-v4-flash',
     needsKey: true,
-    hint: 'Ключ — на platform.deepseek.com (раздел API keys). Недорого и хорошо понимает русский.',
+    hint: 'Ключ — на platform.deepseek.com (раздел API keys). Недорого и хорошо понимает русский. Старое имя модели deepseek-chat провайдер отключил 24.07.2026 — теперь нужно deepseek-v4-flash (или deepseek-v4-pro).',
+  },
+  {
+    id: 'teamorouter',
+    title: 'TeamoRouter (бесплатно)',
+    baseUrl: 'https://api.teamorouter.com/v1',
+    model: 'deepseek-v4-flash-free',
+    needsKey: true,
+    hint: 'Бесплатно: 200 запросов в день на модель. Ключ tr-… — на teamorouter.com (вход через Google → API Keys). Адрес обязательно с /v1, иначе 404. Умная модель — deepseek-v4-pro-free.',
   },
   {
     id: 'openai',
     title: 'OpenAI',
-    baseUrl: 'https://api.openai.com',
+    baseUrl: 'https://api.openai.com/v1',
     model: 'gpt-4o-mini',
     needsKey: true,
-    hint: 'Ключ — на platform.openai.com. gpt-4o-mini — быстрый и дешёвый.',
+    hint: 'Ключ — на platform.openai.com. В адресе обязателен /v1: https://api.openai.com/v1 (без него — 404). Список моделей — platform.openai.com/docs/models.',
   },
   {
     id: 'openrouter',
     title: 'OpenRouter',
-    baseUrl: 'https://openrouter.ai/api',
-    model: 'deepseek/deepseek-chat',
+    baseUrl: 'https://openrouter.ai/api/v1',
+    model: 'deepseek/deepseek-v4-flash',
     needsKey: true,
-    hint: 'Единый ключ для сотен моделей — на openrouter.ai/keys. Модель — любая из каталога.',
+    hint: 'Единый ключ для сотен моделей — на openrouter.ai/keys. Адрес — https://openrouter.ai/api/v1 (без /v1 будет 404). Точное имя модели копируй из каталога openrouter.ai/models; бесплатные заканчиваются на :free.',
+  },
+  {
+    id: 'nararouter',
+    title: 'NaraRouter (запасной, бесплатно)',
+    baseUrl: 'https://router.bynara.id/v1',
+    model: 'deepseek-v4-pro',
+    needsKey: true,
+    hint: 'Запасной бесплатный шлюз: ключ sk-nry-… — на router.bynara.id (вход через Google, нужна привязка Telegram). Пригодится, когда на TeamoRouter кончился дневной лимит.',
   },
   {
     id: 'ollama',
@@ -62,9 +81,57 @@ export const AI_PRESETS: AiPreset[] = [
     baseUrl: '',
     model: '',
     needsKey: true,
-    hint: 'Любой сервер с методом POST /chat/completions: LM Studio, vLLM, корпоративный шлюз.',
+    hint: 'Любой сервер с методом POST /chat/completions: LM Studio, vLLM, корпоративный шлюз. Адрес пиши вместе со схемой (https://…) и, как правило, с хвостом /v1 — без него провайдер отвечает 404.',
   },
 ];
+
+/** Шлюзы, которым в адресе нужен /v1: без него POST /chat/completions → 404. */
+const V1_REQUIRED = [
+  'https://api.openai.com',
+  'https://openrouter.ai/api',
+  'https://api.teamorouter.com',
+  'https://router.bynara.id',
+];
+
+/** Имена моделей, которые провайдер уже отключил (запрос с ними → 404). */
+const RETIRED_MODELS: Record<string, string> = {
+  'deepseek-chat': 'deepseek-v4-flash',       // отключён DeepSeek 24.07.2026
+  'deepseek-reasoner': 'deepseek-v4-flash',   // отключён DeepSeek 24.07.2026
+};
+
+/**
+ * Привести адрес API к рабочему виду:
+ * добавить схему, если её забыли (иначе браузер пойдёт на наш же сервер и получит 404),
+ * добавить /v1 известным шлюзам, не дублировать /chat/completions.
+ */
+export function normalizeAiBaseUrl(raw: string): string {
+  let url = String(raw ?? '').trim().replace(/\s+/g, '');
+  if (!url) return '';
+  if (!/^[a-z][a-z0-9+.-]*:\/\//i.test(url)) {
+    const local = /^(localhost|127\.0\.0\.1|0\.0\.0\.0|\[::1\])(:\d+)?([/?#]|$)/i.test(url);
+    url = (local ? 'http://' : 'https://') + url;
+  }
+  url = url.replace(/\/+$/, '');
+  if (/\/chat\/completions$/i.test(url)) return url;
+  const lower = url.toLowerCase();
+  if (V1_REQUIRED.some((b) => lower === b)) url += '/v1';
+  return url;
+}
+
+/** Полный адрес запроса чата по базовому адресу провайдера. */
+export function chatCompletionsUrl(baseUrl: string): string {
+  const url = normalizeAiBaseUrl(baseUrl);
+  if (!url) return '';
+  return /\/chat\/completions$/i.test(url) ? url : `${url}/chat/completions`;
+}
+
+/** Действующее имя модели: устаревшие псевдонимы DeepSeek заменяем рабочими. */
+export function resolveAiModel(model: string, baseUrl: string): string {
+  const m = String(model ?? '').trim();
+  const url = normalizeAiBaseUrl(baseUrl).toLowerCase();
+  if (!url.includes('deepseek.com') && !url.includes('teamorouter.com') && !url.includes('bynara.id')) return m;
+  return RETIRED_MODELS[m] ?? m;
+}
 
 export interface AISettings {
   enabled: boolean;
@@ -114,6 +181,8 @@ export function saveAiSettings(s: AISettings): void {
 
 export interface AiResolved {
   baseUrl: string;
+  /** полный адрес POST-запроса (то, что реально уходит в сеть) */
+  url: string;
   model: string;
   apiKey: string;
   needsKey: boolean;
@@ -121,10 +190,12 @@ export interface AiResolved {
 
 export function resolveAi(s: AISettings): AiResolved {
   const preset = AI_PRESETS.find((p) => p.id === s.presetId) ?? AI_PRESETS[0];
-  const baseUrl = (s.baseUrl.trim() || preset.baseUrl).replace(/\/+$/, '');
+  const baseUrl = normalizeAiBaseUrl(s.baseUrl.trim() || preset.baseUrl);
+  const model = resolveAiModel(s.model.trim() || preset.model, baseUrl);
   return {
     baseUrl,
-    model: s.model.trim() || preset.model,
+    url: chatCompletionsUrl(baseUrl),
+    model,
     apiKey: s.apiKey.trim(),
     needsKey: preset.needsKey,
   };
@@ -429,9 +500,11 @@ export async function chatOnce(
     headers['HTTP-Referer'] = 'https://github.com/danilka-revin/linux_pcb_app';
     headers['X-Title'] = 'PSBees';
   }
+  // куда и с какой моделью стучимся — пригодится в тексте ошибки
+  const where = `${r.url} · модель «${r.model}»`;
   let response: Response;
   try {
-    response = await fetch(`${r.baseUrl}/chat/completions`, {
+    response = await fetch(r.url, {
       method: 'POST',
       headers,
       body: JSON.stringify({
@@ -443,32 +516,59 @@ export async function chatOnce(
       signal: AbortSignal.timeout(opts?.timeoutMs ?? 60000),
     });
   } catch (e) {
-    if (e instanceof Error && e.name === 'TimeoutError') {
+    if (e instanceof Error && (e.name === 'TimeoutError' || e.name === 'AbortError')) {
       throw new AiError('Модель думает слишком долго (больше минуты). Повтори запрос.');
     }
     throw new AiError(
       r.baseUrl.includes('localhost') || r.baseUrl.includes('127.0.0.1')
-        ? 'Не могу достучаться до локального сервера. Проверь, что Ollama запущена, а модель скачана.'
-        : 'Нет связи с API. Проверь интернет, адрес сервера и то, что провайдер разрешает запросы из браузера.',
+        ? `Не могу достучаться до локального сервера (${where}). Проверь, что Ollama запущена, а модель скачана.`
+        : `Нет связи с API (${where}). Проверь интернет и адрес; если запрос из браузера блокирует провайдер — поставь локальную Ollama.`,
     );
   }
-  let data: { choices?: { message?: { content?: string } }[]; error?: { message?: string } };
+  // тело читаем текстом: у 404 от nginx/Cloudflare бывает HTML, а не JSON
+  const text = typeof response.text === 'function' ? await response.text().catch(() => '') : '';
+  type AiReply = {
+    choices?: { message?: { content?: string; reasoning_content?: string } }[];
+    error?: { message?: string; code?: string; type?: string };
+  };
+  let data: AiReply | null = null;
   try {
-    data = (await response.json()) as typeof data;
+    const parsed: unknown = JSON.parse(text);
+    if (parsed && typeof parsed === 'object') data = parsed as AiReply;
   } catch {
-    throw new AiError(`Сервер вернул некорректный ответ (HTTP ${response.status}).`);
+    data = null;
   }
   if (!response.ok) {
-    const detail = (data.error?.message ?? '').slice(0, 220);
-    if (response.status === 401) throw new AiError('API-ключ не подошёл (401). Проверь ключ в настройках ИИ.');
-    if (response.status === 402 || response.status === 429) {
-      throw new AiError(`Провайдер отклонил запрос (${response.status}): закончились деньги или превышен лимит.${detail ? ' ' + detail : ''}`);
+    const detail = (data?.error?.message ?? data?.error?.code ?? '').slice(0, 220);
+    const hint = detail ? ` ${detail}.` : '';
+    if (response.status === 401 || response.status === 403) {
+      throw new AiError(`API-ключ не подошёл (${response.status}).${hint} Проверь ключ в настройках ИИ.`);
     }
-    if (response.status === 404) throw new AiError('Сервер или модель не найдены (404). Проверь адрес API и имя модели.');
-    throw new AiError(`Ошибка API (HTTP ${response.status}).${detail ? ' ' + detail : ''}`);
+    if (response.status === 402 || response.status === 429) {
+      throw new AiError(`Провайдер отклонил запрос (${response.status}): закончились деньги или превышен лимит.${hint}`);
+    }
+    if (response.status === 404) {
+      throw new AiError(
+        `Не найдено (404): ${where}.${hint} Причины: в адресе не хватает /v1 (например https://api.openai.com/v1, `
+        + 'https://openrouter.ai/api/v1, https://api.teamorouter.com/v1) либо имя модели устарело/написано с опечаткой '
+        + '(deepseek-chat отключён — нужно deepseek-v4-flash).',
+      );
+    }
+    if (response.status === 400 || response.status === 422) {
+      throw new AiError(`Провайдер не принял запрос (${response.status}): ${where}.${hint} Обычно это неверное имя модели или лишний параметр.`);
+    }
+    throw new AiError(`Ошибка API (HTTP ${response.status}): ${where}.${hint}`);
   }
+  if (!data) throw new AiError(`Сервер вернул не JSON (${where}). Проверь, что адрес указывает на API, а не на сайт.`);
   const content = data.choices?.[0]?.message?.content;
-  if (typeof content !== 'string' || !content.trim()) throw new AiError('Модель вернула пустой ответ. Повтори запрос.');
+  if (typeof content !== 'string' || !content.trim()) {
+    // DeepSeek в режиме «размышлений» кладёт ответ в reasoning_content, а content оставляет пустым
+    const thinking = data.choices?.[0]?.message?.reasoning_content;
+    if (typeof thinking === 'string' && thinking.trim()) {
+      throw new AiError('Модель вернула только свои рассуждения (thinking) и пустой ответ. Попроси короче или возьми модель без режима размышлений.');
+    }
+    throw new AiError('Модель вернула пустой ответ. Повтори запрос.');
+  }
   return content;
 }
 

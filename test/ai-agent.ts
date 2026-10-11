@@ -2,8 +2,8 @@
 // протокол chat completions (fetch подменяется) и агент-цикл.
 import * as M from '../src/pcb/model';
 import {
-  aiReady, AI_PRESETS, DEFAULT_AI, loadAiSettings, parseAiResponse, resolveAi,
-  runAiTurn, summarizeBoard,
+  aiReady, AI_PRESETS, chatCompletionsUrl, DEFAULT_AI, loadAiSettings, normalizeAiBaseUrl,
+  parseAiResponse, resolveAi, resolveAiModel, runAiTurn, summarizeBoard,
   type AiMsg, type AISettings,
 } from '../src/pcb/ai-agent';
 import { execCopilot, type CopilotCmd } from '../src/pcb/copilot';
@@ -20,13 +20,40 @@ const ok = (c: boolean, m: string): void => {
 {
   ok(AI_PRESETS.length >= 4, `пресетов мало: ${AI_PRESETS.length}`);
   const ds = AI_PRESETS.find((p) => p.id === 'deepseek');
-  ok(!!ds && ds.baseUrl === 'https://api.deepseek.com' && ds.model === 'deepseek-chat' && ds.needsKey, 'пресет DeepSeek');
+  ok(!!ds && ds.baseUrl === 'https://api.deepseek.com' && ds.model === 'deepseek-v4-flash' && ds.needsKey, 'пресет DeepSeek');
   const ol = AI_PRESETS.find((p) => p.id === 'ollama');
   ok(!!ol && !ol.needsKey && ol.baseUrl.includes('11434'), 'пресет Ollama без ключа');
+  // шлюзам нужен /v1 в адресе, иначе провайдер отвечает 404
+  for (const id of ['openai', 'openrouter', 'teamorouter', 'nararouter']) {
+    const p = AI_PRESETS.find((x) => x.id === id);
+    ok(!!p && /\/v1$/.test(p.baseUrl), `пресет ${id} с /v1: ${p?.baseUrl}`);
+    ok(!!p && chatCompletionsUrl(p.baseUrl) === `${p.baseUrl}/chat/completions`, `url ${id}`);
+  }
+  ok(!AI_PRESETS.some((p) => p.model === 'deepseek-chat' || p.model === 'deepseek-reasoner'),
+    'в пресетах нет отключённых имён моделей');
+
+  // нормализация адреса: схема, хвостовые слеши, полный путь, /v1 для известных шлюзов
+  ok(normalizeAiBaseUrl('api.openai.com') === 'https://api.openai.com/v1', 'openai без схемы и без /v1');
+  ok(normalizeAiBaseUrl('https://openrouter.ai/api/') === 'https://openrouter.ai/api/v1', 'openrouter /v1');
+  ok(normalizeAiBaseUrl('https://api.teamorouter.com') === 'https://api.teamorouter.com/v1', 'teamorouter /v1');
+  ok(normalizeAiBaseUrl('https://api.deepseek.com') === 'https://api.deepseek.com', 'deepseek без /v1 тоже работает');
+  ok(normalizeAiBaseUrl('http://localhost:11434/v1/') === 'http://localhost:11434/v1', 'локальный адрес со схемой http');
+  ok(normalizeAiBaseUrl('localhost:1234/v1') === 'http://localhost:1234/v1', 'localhost без схемы');
+  ok(chatCompletionsUrl('https://my.gateway/v1/chat/completions') === 'https://my.gateway/v1/chat/completions',
+    'полный путь не дублируется');
+  ok(normalizeAiBaseUrl('  ') === '', 'пустой адрес');
+
+  // устаревшие имена моделей заменяются действующими
+  ok(resolveAiModel('deepseek-chat', 'https://api.deepseek.com') === 'deepseek-v4-flash', 'deepseek-chat → v4-flash');
+  ok(resolveAiModel('deepseek-reasoner', 'https://api.teamorouter.com/v1') === 'deepseek-v4-flash', 'reasoner → v4-flash');
+  ok(resolveAiModel('llama3.1:8b', 'http://localhost:11434/v1') === 'llama3.1:8b', 'своя модель не трогается');
 
   const s: AISettings = { ...DEFAULT_AI, enabled: true, apiKey: 'sk-test' };
   const r = resolveAi(s);
-  ok(r.baseUrl === 'https://api.deepseek.com' && r.model === 'deepseek-chat' && r.apiKey === 'sk-test', 'resolve по умолчанию');
+  ok(r.baseUrl === 'https://api.deepseek.com' && r.model === 'deepseek-v4-flash' && r.apiKey === 'sk-test', 'resolve по умолчанию');
+  ok(r.url === 'https://api.deepseek.com/chat/completions', `resolve url: ${r.url}`);
+  const openaiResolved = resolveAi({ ...DEFAULT_AI, enabled: true, presetId: 'openai', apiKey: 'sk-test' });
+  ok(openaiResolved.url === 'https://api.openai.com/v1/chat/completions', `openai url: ${openaiResolved.url}`);
   ok(aiReady(s), 'готов при ключе');
   ok(!aiReady({ ...s, apiKey: '' }), 'не готов без ключа');
   ok(!aiReady({ ...s, enabled: false }), 'не готов, когда выключен');
@@ -83,6 +110,7 @@ const jsonResp = (obj: unknown, status = 200): unknown => ({
   ok: status >= 200 && status < 300,
   status,
   json: async () => obj,
+  text: async () => JSON.stringify(obj),
 });
 
 {
@@ -99,7 +127,7 @@ const jsonResp = (obj: unknown, status = 200): unknown => ({
   const out = await chatOnce(s, [{ role: 'user', content: 'hi' }]);
   ok(out.includes('fit'), `chatOnce вернул контент: ${out}`);
   ok(seenUrl === 'https://api.deepseek.com/chat/completions', `url: ${seenUrl}`);
-  ok(seenAuth === 'deepseek-chat', `модель: ${seenAuth}`);
+  ok(seenAuth === 'deepseek-v4-flash', `модель: ${seenAuth}`);
 
   // 401 — неверный ключ
   stubFetch(() => jsonResp({ error: { message: 'bad key' } }, 401));
@@ -109,6 +137,31 @@ const jsonResp = (obj: unknown, status = 200): unknown => ({
   } catch (e) {
     ok(e instanceof Error && e.message.includes('ключ'), `401: ${e instanceof Error ? e.message : e}`);
   }
+
+  // 404 — в тексте виден адрес запроса и подсказка про /v1
+  let seen404 = '';
+  stubFetch((url) => {
+    seen404 = String(url);
+    return jsonResp({ error: { message: 'Model Not Exist' } }, 404);
+  });
+  try {
+    await chatOnce({ ...DEFAULT_AI, enabled: true, presetId: 'openai', apiKey: 'sk-test' }, [{ role: 'user', content: 'hi' }]);
+    ok(false, '404 должен бросать');
+  } catch (e) {
+    const msg = e instanceof Error ? e.message : String(e);
+    ok(seen404 === 'https://api.openai.com/v1/chat/completions', `404 url: ${seen404}`);
+    ok(msg.includes('404') && msg.includes(seen404) && msg.includes('/v1') && msg.includes('Model Not Exist'), `404 текст: ${msg}`);
+  }
+
+  // адрес без схемы больше не уходит на наш же сервер
+  let seenRelative = '';
+  stubFetch((url) => {
+    seenRelative = String(url);
+    return jsonResp({ choices: [{ message: { content: 'ок' } }] });
+  });
+  await chatOnce({ ...DEFAULT_AI, enabled: true, presetId: 'custom', baseUrl: 'api.teamorouter.com', model: 'deepseek-v4-flash-free', apiKey: 'tr-x' },
+    [{ role: 'user', content: 'hi' }]);
+  ok(seenRelative === 'https://api.teamorouter.com/v1/chat/completions', `адрес без схемы: ${seenRelative}`);
 
   // обрыв сети
   stubFetch(() => { throw new Error('net down'); });
