@@ -39,6 +39,9 @@ import {
   pickSolderPair, splitTrackAt, trackEndsNear,
 } from './pcb/trackedit';
 import { copperComponents, type NetRouteVariants, type NetRouteVariant } from './pcb/netroute';
+import { computeThermal, thermalColor, type ThermalResult } from './pcb/thermal';
+import { repairClearance } from './pcb/drc-repair';
+import { fmtOhm, fmtVolt } from './pcb/trackcalc';
 import { AutoPlaceDialog, RouteVariantsDialog } from './ui/auto-layout';
 import { NetsPanel, NET_COLORS } from './ui/nets';
 import { InventoryDialog } from './ui/inventory';
@@ -95,6 +98,7 @@ import { nextReference, componentRows, metadataPatch, bomCsv, pickPlaceCsv, asse
 import { panelizeDoc, type PanelizeOptions } from './pcb/panelize';
 import { type KicadNetlistImport } from './pcb/kicad-netlist';
 import { DrcDialog } from './ui/drc';
+import { ThermalPanel } from './ui/thermal';
 import { ManufacturingDialog } from './ui/manufacturing';
 import { NetlistImportDialog } from './ui/netlist-import';
 import { DifferentialPairsDialog } from './ui/differential-pairs';
@@ -108,6 +112,10 @@ import { ObjectPanel } from './ui/objects';
 import { CommentsPanel, CommentEditorDialog, type CommentDraft } from './ui/comments';
 import { HistoryDialog } from './ui/history';
 import { newEntsLabel, type ObjNode } from './pcb/objtree';
+import { CopilotFab, CopilotPanel } from './ui/copilot';
+import { execCopilot, parseCopilot } from './pcb/copilot';
+import { aiReady, loadAiSettings, runAiTurn, summarizeBoard, type AiMsg } from './pcb/ai-agent';
+import type { CopilotCmd } from './pcb/copilot';
 
 declare global {
   interface Window {
@@ -292,7 +300,7 @@ const PINNED_GROUPS: string[] = ['undo'];
  */
 const TOOL_GROUPS: ToolId2[][] = [
   ['select'],
-  ['route', 'probe', 'comment'],
+  ['route', 'probe', 'thermal', 'comment'],
   ['track', 'cut', 'solder', 'pad', 'smd', 'via', 'hole'],
   ['line', 'rect', 'circle', 'fill', 'text'],
   ['ruler', 'dim', 'comp'],
@@ -301,7 +309,7 @@ const TOOL_GROUPS: ToolId2[][] = [
 const TOOL_KEYS: Partial<Record<ToolId2, string>> = {
   select: '1', track: '2', pad: '3', via: '4', hole: '5',
   line: '6', text: '7', ruler: '8', route: '9', probe: '0', comment: 'C',
-  cut: 'X', solder: 'S', dim: 'U',
+  cut: 'X', solder: 'S', dim: 'U', thermal: 'T',
 };
 
 const DEFAULT_DEFS: Defs = {
@@ -349,6 +357,7 @@ const DEFAULT_DEFS: Defs = {
   dimMode: 'aligned',
   copperUm: 35,
   tempRise: 10,
+  thermalA: 1,
   rtW: 0.8,
   rtClear: 0.4,
   rtHoleClear: 0.6,
@@ -551,6 +560,15 @@ export default function App({ cloudUser, onLogout }: { cloudUser?: CloudUser; on
   const [routeA, setRouteA] = useState<RouteEnd | null>(null);
   const [routeMsg, setRouteMsg] = useState<{ msg: string; ok: boolean | null }>({ msg: '', ok: null });
   const [dialog, setDialog] = useState<'new' | 'export' | 'cnc' | 'panelize' | 'about' | 'inventory' | 'stats' | 'imgimport' | 'uib' | 'colors' | 'grid' | 'close' | 'cloud' | 'account' | 'versions' | 'board-preview' | 'autoplace' | 'settings' | 'tour' | 'history' | 'drc' | 'bom' | 'netlist' | 'cam' | 'diffpairs' | null>(null);
+  // PCB-помощник («разводка словами»): панель чата и память последних
+  // постановок — чтобы «соедини их» знало, о каких деталях речь.
+  const [copilotOpen, setCopilotOpen] = useState(false);
+  const [copilotFocus, setCopilotFocus] = useState(0);
+  const copilotLast = useRef<string[]>([]);
+  /** ИИ-режим помощника готов (включён и настроен в «Настройки → ИИ-помощник») */
+  const [aiOn, setAiOn] = useState(() => aiReady(loadAiSettings()));
+  /** короткие реплики диалога с моделью (контекст, только эта сессия) */
+  const aiHistory = useRef<AiMsg[]>([]);
   // подтверждение опасного действия (удаление по настройке «Подтверждать удаление»)
   const [confirmAsk, setConfirmAsk] = useState<{ title: string; text: string; ok: string; onOk: () => void } | null>(null);
   const [boardPreviewTab, setBoardPreviewTab] = useState<'2d' | '3d'>('2d');
@@ -575,6 +593,18 @@ export default function App({ cloudUser, onLogout }: { cloudUser?: CloudUser; on
   }, [expanded, doc.entities, tool]);
   // если инструмент сменили напрямую (установка компонента, импорт макроса) — подсветку снять
   useEffect(() => { if (tool !== 'probe') setProbe(null); }, [tool]);
+  // «Тепловизор»: выбранная цепь (ключи связных компонентов + точка клика)
+  const [thermal, setThermal] = useState<{ entId: string; keys: string[] } | null>(null);
+  const thermalConn = useMemo(() => {
+    if (tool !== 'thermal') return null;
+    return { flat: expanded, comp: copperComponents(doc.entities) };
+  }, [expanded, doc.entities, tool]);
+  useEffect(() => { if (tool !== 'thermal') setThermal(null); }, [tool]);
+  const thermalResult = useMemo((): ThermalResult | null => {
+    if (tool !== 'thermal' || !thermal || !thermalConn) return null;
+    return computeThermal(thermalConn.flat, thermalConn.comp, new Set(thermal.keys),
+      thermal.entId, defs.thermalA, defs.copperUm, defs.tempRise);
+  }, [thermal, thermalConn, tool, defs.thermalA, defs.copperUm, defs.tempRise]);
   useEffect(() => {
     fetch('/version')
       .then((r) => r.json())
@@ -607,6 +637,7 @@ export default function App({ cloudUser, onLogout }: { cloudUser?: CloudUser; on
   const [findActive, setFindActive] = useState(0);
   const [findFocus, setFindFocus] = useState(0);
   const findRef = useRef<HTMLCanvasElement>(null);
+  const thermalRef = useRef<HTMLCanvasElement>(null);
   const findHits = useMemo(() => (findOpen && findQuery.trim() ? findOnBoard(doc, findQuery) : []), [findOpen, findQuery, doc]);
   const findHit: FindHit | null = findOpen ? findHits[findActive] ?? null : null;
   const drcRef = useRef<HTMLCanvasElement>(null);
@@ -1161,9 +1192,10 @@ export default function App({ cloudUser, onLogout }: { cloudUser?: CloudUser; on
     if (pasteTpl) { setPasteTpl(null); return; }
     if (place) { setPlace(null); return; }
     if (probe) { setProbe(null); return; }
+    if (thermal) { setThermal(null); return; }
     if (sel.size) { setSel(new Set()); }
     setTrackMsg({ msg: '', ok: null });
-  }, [draft, commitTrack, commitPoly, pasteTpl, place, probe, sel.size, routeA, activeNet, routeMode, tool, editNode]);
+  }, [draft, commitTrack, commitPoly, pasteTpl, place, probe, thermal, sel.size, routeA, activeNet, routeMode, tool, editNode]);
 
   const setTool = useCallback((t: ToolId2) => {
     if (t !== tool) { finishOrCancel(); setToolRaw(t); }
@@ -1783,6 +1815,65 @@ export default function App({ cloudUser, onLogout }: { cloudUser?: CloudUser; on
     setPreview(null);
   }, [addComp, snapPt, view, size]);
 
+  // ---------------- PCB-помощник («разводка словами») ----------------
+  // Применение готовых команд к документу одной записью истории.
+  const applyCopilotCmds = useCallback((cmds: CopilotCmd[], label: string): string[] => {
+    const world = toWorld(view, size.w / 2, size.h / 2);
+    const res = execCopilot(docRef.current, cmds, {
+      center: { x: world.x, y: world.y },
+      w: docRef.current.w, h: docRef.current.h,
+      activeCu, trackW: defs.trackW,
+      selIds: [...sel], lastIds: copilotLast.current,
+    });
+    copilotLast.current = res.lastIds;
+    if (res.changed) commit(res.doc, label);
+    if (res.select) setSel(new Set(res.select));
+    for (const fx of res.effects) {
+      if (fx.t === 'undo') undo();
+      else if (fx.t === 'fit') fit();
+      else zoomAt(size.w / 2, size.h / 2, fx.f);
+    }
+    return res.lines.map((l) => l.text);
+  }, [view, size, activeCu, defs.trackW, sel, commit, undo, fit, zoomAt]);
+
+  // Реплика пользователя → локальный разбор или ИИ-агент (с откатом на локальный).
+  const runCopilot = useCallback((text: string): string | Promise<string> => {
+    const settings = loadAiSettings();
+    if (!aiReady(settings)) {
+      return applyCopilotCmds(parseCopilot(text), `Помощник: ${text.trim().slice(0, 48)}`).join('\n');
+    }
+    return (async (): Promise<string> => {
+      try {
+        const world = toWorld(view, size.w / 2, size.h / 2);
+        const turn = await runAiTurn({
+          settings,
+          history: aiHistory.current,
+          userText: text,
+          boardSummary: summarizeBoard(docRef.current, {
+            center: { x: world.x, y: world.y },
+            selIds: [...sel], lastIds: copilotLast.current,
+            activeCu, trackW: defs.trackW,
+          }),
+          execute: (cmds) => applyCopilotCmds(cmds, `ИИ-помощник: ${text.trim().slice(0, 44)}`),
+        });
+        aiHistory.current = turn.history;
+        return turn.reply;
+      } catch (e) {
+        const local = applyCopilotCmds(parseCopilot(text), `Помощник: ${text.trim().slice(0, 48)}`).join('\n');
+        return `⚠️ ИИ недоступен: ${e instanceof Error ? e.message : String(e)}\n${local}`;
+      }
+    })();
+  }, [applyCopilotCmds, view, sel, activeCu, defs.trackW]);
+
+  const toggleCopilot = useCallback(() => {
+    setCopilotOpen((v) => !v);
+    setCopilotFocus((f) => f + 1);
+  }, []);
+  // Настройки ИИ могли поменяться в окне настроек — обновить бейдж при его закрытии.
+  useEffect(() => {
+    if (dialog !== 'settings') setAiOn(aiReady(loadAiSettings()));
+  }, [dialog]);
+
   // установка из строки генератора: снапшот замирает, чтобы правка строки
   // не «поехала» под курсором
   const placeFromGen = useCallback(() => {
@@ -2012,6 +2103,19 @@ export default function App({ cloudUser, onLogout }: { cloudUser?: CloudUser; on
     if (!ctx) return null;
     return hitBoardComment(ctx, view, doc.comments ?? [], px, py, size.w, size.h);
   }, [doc.comments, view, size]);
+
+  // Автопочинка из диалога DRC: переложить дорожку в обход — одним шагом истории.
+  const repairDrcViolation = useCallback((v: { x: number; y: number; layer?: string; entities?: string[] }, rule: number) => {
+    const layer = v.layer === 'K1' ? 'k1' : v.layer === 'K2' ? 'k2' : undefined;
+    const preferId = (v.entities ?? []).find((id) =>
+      !id.includes(':') && doc.entities.some((e) => e.id === id && e.kind === 'track'));
+    const r = repairClearance({
+      doc, x: v.x, y: v.y, rule, layer, preferId,
+      step: Math.min(defs.rtStep, 0.25), holeClear: defs.rtHoleClear,
+    });
+    if (r.ok && r.doc) commit(r.doc, 'DRC: автоисправление зазора');
+    return { ok: r.ok, msg: r.msg };
+  }, [doc, defs.rtStep, defs.rtHoleClear, commit]);
 
   useEffect(() => {
     if (activeCommentId && !(doc.comments ?? []).some((comment) => comment.id === activeCommentId))
@@ -2378,6 +2482,22 @@ export default function App({ cloudUser, onLogout }: { cloudUser?: CloudUser; on
           else if (e.kind === 'track') tracks++;
         }
         setProbe({ entId: hitId, ents, pads, smd, vias, tracks });
+        break;
+      }
+      case 'thermal': {
+        // «Тепловизор»: выбрать цепь под курсором для теплового расчёта
+        const hitId = hitAt(w);
+        if (!hitId) { setThermal(null); break; }
+        const pd = thermalConn;
+        if (!pd) break;
+        const keys = new Set<string>();
+        for (const s of pd.flat) {
+          if (s.id !== hitId && !s.id.startsWith(hitId + ':')) continue;
+          const k = pd.comp.get(s.id);
+          if (k) keys.add(k);
+        }
+        if (!keys.size) { setThermal(null); break; }
+        setThermal({ entId: hitId, keys: [...keys] });
         break;
       }
     }
@@ -3008,6 +3128,61 @@ export default function App({ cloudUser, onLogout }: { cloudUser?: CloudUser; on
     const ids = new Set(findHit.ids);
     for (const e of expanded) if (ids.has(e.id)) drawEnt(ctx, view, e, { tint: COLORS.probe });
   }, [findHit, expanded, view, size, theme, colors, perfLevel.level]);
+
+  // Тепловизор: тёмная вуаль + цепь в тепловых цветах + бегущий пунктир тока.
+  // Анимация — rAF только пока инструмент активен и цепь выбрана; на огромных
+  // цепях (>900 участков) рисуем один статичный кадр без анимации.
+  useEffect(() => {
+    const cv = thermalRef.current;
+    if (!cv) return;
+    const dpr = perfDpr();
+    if (cv.width !== Math.round(size.w * dpr)) cv.width = Math.round(size.w * dpr);
+    if (cv.height !== Math.round(size.h * dpr)) cv.height = Math.round(size.h * dpr);
+    cv.style.width = size.w + 'px';
+    cv.style.height = size.h + 'px';
+    const ctx = cv.getContext('2d')!;
+    ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+    const res = tool === 'thermal' ? thermalResult : null;
+    if (!res || !res.segs.length) { ctx.clearRect(0, 0, size.w, size.h); return; }
+    const vis = res.segs.filter((s) => !hidden.has(s.layer));
+    const trace = (pts: { x: number; y: number }[]): void => {
+      ctx.beginPath();
+      for (let i = 0; i < pts.length; i++) {
+        const { px, py } = toPx(pts[i].x, pts[i].y);
+        if (i === 0) ctx.moveTo(px, py); else ctx.lineTo(px, py);
+      }
+    };
+    const frame = (t: number): void => {
+      ctx.clearRect(0, 0, size.w, size.h);
+      ctx.fillStyle = 'rgba(3,6,16,0.66)';
+      ctx.fillRect(0, 0, size.w, size.h);
+      ctx.lineCap = 'round';
+      ctx.lineJoin = 'round';
+      for (const s of vis) {
+        const pts = s.flip ? [...s.pts].reverse() : s.pts;
+        const wpx = Math.max(2.5, s.w * view.s);
+        trace(pts);
+        ctx.setLineDash([]);
+        ctx.strokeStyle = thermalColor(s.t01);
+        ctx.lineWidth = wpx;
+        ctx.stroke();
+        // ток: белый пунктир бежит от точки клика (фаза сдвинута по hop)
+        trace(pts);
+        ctx.strokeStyle = 'rgba(255,255,255,0.85)';
+        ctx.lineWidth = Math.max(1.2, Math.min(2.4, wpx * 0.3));
+        ctx.setLineDash([7, 9]);
+        ctx.lineDashOffset = s.hop * 16 - t / 28;
+        ctx.stroke();
+      }
+      ctx.setLineDash([]);
+      ctx.lineDashOffset = 0;
+    };
+    if (vis.length > 900) { frame(0); return; }
+    let raf = 0;
+    const tick = (t: number): void => { frame(t); raf = requestAnimationFrame(tick); };
+    raf = requestAnimationFrame(tick);
+    return () => cancelAnimationFrame(raf);
+  }, [thermalResult, tool, hidden, view, size, theme, colors, toPx, perfLevel.level]);
 
   // Предупреждения DRC («зазор дорожек») — отдельный холст между платой и оверлеем.
   // Пересчёт меток идёт по простоям и при правке, а не каждый кадр, поэтому слой
@@ -4108,6 +4283,15 @@ export default function App({ cloudUser, onLogout }: { cloudUser?: CloudUser; on
               setActiveNet(id);
             }} />}
         </>}
+        {tool === 'thermal' && <ThermalPanel
+          currentA={defs.thermalA} copperUm={defs.copperUm} tempRise={defs.tempRise}
+          onParams={(p) => setDefs({
+            ...(p.currentA !== undefined ? { thermalA: p.currentA } : null),
+            ...(p.copperUm !== undefined ? { copperUm: p.copperUm } : null),
+            ...(p.tempRise !== undefined ? { tempRise: p.tempRise } : null),
+          })}
+          result={thermalResult}
+          onLocate={(x, y) => locateAt(x, y)} />}
         <PropsPanel
           tool={tool} defs={defs} setDefs={setDefs}
           activeCu={activeCu} setActiveCu={setActiveCu}
@@ -4268,6 +4452,8 @@ export default function App({ cloudUser, onLogout }: { cloudUser?: CloudUser; on
             className={`canvas-probe${tool === 'probe' && probe ? ' is-active' : ''}`} />
           <canvas ref={findRef} aria-hidden="true"
             className={`canvas-probe canvas-find${findHit ? ' is-active' : ''}`} />
+          <canvas ref={thermalRef} aria-hidden="true"
+            className={`canvas-thermal${tool === 'thermal' && thermalResult ? ' is-active' : ''}`} />
           <canvas ref={drcRef} aria-hidden="true"
             className={`canvas-drc${hasClearanceMarks ? ' is-active' : ''}`} />
           {/* оверлей: черновики, фантомы, перекрестие; принимает события */}
@@ -4343,6 +4529,11 @@ export default function App({ cloudUser, onLogout }: { cloudUser?: CloudUser; on
             ⚡ цепь: {plur(probe.pads, ['площадка', 'площадки', 'площадок'])} · {plur(probe.smd, ['SMD', 'SMD', 'SMD'])} · {plur(probe.vias, ['переход', 'перехода', 'переходов'])} · {plur(probe.tracks, ['дорожка', 'дорожки', 'дорожек'])}
           </span>
         )}
+        {tool === 'thermal' && thermalResult && (
+          <span className="probe-info" title="Тепловизор: нагрев цепи при заданном токе (прикидка сверху)">
+            🌡 +{thermalResult.maxDT >= 10 ? thermalResult.maxDT.toFixed(0) : thermalResult.maxDT.toFixed(1)} °C · ΔV {fmtVolt(thermalResult.totalDrop)} В · R {fmtOhm(thermalResult.totalR)}
+          </span>
+        )}
         {/* «плохое» сообщение инструмента не всегда попадает в панель свойств
             (например, клик по заблокированному объекту — выделения нет),
             поэтому важное видно и в строке состояния */}
@@ -4355,6 +4546,9 @@ export default function App({ cloudUser, onLogout }: { cloudUser?: CloudUser; on
           {cloudUser ? `Облако · ${cloudStatus === 'saved' ? 'сохранено' : cloudStatus === 'saving' ? 'сохраняем' : cloudStatus === 'error' ? 'ошибка' : cloudStatus === 'conflict' ? 'конфликт' : activeCloud ? 'изменено' : 'черновик'}` : 'локально · офлайн'}
         </span>
       </div>}
+
+      <CopilotFab open={copilotOpen} onClick={toggleCopilot} />
+      {copilotOpen && <CopilotPanel onRun={runCopilot} onClose={() => setCopilotOpen(false)} focusTick={copilotFocus} aiOn={aiOn} onOpenAiSettings={() => { setPrefs({ setSection: 'ai' }); setDialog('settings'); }} />}
 
       {commentEdit && <CommentEditorDialog
         draft={commentEdit}
@@ -4427,7 +4621,7 @@ export default function App({ cloudUser, onLogout }: { cloudUser?: CloudUser; on
       {dialog === 'panelize' && (
         <PanelizeDialog defX={doc.w + 2} defY={doc.h + 2} onOk={(options) => { panelize(options); setDialog(null); }} onClose={() => setDialog(null)} />
       )}
-      {dialog === 'drc' && <DrcDialog doc={doc} onLocate={(x, y) => locateAt(x, y)} onClose={() => setDialog(null)} />}
+      {dialog === 'drc' && <DrcDialog doc={doc} onLocate={(x, y) => locateAt(x, y)} onClose={() => setDialog(null)} onRepair={repairDrcViolation} />}
       {dialog === 'bom' && <ManufacturingDialog doc={doc} onApply={applyComponentRows} onClose={() => setDialog(null)} />}
       {dialog === 'netlist' && <NetlistImportDialog doc={doc} onApply={applyNetlistImport} onClose={() => setDialog(null)} />}
       {dialog === 'cam' && <GerberPreviewDialog doc={doc} onClose={() => setDialog(null)} />}

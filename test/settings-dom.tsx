@@ -80,7 +80,7 @@ assert.ok(winEl, 'окно настроек открылось кнопкой ш
 assert.ok(doc.body.contains(winEl!), 'окно настроек вынесено в body (отдельное окно)');
 // разделы
 const navItems = () => [...doc.querySelectorAll('.set-nav-item')];
-assert.equal(navItems().length, 13, 'все разделы настроек на месте');
+assert.equal(navItems().length, 14, 'все разделы настроек на месте');
 assert.ok(navItems().some((b) => (b.textContent ?? '').includes('Обучение')), 'раздел обучения');
 assert.ok(navItems().some((b) => (b.textContent ?? '').includes('Пресеты')), 'раздел пресетов');
 assert.ok(navItems().some((b) => (b.textContent ?? '').includes('Сетка')), 'раздел сетки');

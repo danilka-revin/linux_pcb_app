@@ -166,7 +166,7 @@ export function runBoardDrc(doc: Doc, rawRules: Partial<DrcRules> = {}): DrcViol
   for (const v of trackClearance(flat, rules.minClearance)) push(out, {
     rule: 'copper-clearance', severity: 'error', message: `Зазор дорожек ${v.gap.toFixed(3)} мм меньше ${rules.minClearance.toFixed(3)} мм (${v.layer.toUpperCase()}).`,
     x: (v.a.x + v.b.x) / 2, y: (v.a.y + v.b.y) / 2, actual: v.gap, required: rules.minClearance,
-    layer: v.layer.toUpperCase(),
+    entities: [v.aId, v.bId], layer: v.layer.toUpperCase(),
   });
 
   // Зазор между дорожками, площадками, переходами и медными полигонами.

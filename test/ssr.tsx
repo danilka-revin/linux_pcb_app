@@ -12,6 +12,8 @@ import { PropsPanel, type Defs } from '../src/ui/panels';
 import { GroupsPanel } from '../src/ui/groups';
 import { AutoPlaceDialog, RouteVariantsDialog } from '../src/ui/auto-layout';
 import { NetsPanel } from '../src/ui/nets';
+import { CopilotFab, CopilotPanel } from '../src/ui/copilot';
+import { AiSettingsPanel } from '../src/ui/ai-settings';
 import type { Doc, Entity } from '../src/pcb/model';
 
 const html = renderToString(createElement(App));
@@ -19,6 +21,21 @@ console.log('SSR длина:', html.length);
 if (!html.includes('toolbar') || !html.includes('status')) throw new Error('layout not rendered');
 if (!html.includes('Bees')) throw new Error('brand not rendered');
 if (!html.includes('logo.png')) throw new Error('bee logo not rendered');
+// PCB-помощник: круглая кнопка видна всегда, панель чата собирается без ошибок.
+if (!html.includes('copilot-fab')) throw new Error('copilot fab not rendered');
+if (!html.includes('PCB-помощник')) throw new Error('copilot title not rendered');
+{
+  const fab = renderToString(createElement(CopilotFab, { open: false, onClick: () => {} }));
+  if (!fab.includes('copilot-fab') || !fab.includes('Ctrl+K')) throw new Error('copilot fab broken');
+  const pane = renderToString(createElement(CopilotPanel, { onRun: () => 'ok', onClose: () => {}, focusTick: 0, aiOn: false, onOpenAiSettings: () => {} }));
+  const aiPane = renderToString(createElement(AiSettingsPanel, {}));
+  if (!aiPane.includes('ИИ-помощник') || !aiPane.includes('DeepSeek') || !aiPane.includes('API-ключ')) {
+    throw new Error('ai settings panel broken');
+  }
+  if (!pane.includes('copilot-panel') || !pane.includes('copilot-chip') || !pane.includes('copilot-send')) {
+    throw new Error('copilot panel broken');
+  }
+}
 if (!html.includes('светлую тему') && !html.includes('тёмную тему')) throw new Error('theme toggle not rendered');
 // Тест цепи: отдельный прозрачный слой между платой и интерактивным оверлеем.
 {
