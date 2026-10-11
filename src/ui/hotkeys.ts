@@ -57,6 +57,7 @@ export const HOTKEYS: HotkeyDef[] = [
   { id: 'edit.nudgeRight', group: 'Правка', title: 'Сдвинуть вправо (Shift — ×10, Alt — ÷10)', def: ['Right'] },
   { id: 'edit.nudgeUp', group: 'Правка', title: 'Сдвинуть вверх (Shift — ×10, Alt — ÷10)', def: ['Up'] },
   { id: 'edit.nudgeDown', group: 'Правка', title: 'Сдвинуть вниз (Shift — ×10, Alt — ÷10)', def: ['Down'] },
+  { id: 'edit.find', group: 'Правка', title: 'Найти на плате (обозначение, цепь, номинал)…', def: ['Ctrl+Shift+F'] },
 
   // ---------------- Инструменты ----------------
   { id: 'tool.select', group: 'Инструменты', title: 'Выбор', def: ['1'] },

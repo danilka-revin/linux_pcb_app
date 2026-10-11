@@ -886,8 +886,8 @@ canvas { display: block; }
 .cloud-success { color: var(--ok-ink) !important; }
 
 /* Статус синхронизации постоянно виден в шапке, даже если спрятали «Файл». */
-.cloud-header-group { margin-left: auto; max-width: 410px; }
-.tb-btn.cloud-header-save, .tb-btn.cloud-header-projects, .tb-btn.cloud-header-account {
+.cloud-header-group { margin-left: auto; max-width: 480px; }
+.tb-btn.cloud-header-save, .tb-btn.cloud-header-projects, .tb-btn.cloud-header-versions, .tb-btn.cloud-header-account {
   width: auto; padding: 0 9px; font-size: 11.5px; font-weight: 600; white-space: nowrap;
 }
 .tb-btn.cloud-header-save { gap: 5px; }
@@ -1808,3 +1808,73 @@ html[data-compact='1'] .set-head { padding: 5px 8px 5px 10px; }
 @media (prefers-reduced-motion: reduce) {
   .coach-marker-ring, .coach-confetti i, .learn-bar { animation: none; }
 }
+
+/* ---------- поиск на плате (Ctrl+Shift+F) ---------- */
+.find-panel {
+  position: absolute; top: 10px; right: 12px; z-index: 6; width: min(340px, calc(100% - 24px));
+  max-height: calc(100% - 20px); overflow: auto; padding: 10px; border-radius: 8px;
+  background: var(--surface-2); border: 1px solid var(--line); box-shadow: 0 6px 22px rgb(0 0 0 / .18);
+}
+.find-row { display: flex; gap: 6px; align-items: center; }
+.find-input { flex: 1; min-width: 0; }
+.find-status { margin-top: 6px; font-size: 12px; color: var(--muted); }
+.find-list { list-style: none; margin: 6px 0 0; padding: 0; max-height: 46vh; overflow: auto; }
+.find-hit {
+  display: flex; gap: 8px; align-items: flex-start; padding: 6px 8px; border-radius: 6px; cursor: pointer; font-size: 12.5px;
+}
+.find-hit.active { background: var(--accent-soft); }
+.find-hit .find-text { display: flex; flex-direction: column; min-width: 0; }
+.find-hit small { color: var(--muted); font-size: 11px; }
+.find-kind {
+  flex: 0 0 auto; font-size: 10.5px; padding: 1px 6px; border-radius: 4px; border: 1px solid var(--line); color: var(--text-2);
+}
+.find-hint { margin-top: 6px; font-size: 11px; color: var(--muted); }
+
+/* ---------- длины цепей и шины ---------- */
+.net-length { margin-top: 10px; padding-top: 8px; border-top: 1px solid var(--line); }
+.net-length h4 { margin: 0 0 4px; font-size: 12.5px; }
+.bus-card { margin-top: 8px; padding: 8px; border: 1px solid var(--line); border-radius: 6px; background: var(--surface-2); }
+.bus-head { display: flex; justify-content: space-between; gap: 8px; font-size: 12.5px; }
+.bus-head span { color: var(--muted); font-size: 11.5px; }
+.bus-stats { display: flex; flex-wrap: wrap; gap: 4px 10px; margin-top: 4px; font-size: 11.5px; color: var(--text-2); }
+.bus-ok { color: var(--ok-ink, #1f7a3a); }
+.bus-warn { color: var(--danger-ink); }
+.bus-nets { list-style: none; margin: 6px 0; padding: 0; font-size: 11.5px; }
+.bus-nets li { display: flex; justify-content: space-between; gap: 8px; padding: 1px 0; }
+.net-lengthen { margin-top: 8px; }
+
+/* ---------- версии облачного проекта ---------- */
+.modal.versions-modal { width: 620px; max-width: calc(100vw - 32px); }
+.versions-save { display: flex; flex-direction: column; gap: 6px; margin-bottom: 12px; }
+.versions-save label { font-size: 12px; color: var(--muted); }
+.versions-save > div { display: flex; gap: 6px; }
+.versions-save .txt { flex: 1; min-width: 0; }
+.versions-head { margin: 12px 0 6px; font-size: 13px; }
+.versions-head span { color: var(--muted); font-weight: 400; }
+.versions-list { display: flex; flex-direction: column; gap: 6px; max-height: 36vh; overflow: auto; }
+.versions-list > p { font-size: 12.5px; color: var(--muted); margin: 4px 0; }
+.versions-item {
+  display: flex; flex-wrap: wrap; gap: 6px 10px; justify-content: space-between; align-items: center;
+  padding: 8px; border: 1px solid var(--line); border-radius: 6px;
+}
+.versions-meta { display: flex; flex-direction: column; min-width: 0; }
+.versions-meta strong { font-size: 12.5px; overflow-wrap: anywhere; }
+.versions-meta small { color: var(--muted); font-size: 11px; }
+.versions-actions { display: flex; flex-wrap: wrap; gap: 4px; }
+.versions-compare { margin-top: 10px; padding-top: 6px; border-top: 1px solid var(--line); }
+.versions-pick { display: flex; flex-wrap: wrap; gap: 8px; align-items: flex-end; }
+.versions-pick label { display: flex; flex-direction: column; gap: 3px; flex: 1 1 200px; font-size: 12px; color: var(--muted); }
+.versions-pick .txt { width: 100%; }
+.versions-hint { display: block; margin-top: 4px; font-size: 11.5px; color: var(--muted); }
+.versions-diff { margin-top: 8px; font-size: 12.5px; }
+.versions-diff h4 { margin: 10px 0 4px; font-size: 12px; }
+.versions-summary, .versions-stats { margin: 4px 0; color: var(--text-2); display: flex; flex-wrap: wrap; gap: 4px 12px; }
+.versions-kinds, .versions-nets ul, .versions-changes { list-style: none; margin: 0; padding: 0; }
+.versions-kinds { font-size: 11.5px; color: var(--text-2); display: flex; flex-wrap: wrap; gap: 2px 12px; }
+.versions-changes { max-height: 30vh; overflow: auto; }
+.versions-changes li { display: flex; gap: 8px; align-items: center; padding: 3px 0; }
+.versions-changes li > span:nth-child(2) { flex: 1; min-width: 0; overflow-wrap: anywhere; }
+.versions-tag { flex: 0 0 auto; font-size: 10.5px; padding: 1px 6px; border-radius: 4px; border: 1px solid var(--line); }
+.versions-tag.added { color: var(--ok-ink); }
+.versions-tag.removed { color: var(--danger-ink); }
+.versions-tag.changed { color: var(--accent-text); }

@@ -262,9 +262,10 @@ for (const m of ['lib-preview', 'DIP-8', '0;0']) {
     nets, active: 'n1', setActive: () => {}, onChange: () => {}, onNew: () => {}, onRoute: () => {},
     ends, comp: new Map(), info: { msg: '', ok: null },
     defaults: { w: 0.8, clear: 0.4, viaSize: 1.8, viaDrill: 0.8, allowTop: true },
+    lengths: new Map(), lenInfo: { msg: '', ok: null }, onLengthen: () => {}, onAlignBus: () => {},
   }));
   for (const m of ['Ширина дорожки группы Питание', 'Правила группы', 'Ширина дорожки', 'Зазор до меди',
-    'Переход: Ø, мм', 'Переход: сверло', 'Слои группы', 'Как у всех', 'net-w', 'net-rules', '1.5']) {
+    'Переход: Ø, мм', 'Переход: сверло', 'Слои группы', 'Как у всех', 'net-w', 'net-rules', '1.5', 'Длины и шины', 'Шина выравнивания длин']) {
     if (!pane.includes(m)) throw new Error(`группы соединений: не найдено «${m}»`);
   }
   const src = readFileSync('src/pcb/netroute.ts', 'utf8');

@@ -1,8 +1,9 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import type { Net, NetRules } from '../pcb/model';
 import { fmt } from '../pcb/model';
 import type { RouteEnd } from '../pcb/autoroute';
 import { netMissing } from '../pcb/netroute';
+import { busSummaries, LENGTH_TOLERANCE, type NetLength } from '../pcb/lengths';
 import { NIO, SI } from './widgets';
 
 export const NET_COLORS = ['#64ceff', '#ffa86b', '#d99dff', '#f4db67', '#80e5b1', '#ff8fad'];
@@ -66,7 +67,10 @@ function WidthCell({ name, value, fallback, on }: {
   );
 }
 
-export function NetsPanel({ nets, active, setActive, onChange, onNew, onRoute, ends, comp, info, defaults }: {
+/** Число для интерфейса: десятичная запятая, фиксированное число знаков. */
+const num = (v: number, d = 1): string => v.toFixed(d).replace('.', ',');
+
+export function NetsPanel({ nets, active, setActive, onChange, onNew, onRoute, ends, comp, info, defaults, lengths, lenInfo, onLengthen, onAlignBus }: {
   info: { msg: string; ok: boolean | null };
   nets: Net[];
   active: string | null;
@@ -77,8 +81,28 @@ export function NetsPanel({ nets, active, setActive, onChange, onNew, onRoute, e
   ends: Map<string, RouteEnd>;
   comp: Map<string, string>;
   defaults: NetDefaults;
+  /** длины цепей (см. netLengths в pcb/lengths) */
+  lengths: Map<string, NetLength>;
+  lenInfo: { msg: string; ok: boolean | null };
+  /** змейка: цепь, целевая длина мм, высота зубца мм */
+  onLengthen: (netId: string, target: number, height: number) => void;
+  /** выровнять шину по самой длинной цепи */
+  onAlignBus: (bus: string, height: number) => void;
 }) {
+  const [height, setHeight] = useState('1,2');
+  const [target, setTarget] = useState('');
   const selected = nets.find((n) => n.id === active);
+  const selLen = selected ? lengths.get(selected.id) : undefined;
+  const summaries = useMemo(() => busSummaries(lengths.values()), [lengths]);
+  const buses = useMemo(() => [...new Set(nets.map((n) => (n.bus ?? '').trim()).filter(Boolean))].sort(), [nets]);
+  const heightValue = parseFloat(height.replace(',', '.'));
+  const heightOk = isFinite(heightValue) && heightValue >= 0.1 && heightValue <= 5;
+  // цель по умолчанию: самая длинная цепь шины или текущая длина, округлённая вверх до 0,1 мм
+  const busMax = selLen?.bus ? summaries.find((s) => s.bus === selLen.bus)?.max ?? 0 : 0;
+  const suggested = Math.ceil(Math.max(busMax, selLen?.length ?? 0) * 10 + 1e-9) / 10;
+  useEffect(() => { setTarget(suggested ? num(suggested) : ''); }, [selected?.id, suggested]);
+  const targetValue = parseFloat(target.replace(',', '.'));
+  const targetOk = isFinite(targetValue) && targetValue > (selLen?.length ?? 0) + LENGTH_TOLERANCE;
   const setRules = (id: string, patch: Partial<NetRules>) => onChange(nets.map((n) => n.id === id
     ? { ...n, rules: cleanRules({ ...(n.rules ?? {}), ...patch }) }
     : n));
@@ -98,15 +122,46 @@ export function NetsPanel({ nets, active, setActive, onChange, onNew, onRoute, e
         return <div className={'net-row' + (active === net.id ? ' active' : '')} key={net.id}>
           <button className="net-pick" onClick={() => setActive(net.id)} aria-pressed={active === net.id}>
             <span style={{ color: NET_COLORS[i % NET_COLORS.length] }}>●</span>
-            <span>{net.name}<small>{net.pads.length} площадок · {missingPads ? `потеряно: ${missingPads}` : net.pads.length < 2 ? 'добавьте площадки' : missing ? `осталось связей: ${missing}` : 'соединена'}{w !== undefined ? ` · дорожка ${fmt(w)} мм` : ''}</small></span>
+            <span>{net.name}<small>{net.pads.length} площадок · {missingPads ? `потеряно: ${missingPads}` : net.pads.length < 2 ? 'добавьте площадки' : missing ? `осталось связей: ${missing}` : 'соединена'}{w !== undefined ? ` · дорожка ${fmt(w)} мм` : ''}{lengths.get(net.id)?.tracks ? ` · ${num(lengths.get(net.id)!.length)} мм` : ''}{net.bus ? ` · шина ${net.bus}` : ''}</small></span>
           </button>
           <WidthCell name={net.name} value={w} fallback={defaults.w} on={(v) => setRules(net.id, { w: v })} />
           <button className="btn tiny danger" title={`Удалить группу ${net.name} (дорожки останутся)`} aria-label={`Удалить группу ${net.name}`} onClick={() => onChange(nets.filter((n) => n.id !== net.id))}>×</button>
         </div>;
       })}
     </div>
+    <div className="net-length">
+      <h4>Длины и шины</h4>
+      <div className="hint">Длина цепи — сумма её дорожек, а не путь от источника до приёмника (для ветвистых цепей это важно). Шина — группа цепей одной длины (например, DDR DQ или SPI). «Выровнять» добавляет змейки самым коротким цепям шины.</div>
+      {!summaries.length && <div className="hint">Назначьте цепям шину (поле «Шина» у выбранной группы), чтобы сравнить их длины.</div>}
+      {summaries.map((bus) => <div className="bus-card" key={bus.bus}>
+        <div className="bus-head"><strong>{bus.bus}</strong><span>{bus.nets.length} {bus.nets.length === 1 ? 'цепь' : bus.nets.length < 5 ? 'цепи' : 'цепей'}</span></div>
+        <div className="bus-stats">
+          <span>мин {num(bus.min)} мм</span><span>макс {num(bus.max)} мм</span>
+          <span className={bus.skew <= LENGTH_TOLERANCE * 2 ? 'bus-ok' : 'bus-warn'}>разброс {num(bus.skew, 2)} мм</span>
+          <span>итог {num(bus.total)} мм</span>
+        </div>
+        <ul className="bus-nets">{bus.nets.map((n) => <li key={n.netId}>
+          <span>{n.name}</span><span>{n.tracks ? `${num(n.length, 2)} мм` : 'нет дорожек'}{n.missing ? ' · не соединена' : ''}</span>
+        </li>)}</ul>
+        <div className="row">
+          <button className="btn tiny" disabled={bus.skew <= LENGTH_TOLERANCE * 2 || !heightOk || bus.nets.some((n) => !n.tracks)}
+            title={bus.nets.some((n) => !n.tracks) ? 'Сначала проложите дорожки всем цепям шины' : 'Добавить змейки самым коротким цепям'}
+            onClick={() => onAlignBus(bus.bus, heightValue)}>Выровнять по самой длинной</button>
+        </div>
+      </div>)}
+      <div className="field"><label htmlFor="len-height">Высота зубца, мм</label><input className="txt" id="len-height" inputMode="decimal" value={height} aria-invalid={!heightOk} onChange={(e) => setHeight(e.target.value)} /></div>
+      {!heightOk && <div className="hint bus-warn">Высота — от 0,1 до 5 мм.</div>}
+      {selected && selLen?.tracks ? <div className="net-lengthen">
+        <div className="field"><label htmlFor="len-target">Цель для «{selected.name}», мм</label><input className="txt" id="len-target" inputMode="decimal" value={target} aria-invalid={!targetOk} onChange={(e) => setTarget(e.target.value)} /></div>
+        <div className="hint">Сейчас {num(selLen.length, 2)} мм. Змейка вставляется в прямые участки дорожек цепи и не должна касаться чужой меди.</div>
+        <div className="row"><button className="btn" disabled={!targetOk || !heightOk} onClick={() => onLengthen(selected.id, targetValue, heightValue)}>Добавить змейку</button></div>
+      </div> : selected ? <div className="hint">У «{selected.name}» пока нет дорожек: змейка добавляется к проложенным дорожкам.</div> : null}
+      {lenInfo.msg && <div role="status" className={'route-msg ' + (lenInfo.ok === false ? 'bad' : lenInfo.ok ? 'ok' : '')}>{lenInfo.msg}</div>}
+    </div>
     {selected && <div className="net-rules">
       <div className="field"><label htmlFor="net-name">Имя группы</label><input className="txt" id="net-name" aria-label="Имя группы" value={selected.name} onChange={(e) => onChange(nets.map((n) => n.id === active ? { ...n, name: e.target.value } : n))} /></div>
+      <div className="field"><label htmlFor="net-bus">Шина</label><input className="txt" id="net-bus" list="net-bus-list" aria-label="Шина выравнивания длин" placeholder="например DDR_DQ — пусто, если не нужна" value={selected.bus ?? ''} onChange={(e) => onChange(nets.map((n) => n.id === active ? { ...n, bus: e.target.value.trim() ? e.target.value : undefined } : n))} /></div>
+      <datalist id="net-bus-list">{buses.map((b) => <option key={b} value={b} />)}</datalist>
       <h4>Правила группы</h4>
       <div className="hint" style={{ padding: '0 0 4px' }}>Пустое поле — значение из общих настроек справа. Своя ширина пригодится силовым цепям и «земле», свой зазор — цепям, которым нужен запас.</div>
       <NIO label="Ширина дорожки" value={selected.rules?.w} fallback={defaults.w} min={0.05} max={5}

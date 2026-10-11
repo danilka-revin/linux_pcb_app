@@ -86,6 +86,10 @@ import { ConfirmDialog, MenuBtn, Modal, SplitBtn } from './ui/widgets';
 import { ProgressBar } from './ui/progress';
 import { cloudApi, cloudError, CloudError, type CloudProject, type CloudProjectDetail, type CloudUser } from './cloud/api';
 import { CloudAccountDialog, CloudProjectsDialog, cloudSaveLabel, type CloudSaveState } from './cloud/projects';
+import { ProjectVersionsDialog } from './cloud/versions';
+import { findOnBoard, type FindHit } from './pcb/find';
+import { netLengths, lengthenNet, alignBus, type NetLength } from './pcb/lengths';
+import { FindPanel } from './ui/find';
 
 declare global {
   interface Window {
@@ -509,9 +513,14 @@ export default function App({ cloudUser, onLogout }: { cloudUser?: CloudUser; on
     }
     return { ends, comp: ends.size ? copperComponents(doc.entities) : new Map<string, string>() };
   }, [expanded, doc.entities, tool, routeMode]);
+  // длины цепей — только в режиме групп (там же считается связность меди)
+  const netLen = useMemo(() => (routeMode === 'nets'
+    ? netLengths(doc.entities, doc.nets ?? [])
+    : new Map<string, NetLength>()), [doc.entities, doc.nets, routeMode]);
+  const [lenInfo, setLenInfo] = useState<{ msg: string; ok: boolean | null }>({ msg: '', ok: null });
   const [routeA, setRouteA] = useState<RouteEnd | null>(null);
   const [routeMsg, setRouteMsg] = useState<{ msg: string; ok: boolean | null }>({ msg: '', ok: null });
-  const [dialog, setDialog] = useState<'new' | 'export' | 'cnc' | 'panelize' | 'about' | 'inventory' | 'stats' | 'imgimport' | 'uib' | 'colors' | 'grid' | 'close' | 'cloud' | 'account' | 'board-preview' | 'autoplace' | 'settings' | 'tour' | null>(null);
+  const [dialog, setDialog] = useState<'new' | 'export' | 'cnc' | 'panelize' | 'about' | 'inventory' | 'stats' | 'imgimport' | 'uib' | 'colors' | 'grid' | 'close' | 'cloud' | 'account' | 'versions' | 'board-preview' | 'autoplace' | 'settings' | 'tour' | null>(null);
   // подтверждение опасного действия (удаление по настройке «Подтверждать удаление»)
   const [confirmAsk, setConfirmAsk] = useState<{ title: string; text: string; ok: string; onOk: () => void } | null>(null);
   const [boardPreviewTab, setBoardPreviewTab] = useState<'2d' | '3d'>('2d');
@@ -560,6 +569,14 @@ export default function App({ cloudUser, onLogout }: { cloudUser?: CloudUser; on
   // дорогая база обновляется, лишь когда меняются плата/вид/слои/выделение.
   const baseRef = useRef<HTMLCanvasElement>(null);
   const probeRef = useRef<HTMLCanvasElement>(null);
+  // поиск по плате (Ctrl+Shift+F): подсвечивается выбранный результат
+  const [findOpen, setFindOpen] = useState(false);
+  const [findQuery, setFindQuery] = useState('');
+  const [findActive, setFindActive] = useState(0);
+  const [findFocus, setFindFocus] = useState(0);
+  const findRef = useRef<HTMLCanvasElement>(null);
+  const findHits = useMemo(() => (findOpen && findQuery.trim() ? findOnBoard(doc, findQuery) : []), [findOpen, findQuery, doc]);
+  const findHit: FindHit | null = findOpen ? findHits[findActive] ?? null : null;
   const drcRef = useRef<HTMLCanvasElement>(null);
   const overRef = useRef<HTMLCanvasElement>(null);
   const baseRaf = useRef(0);
@@ -1688,6 +1705,48 @@ export default function App({ cloudUser, onLogout }: { cloudUser?: CloudUser; on
   }, [setQuery]);
 
   // ---------------- автотрассировка ----------------
+  // змейка: ширина и зазор — как у трассировки этой группы (правила группы или общие настройки)
+  const meanderOptsFor = useCallback((net: M.Net, height: number) => ({
+    trackW: net.rules?.w ?? defs.rtW, clearance: net.rules?.clear ?? defs.rtClear, maxHeight: height,
+  }), [defs]);
+  const lengthenNetApp = useCallback((netId: string, target: number, height: number) => {
+    const nets = doc.nets ?? [];
+    const net = nets.find((n) => n.id === netId);
+    if (!net) return;
+    const r = lengthenNet(doc.entities, nets, netId, target, meanderOptsFor(net, height));
+    setLenInfo({ msg: r.message, ok: r.complete });
+    if (r.teeth) commit({ ...doc, entities: r.entities });
+  }, [doc, commit, meanderOptsFor]);
+  const alignBusApp = useCallback((bus: string, height: number) => {
+    const nets = doc.nets ?? [];
+    const r = alignBus(doc.entities, nets, bus, (net) => meanderOptsFor(net, height));
+    setLenInfo({ msg: r.message, ok: r.aligned });
+    if (r.results.some((x) => x.after > x.before)) commit({ ...doc, entities: r.entities });
+  }, [doc, commit, meanderOptsFor]);
+
+  // переход к точке (мм) без смены масштаба
+  const locateAt = useCallback((x: number, y: number) => {
+    setView((v) => ({ ...v, ox: size.w / 2 - (v.mir ? -x : x) * v.s, oy: size.h / 2 + y * v.s }));
+  }, [size]);
+  // переход к найденному: масштаб — чтобы объект занимал около 40% окна; деталь выделяется
+  const pickFind = useCallback((h: FindHit) => {
+    const [x1, y1, x2, y2] = h.box;
+    const w = Math.max(x2 - x1, 2), hh = Math.max(y2 - y1, 2);
+    const s = M.clamp(Math.min((size.w * 0.4) / w, (size.h * 0.4) / hh), 4, 60);
+    const cx = (x1 + x2) / 2, cy = (y1 + y2) / 2;
+    setView((v) => ({ ...v, s, ox: size.w / 2 - (v.mir ? -cx : cx) * s, oy: size.h / 2 + cy * s }));
+    if (h.topId) setSel(new Set([h.topId]));
+  }, [size]);
+
+  // восстановление версии — обычная правка через commit, поэтому отменяется Ctrl+Z
+  const restoreVersion = useCallback((snap: M.Doc) => {
+    const next = M.cloneDoc(snap);
+    commit(next);
+    setSel(new Set()); setDraft(null); setRouteA(null);
+    setDialog(null);
+    setTimeout(() => fit(next), 50);
+  }, [commit, fit]);
+
   const changeNets = useCallback((nets: M.Net[]) => {
     commit({ ...doc, nets });
     setRouteMsg({ msg: '', ok: null });
@@ -2228,6 +2287,7 @@ export default function App({ cloudUser, onLogout }: { cloudUser?: CloudUser; on
       case 'edit.nudgeRight': nudge(stepNudge, 0); return;
       case 'edit.nudgeUp': nudge(0, stepNudge); return;
       case 'edit.nudgeDown': nudge(0, -stepNudge); return;
+      case 'edit.find': setFindOpen(true); setFindFocus((f) => f + 1); return;
 
       // ---------------- вид ----------------
       case 'view.fit': fit(); return;
@@ -2571,6 +2631,23 @@ export default function App({ cloudUser, onLogout }: { cloudUser?: CloudUser; on
       if (probe.ents.has(e.id)) drawEnt(ctx, view, e, { tint: COLORS.probe });
     }
   }, [probe, probeData, tool, view, size, theme, colors, perfLevel.level]);
+
+  // Поиск: подсветка выбранного результата — тот же слой и мигание, что у «Тест цепи»
+  useEffect(() => {
+    const cv = findRef.current;
+    if (!cv) return;
+    const dpr = perfDpr();
+    if (cv.width !== Math.round(size.w * dpr)) cv.width = Math.round(size.w * dpr);
+    if (cv.height !== Math.round(size.h * dpr)) cv.height = Math.round(size.h * dpr);
+    cv.style.width = size.w + 'px';
+    cv.style.height = size.h + 'px';
+    const ctx = cv.getContext('2d')!;
+    ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+    ctx.clearRect(0, 0, size.w, size.h);
+    if (!findHit) return;
+    const ids = new Set(findHit.ids);
+    for (const e of expanded) if (ids.has(e.id)) drawEnt(ctx, view, e, { tint: COLORS.probe });
+  }, [findHit, expanded, view, size, theme, colors, perfLevel.level]);
 
   // Предупреждения DRC («зазор дорожек») — отдельный холст между платой и оверлеем.
   // Пересчёт меток идёт по простоям и при правке, а не каждый кадр, поэтому слой
@@ -3254,6 +3331,7 @@ export default function App({ cloudUser, onLogout }: { cloudUser?: CloudUser; on
             items={[
               { icon: 'save', label: 'Скачать проект файлом (.laypcb.json)', onClick: saveFile },
               ...(cloudUser ? [{ icon: 'cloud', label: 'Мои облачные проекты…', onClick: () => setDialog('cloud') }] : []),
+              ...(cloudUser && activeCloud ? [{ icon: 'cloud', label: 'Версии проекта…', onClick: () => setDialog('versions') }] : []),
               { sep: true },
               { icon: 'gerber', label: 'Экспорт Gerber / PNG / ЧПУ…', kbd: 'Ctrl+E', onClick: () => setDialog('export') },
               { icon: 'cnc', label: 'G-code для фрезерного станка…', onClick: () => setDialog('cnc') },
@@ -3406,6 +3484,7 @@ export default function App({ cloudUser, onLogout }: { cloudUser?: CloudUser; on
             onClick={() => setDialog('cloud')}><Ic n="cloud" size={17} /><span>{cloudStatus === 'saved' ? 'Сохранено' : cloudStatus === 'saving' ? 'Сохранение…' : cloudStatus === 'conflict' ? 'Конфликт' : cloudStatus === 'error' ? 'Ошибка' : activeCloud ? 'Изменения…' : 'Не в облаке'}</span>
             {cloudStatus === 'saving' && <span className="cloud-btn-bar" />}</button>
           <button className="tb-btn cloud-header-projects" type="button" title="Открыть мои проекты на сервере" onClick={() => setDialog('cloud')}>Проекты</button>
+          {activeCloud && <button className="tb-btn cloud-header-versions" type="button" title="Именованные версии проекта: сохранить, сравнить, восстановить" onClick={() => setDialog('versions')}>Версии</button>}
           <button className="tb-btn cloud-header-account" type="button" title={`Учётная запись: ${cloudUser.email}`} onClick={() => setDialog('account')}>
             {cloudUser.email.split('@')[0]}</button>
         </div>}
@@ -3600,6 +3679,7 @@ export default function App({ cloudUser, onLogout }: { cloudUser?: CloudUser; on
           </div>
           {routeMode === 'nets' && <NetsPanel nets={doc.nets ?? []} active={activeNet} setActive={setActiveNet}
             ends={netGeometry.ends} comp={netGeometry.comp} info={routeMsg} onChange={changeNets} onRoute={routeAll}
+            lengths={netLen} lenInfo={lenInfo} onLengthen={lengthenNetApp} onAlignBus={alignBusApp}
             defaults={{ w: defs.rtW, clear: defs.rtClear, viaSize: defs.viaSize, viaDrill: defs.viaDrill, allowTop: defs.rtAllowTop }}
             onNew={() => {
               const id = M.uid();
@@ -3662,6 +3742,7 @@ export default function App({ cloudUser, onLogout }: { cloudUser?: CloudUser; on
     mirrorSel, duplicateSel, deleteSel, setDocSize, setDefs, saveSelFromProps,
     selGroup, canGroupSel, groupSel, ungroupSel, renameGroupCb,
     editEnt, editNode, trackMsg, patchEditNode, deleteEditNode, branchFromSelectedNode, boardClearance, commit, size,
+    netLen, lenInfo, lengthenNetApp, alignBusApp,
   ]);
 
   // ---------------- окно настроек (отдельное окно) ----------------
@@ -3765,6 +3846,8 @@ export default function App({ cloudUser, onLogout }: { cloudUser?: CloudUser; on
           <canvas ref={baseRef} className="canvas-base" />
           <canvas ref={probeRef} aria-hidden="true"
             className={`canvas-probe${tool === 'probe' && probe ? ' is-active' : ''}`} />
+          <canvas ref={findRef} aria-hidden="true"
+            className={`canvas-probe canvas-find${findHit ? ' is-active' : ''}`} />
           <canvas ref={drcRef} aria-hidden="true"
             className={`canvas-drc${hasClearanceMarks ? ' is-active' : ''}`} />
           {/* оверлей: черновики, фантомы, перекрестие; принимает события */}
@@ -3783,6 +3866,10 @@ export default function App({ cloudUser, onLogout }: { cloudUser?: CloudUser; on
               setMouse((m) => ({ ...m, px: -100, py: -100 }));
             }}
           />
+          {findOpen && <FindPanel query={findQuery} hasQuery={!!findQuery.trim()} hits={findHits} active={findActive}
+            focusKey={findFocus}
+            onQuery={(q) => { setFindQuery(q); setFindActive(0); }}
+            onActive={setFindActive} onPick={pickFind} onClose={() => setFindOpen(false)} />}
           {showDock && toolDock}
           <input
             ref={fileRef} type="file" accept=".json,.lay6,application/json"
@@ -3948,6 +4035,10 @@ export default function App({ cloudUser, onLogout }: { cloudUser?: CloudUser; on
         onClose={() => setDialog(null)} onCreate={createCloud} onOpen={loadCloud} onSave={saveCloud}
         onReload={reloadCloud} onRename={renameCloud} onDelete={deleteCloud} onSaveFile={saveFile}
       />}
+      {cloudUser && activeCloud && dialog === 'versions' && <ProjectVersionsDialog
+        project={activeCloud} current={doc} onClose={() => setDialog(null)}
+        onRestore={(d) => restoreVersion(d)}
+        onLocate={(x, y) => { setDialog(null); locateAt(x, y); }} />}
       {cloudUser && dialog === 'account' && <CloudAccountDialog user={cloudUser}
         onClose={() => setDialog(null)} onLogout={logoutCloud} />}
       {dialog === 'close' && (

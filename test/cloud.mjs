@@ -80,12 +80,43 @@ try {
   await api(alice, '/projects', 'POST', { name: 'нет', document: { name: 'нет', w: 1, h: 2, entities: 'bad' } }, 400);
   await api(alice, '/projects', 'POST', { name: 'большой', document: { ...doc, big: 'x'.repeat(8 * 1024 * 1024) } }, 413);
 
+  // именованные версии проекта: снимок, доступ, лимиты и квота
+  const vpath = path + '/versions';
+  assert.equal((await api(alice, vpath)).data.versions.length, 0);
+  const v1 = (await api(alice, vpath, 'POST', { name: 'До трассировки', document: edited }, 201)).data.version;
+  assert.equal(v1.name, 'До трассировки');
+  assert.equal(v1.entityCount, 2);
+  assert.equal((await api(alice, vpath)).data.versions[0].id, v1.id);
+  assert.deepEqual((await api(alice, vpath + '/' + v1.id)).data.version.document, { ...edited, name: 'Новая плата' }, 'снимок хранит документ с текущим названием проекта');
+  assert.equal((await api(alice, path)).data.project.version, 3, 'создание версии не меняет текущий проект');
+  await api(bob, vpath, 'GET', undefined, 404);
+  await api(bob, vpath, 'POST', { name: 'чужая', document: edited }, 404);
+  await api(bob, vpath + '/' + v1.id, 'GET', undefined, 404);
+  await api(bob, vpath + '/' + v1.id, 'DELETE', undefined, 404);
+  await api(alice, vpath, 'POST', { name: '   ', document: edited }, 400);
+  await api(alice, vpath, 'POST', { name: 'плохой', document: { w: 1 } }, 400);
+  await api(alice, vpath, 'POST', { name: 'большая', document: { ...edited, big: 'x'.repeat(8 * 1024 * 1024) } }, 413);
+  await api(alice, '/projects/00000000-0000-4000-8000-000000000000/versions/' + v1.id, 'GET', undefined, 404);
+  const usedWithVersion = (await api(alice, '/projects')).data.usedBytes;
+  assert.ok(usedWithVersion > (await api(alice, path)).data.project.bytes, 'версии входят в квоту');
+  for (let i = 2; i <= 50; i++) await api(alice, vpath, 'POST', { name: 'Версия ' + i, document: edited }, 201);
+  await api(alice, vpath, 'POST', { name: 'Лишняя', document: edited }, 413); // предел 50 версий
+  assert.equal((await api(alice, vpath)).data.versions.length, 50);
+  const usedBeforeDelete = (await api(alice, '/projects')).data.usedBytes;
+  await api(alice, vpath + '/' + v1.id, 'DELETE');
+  await api(alice, vpath + '/' + v1.id, 'DELETE', undefined, 404);
+  assert.equal((await api(alice, vpath)).data.versions.length, 49);
+  assert.ok((await api(alice, '/projects')).data.usedBytes < usedBeforeDelete, 'удаление версии освобождает квоту');
+
   const overview = (await api(admin, '/admin/overview')).data;
   assert.equal(overview.users, 3);
   assert.equal(overview.projects, 1);
+  assert.equal(overview.versions, 49, 'админ видит число версий');
+  assert.ok(overview.bytes > overview.projectBytes, 'объём хранения включает версии');
   const users = (await api(admin, '/admin/users?q=alice')).data;
   assert.equal(users.total, 1);
   assert.equal(users.users[0].projectCount, 1);
+  assert.equal(users.users[0].bytes, (await api(alice, '/projects')).data.usedBytes, 'объём пользователя включает версии');
   const aliceId = users.users[0].id;
   const adminId = adminLogin.data.user.id;
   assert.equal((await api(admin, '/admin/projects?q=%D0%9D%D0%BE%D0%B2%D0%B0%D1%8F')).data.total, 1);
@@ -133,8 +164,11 @@ try {
   server = started.server;
   base = started.url;
   assert.equal((await api(alice, '/projects')).data.projects[0].version, 3);
+  assert.equal((await api(alice, vpath)).data.versions.length, 49, 'версии переживают перезапуск');
   await api(admin, '/admin/projects/' + created.id, 'DELETE');
   assert.equal((await api(alice, '/projects')).data.projects.length, 0);
+  assert.equal((await api(alice, '/projects')).data.usedBytes, 0, 'удаление проекта удаляет версии и освобождает квоту');
+  await api(alice, vpath, 'GET', undefined, 404);
   await api(alice, '/projects', 'POST', { name: 'Будет удалён вместе с владельцем', document: doc }, 201);
   await api(admin, '/admin/users/' + aliceId, 'DELETE');
   assert.equal((await api(alice, '/me', 'GET', undefined, 401)).data.ok, false);
