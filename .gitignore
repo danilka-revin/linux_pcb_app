@@ -2,6 +2,7 @@ node_modules/
 dist/
 release/
 *.local
+.env
 .DS_Store
 dist.old/
 dist.new/
