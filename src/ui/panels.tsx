@@ -324,6 +324,12 @@ function entityEditor(
     case 'comp':
       return (<>
         <div className="sub">Компонент: <b>{e.name}</b></div>
+        <TI label="Обозначение" value={e.ref ?? ''} on={(v) => patch({ ref: v.toUpperCase() })} />
+        <TI label="Номинал / значение" value={e.value ?? e.name} on={(v) => patch({ value: v })} />
+        <TI label="Корпус / footprint" value={e.footprint ?? e.name} on={(v) => patch({ footprint: v })} />
+        <TI label="Производитель" value={e.manufacturer ?? ''} on={(v) => patch({ manufacturer: v })} />
+        <TI label="Артикул (MPN)" value={e.mpn ?? ''} on={(v) => patch({ mpn: v })} />
+        <TI label="Ссылка на даташит" value={e.datasheet ?? ''} on={(v) => patch({ datasheet: v })} />
         <NI label="X, мм" value={e.x} on={(v) => patch({ x: v })} />
         <NI label="Y, мм" value={e.y} on={(v) => patch({ y: v })} />
         <SI label="Поворот" value={String(e.rot)} options={[['0', '0°'], ['90', '90°'], ['180', '180°'], ['270', '270°']]} on={(v) => patch({ rot: Number(v) })} />

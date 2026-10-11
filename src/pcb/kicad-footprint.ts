@@ -255,6 +255,7 @@ export function parseKicadFootprint(source: string): ParsedKicadFootprint {
     if (!primitive) continue;
     const kind = tag(primitive);
     if (kind === 'pad') {
+      const padNumber = atom(primitive[1]) ?? '';
       const padType = atom(primitive[2]) ?? '';
       const padShape = atom(primitive[3]) ?? '';
       const position = at(primitive);
@@ -276,7 +277,8 @@ export function parseKicadFootprint(source: string): ParsedKicadFootprint {
           warnings.add('Углы SMD-площадок, отличные от 0°/90°, округлены до ближайших 90°.');
         }
         for (const layer of sides) {
-          add({ kind: 'smd', x: r3(x), y: r3(ky), w: r3(dims[0]), h: r3(dims[1]), rot: rotation, layer });
+          add({ kind: 'smd', x: r3(x), y: r3(ky), w: r3(dims[0]), h: r3(dims[1]), rot: rotation, layer,
+            ...(padNumber ? { pin: padNumber } : {}) });
           stats.smd++;
         }
       } else if (padType === 'thru_hole' || padType === 'np_thru_hole') {
@@ -290,7 +292,8 @@ export function parseKicadFootprint(source: string): ParsedKicadFootprint {
         } else {
           const diameter = Math.max(dims[0], dims[1]);
           const shape = padShape === 'circle' ? 'round' : padShape === 'octagon' ? 'oct' : 'square';
-          add({ kind: 'pad', x: r3(x), y: r3(ky), size: r3(diameter), drill: r3(holeD), shape });
+          add({ kind: 'pad', x: r3(x), y: r3(ky), size: r3(diameter), drill: r3(holeD), shape,
+            ...(padNumber ? { pin: padNumber } : {}) });
           stats.plated++;
           if (Math.abs(dims[0] - dims[1]) > 0.02 || ['oval', 'roundrect', 'custom', 'trapezoid'].includes(padShape)) {
             warnings.add('Овальные/скруглённые/нестандартные PTH-площадки приближены круглой или квадратной площадкой.');

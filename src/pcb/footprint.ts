@@ -19,8 +19,8 @@ import type { PadShape } from './model';
 export type LibLayer = 's1' | 's2';
 
 export type LibEl =
-  | { kind: 'pad'; x: number; y: number; shape: PadShape; size: number; drill: number }
-  | { kind: 'smd'; x: number; y: number; w: number; h: number; rot: number; layer: 'k1' | 'k2' }
+  | { kind: 'pad'; x: number; y: number; shape: PadShape; size: number; drill: number; pin?: string }
+  | { kind: 'smd'; x: number; y: number; w: number; h: number; rot: number; layer: 'k1' | 'k2'; pin?: string }
   | { kind: 'hole'; x: number; y: number; d: number }
   | { kind: 'line'; x1: number; y1: number; x2: number; y2: number; w: number; layer: LibLayer }
   | { kind: 'rect'; x: number; y: number; w: number; h: number; th: number; layer: LibLayer }

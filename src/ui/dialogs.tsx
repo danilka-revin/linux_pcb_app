@@ -3,6 +3,7 @@ import { useState } from 'react';
 import { Modal, NI, TI } from './widgets';
 import { ACCENT_PRESETS, THEME_BASE, type CustomColors } from './palette';
 import type { ThemeId } from '../pcb/render';
+import type { PanelizeOptions } from '../pcb/panelize';
 
 export interface ExportPngOpts {
   layer: 'k1' | 'k2' | 's1' | 's2' | 'outline';
@@ -134,29 +135,54 @@ export function PanelizeDialog({
 }: {
   defX: number;
   defY: number;
-  onOk: (cols: number, rows: number, gx: number, gy: number) => void;
+  onOk: (options: PanelizeOptions) => void;
   onClose: () => void;
 }) {
   const [cols, setCols] = useState(2);
   const [rows, setRows] = useState(1);
-  const [gx, setGx] = useState(defX);
-  const [gy, setGy] = useState(defY);
+  const [stepX, setStepX] = useState(defX);
+  const [stepY, setStepY] = useState(defY);
+  const [railWidth, setRailWidth] = useState(5);
+  const [toolingHoles, setToolingHoles] = useState(true);
+  const [toolingHoleDia, setToolingHoleDia] = useState(3.2);
+  const [fiducials, setFiducials] = useState(true);
+  const [breakawayTabs, setBreakawayTabs] = useState(false);
+  const [tabWidth, setTabWidth] = useState(5);
+  const [mouseBiteDia, setMouseBiteDia] = useState(0.5);
+  const [mouseBitePitch, setMouseBitePitch] = useState(0.8);
+  const [vCutColumns, setVCutColumns] = useState(false);
+  const [vCutRows, setVCutRows] = useState(false);
+  const apply = (): void => onOk({ cols, rows, stepX, stepY, railWidth, toolingHoles, toolingHoleDia,
+    fiducials, breakawayTabs, tabWidth, mouseBiteDia, mouseBitePitch, vCutColumns, vCutRows });
   return (
     <Modal
-      title="Размножить плату (панелизация)"
+      title="Панелизация для производства"
+      className="panelize-modal"
       onClose={onClose}
-      foot={
-        <>
-          <button className="btn" onClick={onClose}>Отмена</button>
-          <button className="btn primary" onClick={() => onOk(cols, rows, gx, gy)}>Применить</button>
-        </>
-      }
+      foot={<><button className="btn" onClick={onClose}>Отмена</button><button className="btn primary" onClick={apply}>Создать панель</button></>}
     >
-      <NI label="Колонок (по X)" value={cols} min={1} max={10} step={1} on={setCols} />
-      <NI label="Рядов (по Y)" value={rows} min={1} max={10} step={1} on={setRows} />
-      <NI label="Шаг по X, мм" value={gx} min={1} on={setGx} />
-      <NI label="Шаг по Y, мм" value={gy} min={1} on={setGy} />
-      <p>Все элементы платы будут продублированы сеткой колонки × ряды с заданным шагом.</p>
+      <div className="panelize-grid">
+        <NI label="Колонок по X" value={cols} min={1} max={10} step={1} on={setCols} />
+        <NI label="Рядов по Y" value={rows} min={1} max={10} step={1} on={setRows} />
+        <NI label="Шаг X, мм" value={stepX} min={1} on={setStepX} />
+        <NI label="Шаг Y, мм" value={stepY} min={1} on={setStepY} />
+        <NI label="Ширина технологической рейки, мм" value={railWidth} min={0} max={30} on={setRailWidth} />
+      </div>
+      <div className="panelize-feature-grid">
+        <label className="chk"><input type="checkbox" checked={toolingHoles} onChange={(e) => setToolingHoles(e.target.checked)} />Добавить 4 отверстия оснастки</label>
+        {toolingHoles && <NI label="Диаметр оснастки, мм" value={toolingHoleDia} min={0.5} max={10} on={setToolingHoleDia} />}
+        <label className="chk"><input type="checkbox" checked={fiducials} onChange={(e) => setFiducials(e.target.checked)} />Добавить 3 реперные метки</label>
+        <label className="chk"><input type="checkbox" checked={breakawayTabs} onChange={(e) => setBreakawayTabs(e.target.checked)} />Breakaway tabs + mouse-bites</label>
+        {breakawayTabs && <>
+          <NI label="Ширина таба, мм" value={tabWidth} min={2} max={20} on={setTabWidth} />
+          <NI label="Диаметр mouse-bite, мм" value={mouseBiteDia} min={0.2} max={2} on={setMouseBiteDia} />
+          <NI label="Шаг mouse-bite, мм" value={mouseBitePitch} min={0.3} max={5} on={setMouseBitePitch} />
+        </>}
+        <label className="chk"><input type="checkbox" checked={vCutColumns} onChange={(e) => setVCutColumns(e.target.checked)} />V-cut между колонками</label>
+        <label className="chk"><input type="checkbox" checked={vCutRows} onChange={(e) => setVCutRows(e.target.checked)} />V-cut между рядами</label>
+      </div>
+      <p>Плата повторяется с заданным шагом. Рейки, отверстия и реперы добавляются в панель; V-cut экспортируется отдельным Gerber-guide файлом. При tabs контуры плат получают разрывы под перемычки, а mouse-bites — отверстия Excellon.</p>
+      <div className="hint">Параметры панели и V-cut — технологические указания. Перед заказом подтвердите размеры, ширину табов, диаметр и шаг сверления, а также правила V-cut у изготовителя. Mouse-bites формируются на прямых общих сторонах контура; сложные контуры требуют ручной проверки.</div>
     </Modal>
   );
 }

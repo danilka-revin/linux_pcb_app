@@ -27,6 +27,7 @@ export interface Pad extends Base {
   shape: PadShape;
   size: number;   // диаметр / сторона, мм
   drill: number;  // диаметр отверстия, мм (0 = без отверстия)
+  pin?: string;   // номер вывода футпринта (для импорта цепей KiCad)
   noPlate?: boolean; // без металлизации отверстия (типично для самодельных плат Sprint-Layout)
 }
 
@@ -37,6 +38,7 @@ export interface Smd extends Base {
   w: number; h: number;
   rot: number;    // 0 или 90
   layer: 'k1' | 'k2';
+  pin?: string;   // номер вывода футпринта (для импорта цепей KiCad)
 }
 
 /** Дорожка (полилиния с шириной) */
@@ -126,6 +128,13 @@ export interface Comp extends Base {
   kind: 'comp';
   lib: string; // служебное: пустое поле у деталей из генератора (см. ents)
   name: string;
+  /** Обозначение, номинал и данные закупки для BOM и netlist. */
+  ref?: string;
+  value?: string;
+  footprint?: string;
+  manufacturer?: string;
+  mpn?: string;
+  datasheet?: string;
   x: number; y: number;
   rot: number;
   side: 'top' | 'bottom';
@@ -154,8 +163,22 @@ export interface Net {
   name: string;
   pads: string[];
   rules?: NetRules;   // личная ширина/зазор группы (в .lay6 не переносится)
+  /** источник группы: ручная разметка или netlist KiCad */
+  source?: 'manual' | 'kicad';
   /** шина выравнивания длин: группы с одинаковым именем выравниваются по самой длинной */
   bus?: string;
+}
+
+/** Настройки и пара электрических цепей для дифференциальной пары. */
+export interface DifferentialPair {
+  id: string;
+  name: string;
+  positiveNetId: string;
+  negativeNetId: string;
+  targetOhm: number;
+  widthMm: number;
+  gapMm: number;
+  maxSkewMm: number;
 }
 
 /**
@@ -179,12 +202,26 @@ export interface BoardComment {
   resolved?: boolean;
 }
 
+/** Производственные атрибуты панелизации, не являющиеся обычной геометрией платы. */
+export interface PanelInfo {
+  cols: number;
+  rows: number;
+  breakawayTabs: boolean;
+  /** Panel perimeter is exported to the outline Gerber but is not a board copper region. */
+  railBounds?: { x: number; y: number; w: number; h: number };
+  /** Fiducials and tooling/mouse-bite drillings are manufacturing-panel features. */
+  featureIds?: string[];
+  vCuts: { x1: number; y1: number; x2: number; y2: number }[];
+}
+
 export interface Doc {
   name: string;
   w: number; // ширина рабочего поля / платы без замкнутого контура, мм
   h: number; // высота рабочего поля / платы без замкнутого контура, мм
   entities: Entity[];
   nets?: Net[]; // сохраняются в проекте JSON, не в Sprint-Layout
+  diffPairs?: DifferentialPair[]; // правила пар хранятся в проекте JSON, не в Sprint-Layout
+  panelInfo?: PanelInfo; // технологические данные панелизации и V-cut для экспорта Gerber
   ignoredClearance?: string[]; // geometry-bound DRC exceptions, stored in JSON projects
   groups?: Group[]; // сохраняются в проекте JSON, не в Sprint-Layout
   comments?: BoardComment[]; // заметки ревью: JSON/облако, отдельно от производственной геометрии
