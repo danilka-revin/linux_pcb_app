@@ -48,7 +48,9 @@ if (!['create-admin', 'reset-admin-password', 'reset-user-password'].includes(ac
     if (action === 'create-admin') await store.createAdmin(email, password);
     else if (action === 'reset-admin-password') await store.resetAdminPassword(email, password);
     else await store.resetUserPassword(email, password);
-    console.log(action === 'create-admin' ? 'Администратор создан. Теперь можно войти через браузер.' : 'Пароль изменён, все старые сеансы отозваны. Передайте новый пароль лично и попросите его сменить после входа.');
+    console.log(action === 'create-admin' ? 'Администратор создан. Теперь можно войти через браузер.'
+      : action === 'reset-user-password' ? 'Пароль изменён, все старые сеансы отозваны. Передайте его пользователю лично: при следующем входе потребуется задать новый пароль.'
+        : 'Пароль администратора изменён, все старые сеансы отозваны.');
   } catch (e) {
     console.error('Ошибка:', e?.message || e);
     process.exitCode = 1;

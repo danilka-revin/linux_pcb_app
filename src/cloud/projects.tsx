@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useMemo, useState, type FormEvent } from 'react';
 import { download } from '../pcb/zip';
 import { Modal } from '../ui/widgets';
-import { cloudApi, cloudBytes, cloudDate, cloudError, type CloudProject, type CloudProjectDetail, type CloudUser } from './api';
+import { cloudApi, cloudBytes, cloudDate, cloudError, type CloudProject, type CloudProjectDetail, type CloudUser, type ProjectMember } from './api';
 import { ProgressBar, StatBar } from '../ui/progress';
 
 export type CloudSaveState = 'local' | 'saved' | 'dirty' | 'saving' | 'error' | 'conflict';
@@ -15,9 +15,10 @@ const LABELS: Record<CloudSaveState, string> = {
 };
 export function cloudSaveLabel(status: CloudSaveState): string { return LABELS[status]; }
 
-export function CloudProjectsDialog({ current, docName, status, statusMessage, onClose, onCreate,
+export function CloudProjectsDialog({ current, userId, docName, status, statusMessage, onClose, onCreate,
   onOpen, onSave, onReload, onRename, onDelete, onSaveFile }: {
   current: CloudProject | null;
+  userId: string;
   docName: string;
   status: CloudSaveState;
   statusMessage: string;
@@ -38,6 +39,10 @@ export function CloudProjectsDialog({ current, docName, status, statusMessage, o
   const [loading, setLoading] = useState(true);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState('');
+  const [shareProject, setShareProject] = useState<CloudProject | null>(null);
+  const [members, setMembers] = useState<ProjectMember[]>([]);
+  const [shareEmail, setShareEmail] = useState('');
+  const [shareBusy, setShareBusy] = useState(false);
   const load = useCallback(async () => {
     const data = await cloudApi<{ projects: CloudProject[]; usedBytes: number; quotaBytes: number }>('/projects');
     setItems(data.projects); setUsed(data.usedBytes); setQuota(data.quotaBytes);
@@ -55,10 +60,41 @@ export function CloudProjectsDialog({ current, docName, status, statusMessage, o
     const data = await cloudApi<{ project: CloudProjectDetail }>(`/projects/${project.id}`);
     download(`${data.project.name || 'board'}.laypcb.json`, new Blob([JSON.stringify(data.project.document, null, 1)], { type: 'application/json' }));
   });
+  const showMembers = async (project: CloudProject) => {
+    setShareProject(project); setShareEmail(''); setShareBusy(true); setError('');
+    try {
+      const result = await cloudApi<{ members: ProjectMember[] }>(`/projects/${project.id}/members`);
+      setMembers(result.members);
+    } catch (e) { setError(cloudError(e)); }
+    finally { setShareBusy(false); }
+  };
+  const refreshMembers = async (project: CloudProject) => {
+    const result = await cloudApi<{ members: ProjectMember[] }>(`/projects/${project.id}/members`);
+    setMembers(result.members);
+  };
+  const inviteMember = async (e: FormEvent) => {
+    e.preventDefault();
+    if (!shareProject || !shareEmail.trim()) return;
+    setShareBusy(true); setError('');
+    try {
+      await cloudApi(`/projects/${shareProject.id}/members`, 'POST', { email: shareEmail.trim() });
+      setShareEmail(''); await refreshMembers(shareProject); await load();
+    } catch (err) { setError(cloudError(err)); }
+    finally { setShareBusy(false); }
+  };
+  const removeMember = async (member: ProjectMember) => {
+    if (!shareProject || !window.confirm(`Отозвать у ${member.email} доступ к плате «${shareProject.name}»?`)) return;
+    setShareBusy(true); setError('');
+    try {
+      await cloudApi(`/projects/${shareProject.id}/members/${member.id}`, 'DELETE');
+      await refreshMembers(shareProject); await load();
+    } catch (err) { setError(cloudError(err)); }
+    finally { setShareBusy(false); }
+  };
 
   return <Modal title="Облачные проекты" className="cloud-projects-modal" onClose={onClose}
     foot={<button className="btn" onClick={onClose}>Закрыть</button>}>
-    <p>Личное хранилище на этом сервере. Ваши проекты не видны другим пользователям; администратор может просмотреть и скачать их.</p>
+    <p>Платы приватны, пока вы не пригласите второго пользователя. Участники с доступом редактируют одну плату совместно; администратор сервера может просмотреть и скачать проекты.</p>
     <div className={'cloud-sync-banner ' + status} role="status">
       <span className="cloud-sync-dot" />
       <div><strong>{current ? current.name : 'Новая плата'}</strong><small>{cloudSaveLabel(status)}{statusMessage ? ` · ${statusMessage}` : ''}</small></div>
@@ -92,21 +128,46 @@ export function CloudProjectsDialog({ current, docName, status, statusMessage, o
     <div className="cloud-list">
       {loading && <ProgressBar label="Загружаем проекты…" indeterminate live meta="запрашиваем список у сервера" />}
       {!loading && !shown.length && <p>{filter ? 'По вашему запросу ничего не найдено.' : 'Пока нет облачных проектов. Сохраните первую плату выше.'}</p>}
-      {shown.map((p) => <div className={'cloud-list-item' + (p.id === current?.id ? ' current' : '')} key={p.id}>
-        <div className="cloud-list-meta"><strong>{p.name}{p.id === current?.id && <span className="cloud-pill ok">Открыт</span>}</strong>
-          <small>{cloudDate(p.updatedAt)} · {p.entityCount} эл. · {cloudBytes(p.bytes)} · версия {p.version}</small></div>
-        <div className="cloud-list-actions">
-          <button className="btn tiny" disabled={busy || p.id === current?.id} onClick={() => void perform(async () => { if (await onOpen(p)) onClose(); })}>Открыть</button>
-          <button className="btn tiny" disabled={busy} onClick={() => {
-            const next = window.prompt('Новое название проекта:', p.name);
-            if (next && next.trim() !== p.name) void perform(() => onRename(p.id === current?.id ? current : p, next));
-          }}>Переименовать</button>
-          <button className="btn tiny" disabled={busy} onClick={() => exportProject(p)}>Скачать</button>
-          <button className="btn tiny danger" disabled={busy} onClick={() => {
-            if (window.confirm(`Безвозвратно удалить «${p.name}» из облака?`)) void perform(() => onDelete(p.id === current?.id ? current : p));
-          }}>Удалить</button>
-        </div>
-      </div>)}
+      {shown.map((p) => {
+        const isOwner = p.ownerId === userId;
+        const isSharedPanel = shareProject?.id === p.id;
+        return <div className="cloud-project-entry" key={p.id}>
+          <div className={'cloud-list-item' + (p.id === current?.id ? ' current' : '')}>
+            <div className="cloud-list-meta"><strong>{p.name}{p.id === current?.id && <span className="cloud-pill ok">Открыт</span>}
+              {!isOwner && <span className="cloud-pill">Общая</span>}</strong>
+              <small>{cloudDate(p.updatedAt)} · {p.entityCount} эл. · {cloudBytes(p.bytes)} · версия {p.version}
+                {!isOwner && ` · владелец: ${p.ownerEmail ?? 'другой пользователь'}`}</small></div>
+            <div className="cloud-list-actions">
+              <button className="btn tiny" disabled={busy || p.id === current?.id} onClick={() => void perform(async () => { if (await onOpen(p)) onClose(); })}>Открыть</button>
+              <button className="btn tiny" disabled={busy} onClick={() => void showMembers(p)}>{isSharedPanel ? 'Обновить доступ' : 'Участники'}</button>
+              <button className="btn tiny" disabled={busy || !isOwner} title={isOwner ? 'Переименовать проект' : 'Переименовывать может владелец'} onClick={() => {
+                const next = window.prompt('Новое название проекта:', p.name);
+                if (next && next.trim() !== p.name) void perform(() => onRename(p.id === current?.id ? current : p, next));
+              }}>Переименовать</button>
+              <button className="btn tiny" disabled={busy} onClick={() => exportProject(p)}>Скачать</button>
+              <button className="btn tiny danger" disabled={busy || !isOwner} title={isOwner ? 'Удалить проект' : 'Удалять может владелец'} onClick={() => {
+                if (window.confirm(`Безвозвратно удалить «${p.name}» из облака?`)) void perform(() => onDelete(p.id === current?.id ? current : p));
+              }}>Удалить</button>
+            </div>
+          </div>
+          {isSharedPanel && <section className="cloud-sharing-panel">
+            <div><strong>Совместная работа · {p.name}</strong><small>{isOwner ? 'Управлять доступом может владелец.' : 'Доступ выдан владельцем проекта.'}</small></div>
+            {shareBusy ? <ProgressBar slim live indeterminate label="Загружаем участников…" /> : <ul>
+              {members.map((member) => <li key={member.id}>
+                <span><b>{member.email}</b><small>{member.role === 'owner' ? 'Владелец' : 'Редактор'}</small></span>
+                {isOwner && member.role === 'editor' && <button className="btn tiny danger" disabled={shareBusy} onClick={() => void removeMember(member)}>Отозвать доступ</button>}
+              </li>)}
+            </ul>}
+            {isOwner && <form className="cloud-share-form" onSubmit={(e) => void inviteMember(e)}>
+              <label htmlFor={`share-${p.id}`}>Пригласить пользователя по почте</label>
+              <div><input id={`share-${p.id}`} className="txt" type="email" autoComplete="email" required maxLength={254}
+                value={shareEmail} onChange={(e) => setShareEmail(e.target.value)} placeholder="colleague@example.com" />
+                <button className="btn primary" type="submit" disabled={shareBusy || members.some((member) => member.role === 'editor')}>Добавить редактора</button></div>
+              <small>Пользователь должен сначала зарегистрироваться. Всего к плате подключаются владелец и один редактор.</small>
+            </form>}
+          </section>}
+        </div>;
+      })}
     </div>
     {error && <div className="cloud-error" role="alert">{error}</div>}
     <p className="cloud-footnote">Работаете на нескольких компьютерах? Откройте проект из списка. При одновременном редактировании старая версия не затрёт новую.</p>

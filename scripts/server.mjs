@@ -404,7 +404,10 @@ export async function startServer(opts = {}) {
       throw new Error('PSBEES_USER_QUOTA_MB: укажите целое число от 8 до 1000000.');
     }
     const { createCloudService } = await import('./cloud.mjs');
-    cloud = await createCloudService(dataPath, { quotaBytes: opts.cloudQuotaBytes ?? quotaMb * 1024 * 1024 });
+    cloud = await createCloudService(dataPath, {
+      quotaBytes: opts.cloudQuotaBytes ?? quotaMb * 1024 * 1024,
+      ...(opts.cloudMailer ? { mailer: opts.cloudMailer } : {}),
+    });
   }
 
   // как устроен «каталог приложения»:

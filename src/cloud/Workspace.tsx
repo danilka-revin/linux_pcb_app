@@ -27,18 +27,53 @@ function AuthScreen({ config, onLogin }: { config: CloudConfig; onLogin: (user: 
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
   const [confirm, setConfirm] = useState('');
+  const [code, setCode] = useState('');
+  const [challenge, setChallenge] = useState<{ challengeId: string; email: string; expiresAt: number } | null>(null);
+  const [resendIn, setResendIn] = useState(0);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState('');
-  const submit = async (e: FormEvent) => {
+  const action = register ? 'register' : 'login';
+
+  useEffect(() => {
+    if (resendIn <= 0) return;
+    const timer = window.setTimeout(() => setResendIn((value) => Math.max(0, value - 1)), 1000);
+    return () => window.clearTimeout(timer);
+  }, [resendIn]);
+
+  const submitCredentials = async (e: FormEvent) => {
     e.preventDefault();
     if (register && password !== confirm) { setError('Пароли не совпадают.'); return; }
     setBusy(true); setError('');
     try {
-      const result = await cloudApi<{ user: CloudUser }>(register ? '/register' : '/login', 'POST', { email, password });
+      const result = await cloudApi<{ challengeId: string; email: string; expiresAt: number; resendAfterSeconds: number }>(
+        register ? '/register' : '/login', 'POST', { email, password },
+      );
+      setChallenge(result); setCode(''); setPassword(''); setConfirm(''); setResendIn(result.resendAfterSeconds || 60);
+    } catch (err) { setError(cloudError(err)); }
+    finally { setBusy(false); }
+  };
+  const verifyCode = async (e: FormEvent) => {
+    e.preventDefault();
+    setBusy(true); setError('');
+    try {
+      const result = await cloudApi<{ user: CloudUser }>(`/${action}/verify`, 'POST', { challengeId: challenge?.challengeId, code });
       onLogin(result.user);
     } catch (err) { setError(cloudError(err)); }
     finally { setBusy(false); }
   };
+  const resendCode = async () => {
+    if (!challenge) return;
+    setBusy(true); setError('');
+    try {
+      const result = await cloudApi<{ challengeId: string; email: string; expiresAt: number; resendAfterSeconds: number }>(
+        `/${action}/resend`, 'POST', { challengeId: challenge.challengeId },
+      );
+      setChallenge(result); setCode(''); setResendIn(result.resendAfterSeconds || 60);
+    } catch (err) { setError(cloudError(err)); }
+    finally { setBusy(false); }
+  };
+  const backToCredentials = () => { setChallenge(null); setCode(''); setError(''); };
+
   return (
     <div className="cloud-gate">
       <div className="cloud-auth">
@@ -46,9 +81,11 @@ function AuthScreen({ config, onLogin }: { config: CloudConfig; onLogin: (user: 
           <img src="/logo.png" width={54} height={54} alt="PSBees" />
           <div><b>PS<em>Bees</em></b><span>Общее рабочее пространство для печатных плат</span></div>
         </div>
-        <h1>{register ? 'Создать учётную запись' : 'Войти в PSBees'}</h1>
-        <p>Ваши проекты хранятся на этом сервере и доступны с других компьютеров после входа.</p>
-        <form onSubmit={(e) => void submit(e)}>
+        <h1>{challenge ? 'Подтвердите вход' : register ? 'Создать учётную запись' : 'Войти в PSBees'}</h1>
+        <p>{challenge
+          ? `Одноразовый код отправлен на ${challenge.email}. Он действует 10 минут.`
+          : 'Ваши проекты хранятся на этом сервере и доступны с других компьютеров после входа.'}</p>
+        {!challenge ? <form onSubmit={(e) => void submitCredentials(e)}>
           <label htmlFor="auth-email">Электронная почта</label>
           <input id="auth-email" className="txt" type="email" autoComplete="email" required autoFocus
             value={email} onChange={(e) => setEmail(e.target.value)} placeholder="name@example.com" maxLength={254} />
@@ -62,19 +99,70 @@ function AuthScreen({ config, onLogin }: { config: CloudConfig; onLogin: (user: 
               value={confirm} onChange={(e) => setConfirm(e.target.value)} />
           </>}
           {error && <div className="cloud-error" role="alert">{error}</div>}
-          <button className="btn primary" disabled={busy} type="submit">{busy ? 'Подождите…' : register ? 'Зарегистрироваться' : 'Войти'}</button>
+          <button className="btn primary" disabled={busy} type="submit">{busy ? 'Отправляем код…' : register ? 'Продолжить регистрацию' : 'Продолжить'}</button>
           {busy && <ProgressBar slim live indeterminate title="Отправляем данные учётной записи" />}
-        </form>
-        {config.registrationOpen && (
+        </form> : <form onSubmit={(e) => void verifyCode(e)}>
+          <label htmlFor="auth-code">Код из письма</label>
+          <input id="auth-code" className="txt" type="text" inputMode="numeric" autoComplete="one-time-code"
+            pattern="[0-9]{6}" maxLength={6} minLength={6} required autoFocus value={code}
+            onChange={(e) => setCode(e.target.value.replace(/\D/g, '').slice(0, 6))} placeholder="000000" />
+          {error && <div className="cloud-error" role="alert">{error}</div>}
+          <button className="btn primary" disabled={busy || code.length !== 6} type="submit">{busy ? 'Проверяем…' : 'Подтвердить'}</button>
+          {busy && <ProgressBar slim live indeterminate title="Проверяем одноразовый код" />}
+          <button className="cloud-switch" type="button" disabled={busy || resendIn > 0} onClick={() => void resendCode()}>
+            {resendIn > 0 ? `Отправить код повторно через ${resendIn} с` : 'Отправить код повторно'}
+          </button>
+          <button className="cloud-switch" type="button" disabled={busy} onClick={backToCredentials}>Вернуться к вводу почты и пароля</button>
+        </form>}
+        {!challenge && config.registrationOpen && (
           <button className="cloud-switch" type="button" onClick={() => { setRegister(!register); setError(''); setPassword(''); setConfirm(''); }}>
             {register ? 'Уже есть учётная запись? Войти' : 'Нет аккаунта? Зарегистрироваться по почте'}
           </button>
         )}
-        {!config.registrationOpen && <div className="cloud-auth-note">Регистрация закрыта администратором. Обратитесь к нему за доступом.</div>}
-        <div className="cloud-auth-note">Этот сервер не подтверждает владение почтой. Используйте свой адрес и надёжный пароль.</div>
+        {!challenge && !config.registrationOpen && <div className="cloud-auth-note">Регистрация закрыта администратором. Обратитесь к нему за доступом.</div>}
+        <div className="cloud-auth-note">При регистрации и каждом входе требуется одноразовый код из письма. Не передавайте его другим.</div>
       </div>
     </div>
   );
+}
+
+export function ForcedPasswordChange({ email, onChanged, onLogout }: {
+  email: string; onChanged: (user: CloudUser) => void; onLogout: () => Promise<void>;
+}) {
+  const [password, setPassword] = useState('');
+  const [confirm, setConfirm] = useState('');
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState('');
+  const submit = async (e: FormEvent) => {
+    e.preventDefault();
+    if (password !== confirm) { setError('Пароли не совпадают.'); return; }
+    setBusy(true); setError('');
+    try {
+      await cloudApi('/password', 'POST', { newPassword: password });
+      const result = await cloudApi<{ user: CloudUser }>('/me');
+      onChanged(result.user);
+    } catch (err) { setError(cloudError(err)); }
+    finally { setBusy(false); }
+  };
+  return <div className="cloud-gate"><div className="cloud-auth">
+    <div className="cloud-auth-brand"><img src="/logo.png" width={54} height={54} alt="PSBees" />
+      <div><b>PS<em>Bees</em></b><span>Защита учётной записи</span></div></div>
+    <h1>Задайте новый пароль</h1>
+    <p>Для учётной записи {email} администратор выдал временный пароль. Перед продолжением работы его необходимо заменить.</p>
+    <form onSubmit={(e) => void submit(e)}>
+      <label htmlFor="forced-password">Новый пароль</label>
+      <input id="forced-password" className="txt" type="password" autoComplete="new-password" required minLength={10} maxLength={128}
+        autoFocus value={password} onChange={(e) => setPassword(e.target.value)} placeholder="Не менее 10 символов" />
+      <label htmlFor="forced-password-confirm">Повторите новый пароль</label>
+      <input id="forced-password-confirm" className="txt" type="password" autoComplete="new-password" required minLength={10} maxLength={128}
+        value={confirm} onChange={(e) => setConfirm(e.target.value)} />
+      {error && <div className="cloud-error" role="alert">{error}</div>}
+      <button className="btn primary" disabled={busy} type="submit">{busy ? 'Сохраняем…' : 'Сохранить новый пароль'}</button>
+      {busy && <ProgressBar slim live indeterminate title="Обновляем пароль" />}
+    </form>
+    <div className="cloud-auth-note">После смены продолжайте работать с проектами. Пароль хранится на сервере только в виде стойкого scrypt-хеша.</div>
+    <button className="cloud-switch" type="button" disabled={busy} onClick={() => void onLogout()}>Выйти</button>
+  </div></div>;
 }
 
 export default function Workspace() {
@@ -124,6 +212,8 @@ export default function Workspace() {
     ? <div className="cloud-gate"><div className="cloud-auth"><h1>Админ-панель недоступна</h1><p>Запустите общий сервер с PSBEES_DATA_DIR и откройте его адрес.</p><a className="btn" href="/">Вернуться к редактору</a></div></div>
     : <App />;
   if (!gate.user) return <AuthScreen config={gate.config} onLogin={(user) => setGate((prev) => prev && ({ ...prev, user }))} />;
+  if (gate.user.mustChangePassword) return <ForcedPasswordChange email={gate.user.email}
+    onChanged={(user) => setGate((prev) => prev && ({ ...prev, user }))} onLogout={logout} />;
   if (isAdminPage) return gate.user.role === 'admin'
     ? <AdminApp user={gate.user} onLogout={logout} />
     : <div className="cloud-gate"><div className="cloud-auth"><h1>Нет доступа</h1><p>Раздел доступен только администратору сервера.</p><a className="btn primary" href="/">К редактору</a></div></div>;
