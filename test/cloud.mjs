@@ -4,7 +4,11 @@ import { mkdtempSync, writeFileSync, rmSync, readFileSync, mkdirSync, chmodSync 
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { openCloudStore } from '../scripts/cloud.mjs';
+import { mergeDocuments, documentsEqual } from '../scripts/document-merge.mjs';
 import { startServer } from '../scripts/server.mjs';
+
+const delivered = [];
+const cloudMailer = { async sendOtp(message) { delivered.push(message); } };
 
 const temp = mkdtempSync(join(tmpdir(), 'psbees-cloud-'));
 const root = join(temp, 'dist');
@@ -22,7 +26,7 @@ if (process.platform !== 'win32') {
 }
 let server;
 try {
-  let started = await startServer({ port: 0, host: '127.0.0.1', root, cloudDataDir: data });
+  let started = await startServer({ port: 0, host: '127.0.0.1', root, cloudDataDir: data, cloudMailer });
   server = started.server;
   let base = started.url;
   const alice = { cookie: '' }, bob = { cookie: '' }, admin = { cookie: '' };
@@ -42,13 +46,44 @@ try {
   }
 
   assert.equal((await api(null, '/config')).data.enabled, true);
+  assert.equal((await api(null, '/config')).data.twoFactorRequired, true);
   assert.equal((await api(null, '/projects', 'GET', undefined, 401)).data.ok, false);
   assert.equal((await api(null, '/admin/overview', 'GET', undefined, 401)).data.ok, false);
-  const adminLogin = await api(admin, '/login', 'POST', { email: 'admin@work.test', password: 'admin-long-password' });
+  const brute = await api(null, '/register', 'POST', { email: 'nobody@work.test', password: 'nobody-long-password' }, 202);
+  const badCode = delivered.at(-1).code === '000000' ? '000001' : '000000';
+  for (let attempt = 0; attempt < 5; attempt++) {
+    await api(null, '/register/verify', 'POST', { challengeId: brute.data.challengeId, code: badCode }, attempt === 4 ? 429 : 401);
+  }
+  async function register(person, email, password) {
+    const begin = await api(person, '/register', 'POST', { email, password }, 202);
+    assert.ok(begin.data.challengeId && begin.data.email.includes('•'));
+    await api(null, '/login/resend', 'POST', { challengeId: begin.data.challengeId }, 400);
+    await api(null, '/register/resend', 'POST', { challengeId: begin.data.challengeId }, 429);
+    assert.equal(begin.res.headers.get('set-cookie'), null, 'no session before OTP confirmation');
+    await api(person, '/me', 'GET', undefined, 401);
+    const sent = delivered.at(-1);
+    assert.equal(sent.to, email);
+    assert.equal(JSON.stringify(begin.data).includes(sent.code), false, 'OTP is never returned by API');
+    const wrong = sent.code === '000000' ? '000001' : '000000';
+    await api(null, '/register/verify', 'POST', { challengeId: begin.data.challengeId, code: wrong }, 401);
+    const verified = await api(person, '/register/verify', 'POST', { challengeId: begin.data.challengeId, code: sent.code });
+    assert.equal(verified.data.user.role, 'user');
+    await api(null, '/register/verify', 'POST', { challengeId: begin.data.challengeId, code: sent.code }, 401);
+  }
+  async function login(person, email, password) {
+    const begin = await api(person, '/login', 'POST', { email, password }, 202);
+    assert.equal(begin.res.headers.get('set-cookie'), null, 'password alone must not create a session');
+    const sent = delivered.at(-1);
+    assert.equal(sent.to, email);
+    return api(person, '/login/verify', 'POST', { challengeId: begin.data.challengeId, code: sent.code });
+  }
+  const adminBegin = await api(null, '/login', 'POST', { email: 'admin@work.test', password: 'admin-long-password' }, 202);
+  const adminOtp = delivered.at(-1);
+  const adminLogin = await api(admin, '/login/verify', 'POST', { challengeId: adminBegin.data.challengeId, code: adminOtp.code });
   assert.equal(adminLogin.data.user.role, 'admin');
   assert.match(adminLogin.res.headers.get('set-cookie'), /HttpOnly; SameSite=Lax; Path=\/api\/cloud/);
-  assert.equal((await api(alice, '/register', 'POST', { email: 'alice@work.test', password: 'alice-long-password' }, 201)).data.user.role, 'user');
-  await api(bob, '/register', 'POST', { email: 'bob@work.test', password: 'bobs-long-password' }, 201);
+  await register(alice, 'alice@work.test', 'alice-long-password');
+  await register(bob, 'bob@work.test', 'bobs-long-password');
   assert.equal((await api(null, '/register', 'POST', { email: 'alice@work.test', password: 'alice-long-password' }, 409)).data.ok, false);
   assert.equal((await api(null, '/register', 'POST', { email: 'short@work.test', password: 'short' }, 400)).data.ok, false);
   assert.equal((await api(null, '/login', 'POST', { email: 'alice@work.test', password: 'wrong' }, 401)).data.ok, false);
@@ -57,6 +92,7 @@ try {
     { origin: 'https://public.example', 'x-forwarded-host': 'public.example' }); // прокси переписал Host
   await api(null, '/register', 'POST', { email: 'mallory@work.test', password: 'a-good-password' }, 403, { 'x-psbees-request': '' });
   assert.equal((await api(alice, '/admin/users', 'GET', undefined, 403)).data.ok, false);
+  assert.equal((await api(alice, '/admin/overview', 'GET', undefined, 403)).data.ok, false);
 
   const doc = { name: 'Моя плата', w: 100, h: 80, entities: [{ id: 'p1', kind: 'pad', x: 10, y: 20, size: 2, drill: 1 }] };
   const created = (await api(alice, '/projects', 'POST', { name: doc.name, document: doc }, 201)).data.project;
@@ -108,6 +144,75 @@ try {
   assert.equal((await api(alice, vpath)).data.versions.length, 49);
   assert.ok((await api(alice, '/projects')).data.usedBytes < usedBeforeDelete, 'удаление версии освобождает квоту');
 
+  // Совместный доступ: владелец приглашает одного зарегистрированного редактора.
+  const membersPath = path + '/members';
+  await api(alice, membersPath, 'POST', { email: 'bob@work.test' }, 201);
+  const bobProjects = (await api(bob, '/projects')).data.projects;
+  assert.equal(bobProjects.length, 1);
+  assert.equal(bobProjects[0].ownerEmail, 'alice@work.test');
+  assert.equal(bobProjects[0].accessRole, 'editor');
+  const bobAdminId = (await api(admin, '/admin/users?q=bob')).data.users[0].id;
+  const bobSharedProfile = (await api(admin, '/admin/users/' + bobAdminId)).data;
+  assert.equal(bobSharedProfile.sharedProjectCount, 1);
+  assert.equal(bobSharedProfile.sharedProjects[0].ownerEmail, 'alice@work.test');
+  assert.equal(bobSharedProfile.sharedBytes, bobProjects[0].bytes);
+  assert.equal((await api(bob, path)).data.project.accessRole, 'editor');
+  assert.equal((await api(bob, membersPath)).data.members.length, 2);
+  await api(bob, membersPath, 'POST', { email: 'admin@work.test' }, 404);
+  await api(bob, path, 'PATCH', { name: 'чужое имя', version: 3 }, 404);
+  const syncBase = (await api(alice, path)).data.project;
+  const aliceEdit = { ...syncBase.document, entities: syncBase.document.entities.map((e) => e.id === 'p1' ? { ...e, x: 11 } : e) };
+  const bobEdit = { ...syncBase.document, entities: syncBase.document.entities.map((e) => e.id === 't1' ? { ...e, w: 2 } : e) };
+  const aliceSync = await api(alice, path + '/sync', 'POST', {
+    baseVersion: syncBase.version, baseDocument: syncBase.document, document: aliceEdit,
+  });
+  assert.equal(aliceSync.data.project.version, syncBase.version + 1);
+  const bobSync = await api(bob, path + '/sync', 'POST', {
+    baseVersion: syncBase.version, baseDocument: syncBase.document, document: bobEdit,
+  });
+  assert.equal(bobSync.data.project.version, syncBase.version + 2, 'stale independent edits merge without data loss');
+  assert.equal(bobSync.data.project.document.entities.find((e) => e.id === 'p1').x, 11);
+  assert.equal(bobSync.data.project.document.entities.find((e) => e.id === 't1').w, 2);
+  const mergeCheck = mergeDocuments(syncBase.document, aliceEdit, bobEdit);
+  assert.equal(mergeCheck.ok, true);
+  assert.equal(documentsEqual(mergeCheck.document, bobSync.data.project.document), true);
+  const specialBase = JSON.parse('{"w":100,"h":80,"entities":[],"meta":{"__proto__":{"kept":true},"left":0,"right":0}}');
+  const specialLocal = structuredClone(specialBase), specialRemote = structuredClone(specialBase);
+  specialLocal.meta.left = 1; specialRemote.meta.right = 2;
+  const specialMerge = mergeDocuments(specialBase, specialLocal, specialRemote);
+  assert.equal(specialMerge.ok, true);
+  assert.equal(Object.getPrototypeOf(specialMerge.document), null);
+  assert.equal(Object.hasOwn(specialMerge.document.meta, '__proto__'), true);
+  assert.deepEqual(JSON.parse(JSON.stringify(specialMerge.document)).meta.__proto__, { kept: true });
+  assert.equal({}.kept, undefined, 'untrusted JSON keys cannot pollute prototypes');
+  const live = (await api(alice, path)).data.project;
+  const aliceSameObject = { ...live.document, entities: live.document.entities.map((e) => e.id === 'p1' ? { ...e, x: 13 } : e) };
+  await api(alice, path + '/sync', 'POST', { baseVersion: live.version, baseDocument: live.document, document: aliceSameObject });
+  // Длинный опрос просыпается сразу после новой ревизии; параллельная правка того же поля отклоняется.
+  const poll = fetch(base + '/api/cloud' + path + `/sync?since=${live.version + 1}&wait=5`, { headers: { cookie: bob.cookie } });
+  await new Promise((resolve) => setTimeout(resolve, 100));
+  const latestBeforeWake = (await api(alice, path)).data.project;
+  const nextAliceDoc = { ...latestBeforeWake.document, w: latestBeforeWake.document.w + 10 };
+  await api(alice, path + '/sync', 'POST', {
+    baseVersion: latestBeforeWake.version, baseDocument: latestBeforeWake.document, document: nextAliceDoc,
+  });
+  const pollResponse = await poll;
+  assert.equal(pollResponse.status, 200);
+  const pollData = await pollResponse.json();
+  assert.equal(pollData.project.version, latestBeforeWake.version + 1);
+  const bobConflict = { ...syncBase.document, entities: syncBase.document.entities.map((e) => e.id === 'p1' ? { ...e, x: 14 } : e) };
+  await api(bob, path + '/sync', 'POST', {
+    baseVersion: syncBase.version, baseDocument: syncBase.document, document: bobConflict,
+  }, 409);
+  assert.equal((await api(alice, path)).data.project.document.entities.find((e) => e.id === 'p1').x, 13);
+  await api(alice, path + '/presence', 'POST', {});
+  await api(bob, path + '/presence', 'POST', {});
+  const active = (await api(alice, path + '/presence', 'POST', {})).data.participants;
+  assert.equal(active.filter((person) => person.online).length, 2);
+  await api(alice, membersPath + '/' + bobProjects[0].ownerId, 'DELETE', undefined, 404); // owner ID is not a member
+  await api(alice, membersPath + '/' + (await api(alice, membersPath)).data.members.find((m) => m.role === 'editor').id, 'DELETE');
+  assert.equal((await api(bob, path, 'GET', undefined, 404)).data.ok, false, 'revoking access blocks future reads');
+  assert.equal((await api(bob, '/projects')).data.projects.length, 0);
   const overview = (await api(admin, '/admin/overview')).data;
   assert.equal(overview.users, 3);
   assert.equal(overview.projects, 1);
@@ -117,7 +222,21 @@ try {
   assert.equal(users.total, 1);
   assert.equal(users.users[0].projectCount, 1);
   assert.equal(users.users[0].bytes, (await api(alice, '/projects')).data.usedBytes, 'объём пользователя включает версии');
+  assert.equal(users.users[0].versionCount, 49);
+  assert.ok(users.users[0].activeSessions > 0);
+  assert.equal(users.users[0].emailVerifiedAt > 0, true);
+  assert.equal(Object.hasOwn(users.users[0], 'password_hash'), false, 'admin user list never exposes password hashes');
+  assert.equal((await api(alice, '/admin/users/' + users.users[0].id, 'GET', undefined, 403)).data.ok, false);
   const aliceId = users.users[0].id;
+  const aliceProfile = (await api(admin, '/admin/users/' + aliceId)).data;
+  assert.equal(aliceProfile.user.email, 'alice@work.test');
+  assert.equal(aliceProfile.twoFactorRequired, true);
+  assert.equal(aliceProfile.ownedProjects.length, 1);
+  assert.equal(aliceProfile.versionCount, 49);
+  assert.equal(aliceProfile.actionCount > 0, true);
+  assert.equal(Object.hasOwn(aliceProfile.user, 'password_hash'), false);
+  assert.equal(Object.hasOwn(aliceProfile.user, 'passwordHash'), false);
+  assert.equal(JSON.stringify(aliceProfile).includes('scrypt:'), false, 'admin details never include password hashes');
   const adminId = adminLogin.data.user.id;
   assert.equal((await api(admin, '/admin/projects?q=%D0%9D%D0%BE%D0%B2%D0%B0%D1%8F')).data.total, 1);
   assert.equal((await api(admin, '/admin/projects?ownerId=' + aliceId)).data.projects[0].ownerEmail, 'alice@work.test');
@@ -127,13 +246,37 @@ try {
   await api(alice, '/me', 'GET', undefined, 401);
   await api(null, '/login', 'POST', { email: 'alice@work.test', password: 'alice-long-password' }, 401);
   await api(admin, '/admin/users/' + aliceId, 'PATCH', { disabled: false });
-  await api(alice, '/login', 'POST', { email: 'alice@work.test', password: 'alice-long-password' });
+  await login(alice, 'alice@work.test', 'alice-long-password');
   await api(admin, '/admin/users/' + aliceId + '/sessions', 'DELETE');
   await api(alice, '/me', 'GET', undefined, 401);
-  await api(alice, '/login', 'POST', { email: 'alice@work.test', password: 'alice-long-password' });
+  await login(alice, 'alice@work.test', 'alice-long-password');
   await api(alice, '/password', 'POST', { currentPassword: 'wrong', newPassword: 'brand-new-long-password' }, 401);
   await api(alice, '/password', 'POST', { currentPassword: 'alice-long-password', newPassword: 'brand-new-long-password' });
   assert.equal((await api(alice, '/me')).data.user.email, 'alice@work.test');
+
+  await api(admin, '/admin/users/' + adminId + '/password', 'POST', {}, 403);
+  const bobSummary = (await api(admin, '/admin/users?q=bob')).data.users[0];
+  await api(alice, '/admin/users/' + bobSummary.id + '/password', 'POST', {}, 403);
+  await api(admin, '/admin/users/' + bobSummary.id + '/password', 'POST', { password: 'must-not-be-accepted' }, 400);
+  const reset = await api(admin, '/admin/users/' + bobSummary.id + '/password', 'POST', {});
+  const temporaryPassword = reset.data.temporaryPassword;
+  assert.equal(typeof temporaryPassword, 'string');
+  assert.ok(temporaryPassword.length >= 32);
+  assert.equal(readFileSync(join(data, 'psbees.sqlite')).includes(Buffer.from(temporaryPassword)), false, 'temporary plaintext is not persisted');
+  const bobProfileAfterReset = (await api(admin, '/admin/users/' + bobSummary.id)).data;
+  assert.equal(bobProfileAfterReset.user.mustChangePassword, true);
+  assert.equal(bobProfileAfterReset.activeSessions.length, 0, 'admin reset revokes active sessions');
+  await api(bob, '/me', 'GET', undefined, 401);
+  await api(null, '/login', 'POST', { email: 'bob@work.test', password: 'bobs-long-password' }, 401);
+  const bobTempLogin = await login(bob, 'bob@work.test', temporaryPassword);
+  assert.equal(bobTempLogin.data.user.mustChangePassword, true);
+  await api(bob, '/projects', 'GET', undefined, 403);
+  await api(bob, '/admin/users', 'GET', undefined, 403);
+  await api(bob, '/password', 'POST', { newPassword: 'bob-after-reset-password' });
+  assert.equal((await api(bob, '/me')).data.user.mustChangePassword, false);
+  await api(null, '/login', 'POST', { email: 'bob@work.test', password: temporaryPassword }, 401);
+  await login(bob, 'bob@work.test', 'bob-after-reset-password');
+
   await api(admin, '/admin/settings', 'PATCH', { registrationOpen: false });
   assert.equal((await api(null, '/config')).data.registrationOpen, false);
   await api(null, '/register', 'POST', { email: 'third@work.test', password: 'good-long-password' }, 403);
@@ -155,15 +298,19 @@ try {
   cli.close();
   await api(bob, '/me', 'GET', undefined, 401);
   await api(bob, '/login', 'POST', { email: 'bob@work.test', password: 'bobs-long-password' }, 401);
-  await api(bob, '/login', 'POST', { email: 'bob@work.test', password: 'bobs-brand-new-password' });
+  const bobCliLogin = await login(bob, 'bob@work.test', 'bobs-brand-new-password');
+  assert.equal(bobCliLogin.data.user.mustChangePassword, true, 'server-side reset also requires a new password');
+  await api(bob, '/projects', 'GET', undefined, 403);
+  await api(bob, '/password', 'POST', { newPassword: 'bobs-after-cli-reset-password' });
+  assert.equal((await api(bob, '/me')).data.user.mustChangePassword, false);
 
   // перезапуск Node-сервера сохраняет проекты, учётные записи, настройки.
   await new Promise((done) => server.close(done));
   server = null;
-  started = await startServer({ port: 0, host: '127.0.0.1', root, cloudDataDir: data });
+  started = await startServer({ port: 0, host: '127.0.0.1', root, cloudDataDir: data, cloudMailer });
   server = started.server;
   base = started.url;
-  assert.equal((await api(alice, '/projects')).data.projects[0].version, 3);
+  assert.equal((await api(alice, '/projects')).data.projects[0].version, 7);
   assert.equal((await api(alice, vpath)).data.versions.length, 49, 'версии переживают перезапуск');
   await api(admin, '/admin/projects/' + created.id, 'DELETE');
   assert.equal((await api(alice, '/projects')).data.projects.length, 0);

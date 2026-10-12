@@ -89,7 +89,8 @@ import {
 } from './ui/coach';
 import { ConfirmDialog, MenuBtn, Modal, SplitBtn } from './ui/widgets';
 import { ProgressBar } from './ui/progress';
-import { cloudApi, cloudError, CloudError, type CloudProject, type CloudProjectDetail, type CloudUser } from './cloud/api';
+import { cloudApi, cloudError, CloudError, type CloudProject, type CloudProjectDetail, type ProjectParticipant, type CloudUser } from './cloud/api';
+import { mergeDocuments, documentsEqual } from '../scripts/document-merge.mjs';
 import { CloudAccountDialog, CloudProjectsDialog, cloudSaveLabel, type CloudSaveState } from './cloud/projects';
 import { ProjectVersionsDialog } from './cloud/versions';
 import { findOnBoard, type FindHit } from './pcb/find';
@@ -427,6 +428,7 @@ export default function App({ cloudUser, onLogout }: { cloudUser?: CloudUser; on
   const restoreGeneration = useRef(0);
   const [cloudStatus, setCloudStatus] = useState<CloudSaveState>('local');
   const [cloudMessage, setCloudMessage] = useState('');
+  const [cloudParticipants, setCloudParticipants] = useState<ProjectParticipant[]>([]);
   const [sel, setSel] = useState<Set<string>>(new Set());
   const [tool, setToolRaw] = useState<ToolId2>('select');
   // Выбранный узел одиночной дорожки/полигона в инструменте «Выбор».
@@ -1433,7 +1435,7 @@ export default function App({ cloudUser, onLogout }: { cloudUser?: CloudUser; on
     if (savingCloud.current) { alert('Дождитесь окончания сохранения на сервере.'); return false; }
     const current = activeCloudRef.current, snapshot = docRef.current;
     const localWork = !current && (snapshot.entities.length > 1 || snapshot.name !== 'Плата' || snapshot.w !== 100 || snapshot.h !== 80 || !!snapshot.nets?.length || !!snapshot.comments?.length);
-    if ((current && snapshot !== syncedCloudDoc.current) || localWork) {
+    if ((current && !documentsEqual(snapshot, syncedCloudDoc.current)) || localWork) {
       if (!window.confirm('Текущая плата ещё не сохранена в облаке. Скачать её локальную копию и продолжить?')) return false;
       saveFile();
     }
@@ -1444,35 +1446,119 @@ export default function App({ cloudUser, onLogout }: { cloudUser?: CloudUser; on
     return true;
   }, [cloudUser, saveFile]);
 
+  const acceptCollaborativeProject = useCallback((serverProject: CloudProjectDetail, localBase?: M.Doc): boolean => {
+    const currentProject = activeCloudRef.current;
+    if (currentProject?.id === serverProject.id && serverProject.version < currentProject.version) return true;
+    const incoming = M.cloneDoc(serverProject.document);
+    incoming.comments = normalizeBoardComments(incoming.comments);
+    const baseline = localBase ?? syncedCloudDoc.current;
+    const local = docRef.current;
+    let merged = incoming;
+    if (baseline) {
+      const result = mergeDocuments(baseline, local, incoming);
+      if (!result.ok) {
+        activeCloudRef.current = serverProject; setActiveCloud(serverProject);
+        setCloudStatus('conflict');
+        setCloudMessage(`Изменён один и тот же объект: ${result.conflicts.slice(0, 4).join(', ')}. Скачайте копию или загрузите серверную версию.`);
+        return false;
+      }
+      merged = result.document as M.Doc;
+    }
+    syncedCloudDoc.current = incoming;
+    activeCloudRef.current = serverProject; setActiveCloud(serverProject);
+    if (cloudUser) rememberCloud(cloudUser.id, serverProject);
+    if (documentsEqual(merged, incoming)) {
+      if (!documentsEqual(local, incoming)) setDoc(incoming);
+      if (cloudUser) rememberDraft(cloudUser.id, incoming);
+      setCloudStatus('saved'); setCloudMessage('');
+    } else {
+      if (!documentsEqual(local, merged)) setDoc(merged);
+      if (cloudUser) rememberDraft(cloudUser.id, merged);
+      setCloudStatus('dirty'); setCloudMessage('Изменения объединены; сохраняем общую плату…');
+    }
+    return true;
+  }, [cloudUser]);
+
   const saveCloud = useCallback(async (): Promise<void> => {
     if (!cloudUser) return;
     const project = activeCloudRef.current;
     if (!project) { setDialog('cloud'); return; }
-    if (cloudStatus === 'conflict') throw new CloudError('Сначала сохраните копию или откройте новую версию с сервера.', 409);
+    if (cloudStatus === 'conflict') throw new CloudError('Сначала скачайте копию или загрузите актуальную версию с сервера.', 409);
     if (savingCloud.current) throw new CloudError('Сохранение уже выполняется.', 409);
     const snapshot = docRef.current;
-    if (snapshot === syncedCloudDoc.current) { setCloudStatus('saved'); return; }
+    const baseDocument = syncedCloudDoc.current ?? snapshot;
+    if (documentsEqual(snapshot, baseDocument)) { setCloudStatus('saved'); return; }
     savingCloud.current = true; setCloudStatus('saving'); setCloudMessage('');
     try {
-      const { project: updated } = await cloudApi<{ project: CloudProject }>(`/projects/${project.id}`, 'PUT', {
-        name: project.name, document: snapshot, version: project.version,
+      const { project: updated } = await cloudApi<{ project: CloudProjectDetail }>(`/projects/${project.id}/sync`, 'POST', {
+        baseVersion: project.version, baseDocument, document: snapshot,
       });
-      syncedCloudDoc.current = snapshot;
-      activeCloudRef.current = updated; setActiveCloud(updated);
-      rememberCloud(cloudUser.id, updated);
-      if (docRef.current === snapshot) rememberDraft(cloudUser.id, snapshot);
-      setCloudStatus(docRef.current === snapshot ? 'saved' : 'dirty');
+      const accepted = acceptCollaborativeProject(updated, snapshot);
+      if (!accepted) throw new CloudError('Обнаружен конфликт в одном объекте. Сохраните локальную копию или загрузите серверную версию.', 409);
+      if (documentsEqual(docRef.current, syncedCloudDoc.current)) rememberDraft(cloudUser.id, syncedCloudDoc.current!);
     } catch (error) {
       setCloudStatus(error instanceof CloudError && error.status === 409 ? 'conflict' : 'error');
       setCloudMessage(cloudError(error));
       throw error;
     } finally { savingCloud.current = false; }
-  }, [cloudUser, cloudStatus]);
+  }, [cloudUser, cloudStatus, acceptCollaborativeProject]);
+
+  // Синхронизация изменений выполняется длинным опросом (сервер отвечает сразу
+  // при новой версии) и отдельным heartbeat для списка участников онлайн.
+  useEffect(() => {
+    if (!cloudUser || !activeCloud?.id) { setCloudParticipants([]); return; }
+    const projectId = activeCloud.id;
+    const controller = new AbortController();
+    let live = true;
+    const presenceTick = async () => {
+      try {
+        const result = await cloudApi<{ participants: ProjectParticipant[] }>(`/projects/${projectId}/presence`, 'POST', {}, controller.signal);
+        if (live) setCloudParticipants(result.participants);
+      } catch (error) {
+        if (!live || controller.signal.aborted) return;
+        if (error instanceof CloudError && (error.status === 401 || error.status === 404)) {
+          setCloudStatus('error'); setCloudMessage(error.status === 404 ? 'Проект удалён или доступ к нему отозван.' : cloudError(error));
+        }
+      }
+    };
+    void presenceTick();
+    const heartbeat = window.setInterval(() => void presenceTick(), 15_000);
+    const sync = async () => {
+      while (live && !controller.signal.aborted) {
+        const current = activeCloudRef.current;
+        if (!current || current.id !== projectId) break;
+        try {
+          const result = await cloudApi<import('./cloud/api').SyncResponse>(
+            `/projects/${projectId}/sync?since=${current.version}&wait=20`, 'GET', undefined, controller.signal,
+          );
+          if (!live) break;
+          setCloudParticipants(result.participants);
+          if (result.project && result.project.version > (activeCloudRef.current?.version ?? 0)) {
+            if (savingCloud.current) {
+              await new Promise((resolve) => window.setTimeout(resolve, 250));
+              continue;
+            }
+            acceptCollaborativeProject(result.project);
+          }
+        } catch (error) {
+          if (!live || controller.signal.aborted) break;
+          if (error instanceof CloudError && (error.status === 401 || error.status === 404)) {
+            setCloudStatus('error');
+            setCloudMessage(error.status === 404 ? 'Проект удалён или доступ к нему отозван.' : cloudError(error));
+            break;
+          }
+          await new Promise((resolve) => window.setTimeout(resolve, 1500));
+        }
+      }
+    };
+    void sync();
+    return () => { live = false; controller.abort(); window.clearInterval(heartbeat); };
+  }, [cloudUser, activeCloud?.id, acceptCollaborativeProject]);
 
   // После привязки к проекту плата автоматически уходит на сервер через 1.8 с
-  // после последнего изменения. Ошибки и конфликты НЕ скрываются и не затираются.
+  // после последнего изменения. Несовместимые правки одного объекта остаются явными.
   useEffect(() => {
-    if (!cloudUser || !activeCloud || doc === syncedCloudDoc.current || cloudStatus === 'error' || cloudStatus === 'conflict') return;
+    if (!cloudUser || !activeCloud || documentsEqual(doc, syncedCloudDoc.current) || cloudStatus === 'error' || cloudStatus === 'conflict') return;
     if (!savingCloud.current && cloudStatus !== 'dirty') setCloudStatus('dirty');
     const timer = setTimeout(() => { if (!savingCloud.current) void saveCloud().catch(() => {}); }, 1800);
     return () => clearTimeout(timer);
@@ -1483,7 +1569,7 @@ export default function App({ cloudUser, onLogout }: { cloudUser?: CloudUser; on
     const onLeave = (event: BeforeUnloadEvent) => {
       rememberDraft(cloudUser.id, docRef.current);
       const hasLocalWork = !activeCloud && (doc.entities.length > 1 || doc.name !== 'Плата' || !!doc.comments?.length);
-      if (savingCloud.current || (activeCloud && doc !== syncedCloudDoc.current) || hasLocalWork) {
+      if (savingCloud.current || (activeCloud && !documentsEqual(doc, syncedCloudDoc.current)) || hasLocalWork) {
         event.preventDefault(); event.returnValue = '';
       }
     };
@@ -1502,11 +1588,12 @@ export default function App({ cloudUser, onLogout }: { cloudUser?: CloudUser; on
       syncedCloudDoc.current = updatedDoc;
       activeCloudRef.current = project; setActiveCloud(project);
       rememberCloud(cloudUser.id, project);
-      if (docRef.current === snapshot) {
-        if (updatedDoc !== snapshot) setDoc(updatedDoc);
+      const unchangedDuringCreate = documentsEqual(docRef.current, snapshot);
+      if (unchangedDuringCreate) {
+        if (!documentsEqual(docRef.current, updatedDoc)) setDoc(updatedDoc);
         rememberDraft(cloudUser.id, updatedDoc);
       }
-      setCloudStatus(docRef.current === snapshot ? 'saved' : 'dirty');
+      setCloudStatus(unchangedDuringCreate || documentsEqual(docRef.current, updatedDoc) ? 'saved' : 'dirty');
     } catch (error) {
       setCloudStatus('error'); setCloudMessage(cloudError(error)); throw error;
     } finally { savingCloud.current = false; }
@@ -1540,7 +1627,7 @@ export default function App({ cloudUser, onLogout }: { cloudUser?: CloudUser; on
       const { project: renamed } = await cloudApi<{ project: CloudProject }>(`/projects/${project.id}`, 'PATCH', { name, version: project.version });
       if (activeCloudRef.current?.id === project.id) {
         const currentDoc = docRef.current;
-        const wasSynced = currentDoc === syncedCloudDoc.current;
+        const wasSynced = documentsEqual(currentDoc, syncedCloudDoc.current);
         const nextDoc = { ...currentDoc, name: renamed.name };
         if (wasSynced) syncedCloudDoc.current = nextDoc;
         setDoc(nextDoc);
@@ -1560,7 +1647,7 @@ export default function App({ cloudUser, onLogout }: { cloudUser?: CloudUser; on
     if (savingCloud.current) throw new CloudError('Дождитесь окончания сохранения на сервере.', 409);
     await cloudApi(`/projects/${project.id}`, 'DELETE', { version: project.version });
     if (activeCloudRef.current?.id === project.id) {
-      if (docRef.current !== syncedCloudDoc.current) saveFile(); // сохранить несохранённую копию перед отвязкой
+      if (!documentsEqual(docRef.current, syncedCloudDoc.current)) saveFile(); // сохранить несохранённую копию перед отвязкой
       if (cloudUser) { rememberCloud(cloudUser.id, null); rememberDraft(cloudUser.id, docRef.current); }
       setActiveCloud(null); activeCloudRef.current = null; syncedCloudDoc.current = null;
       setCloudStatus('local'); setCloudMessage('');
@@ -1570,7 +1657,7 @@ export default function App({ cloudUser, onLogout }: { cloudUser?: CloudUser; on
   const logoutCloud = useCallback(async () => {
     if (!onLogout) return;
     if (savingCloud.current) throw new CloudError('Дождитесь окончания сохранения на сервере.', 409);
-    if ((activeCloud && doc !== syncedCloudDoc.current) || (!activeCloud && (doc.entities.length > 1 || doc.name !== 'Плата' || !!doc.comments?.length))) {
+    if ((activeCloud && !documentsEqual(doc, syncedCloudDoc.current)) || (!activeCloud && (doc.entities.length > 1 || doc.name !== 'Плата' || !!doc.comments?.length))) {
       if (!window.confirm('Есть несохранённая плата. Скачать локальную копию и выйти?')) return;
       saveFile();
     }
@@ -3823,7 +3910,7 @@ export default function App({ cloudUser, onLogout }: { cloudUser?: CloudUser; on
   }, [uiConf]);
   const updButton = upd.Button;
   const closeApplication = useCallback(() => {
-    if (cloudUser && (savingCloud.current || (activeCloud && doc !== syncedCloudDoc.current)
+    if (cloudUser && (savingCloud.current || (activeCloud && !documentsEqual(doc, syncedCloudDoc.current))
       || (!activeCloud && (doc.entities.length > 1 || doc.name !== 'Плата' || !!doc.comments?.length)))) {
       if (!window.confirm('Изменения ещё не сохранены на сервере. Скачать локальную копию и закрыть?')) return;
       saveFile();
@@ -4045,6 +4132,9 @@ export default function App({ cloudUser, onLogout }: { cloudUser?: CloudUser; on
             {cloudStatus === 'saving' && <span className="cloud-btn-bar" />}</button>
           <button className="tb-btn cloud-header-projects" type="button" title="Открыть мои проекты на сервере" onClick={() => setDialog('cloud')}>Проекты</button>
           {activeCloud && <button className="tb-btn cloud-header-versions" type="button" title="Именованные версии проекта: сохранить, сравнить, восстановить" onClick={() => setDialog('versions')}>Версии</button>}
+          {activeCloud && <button className="tb-btn cloud-header-collab" type="button"
+            title={'Совместный доступ: ' + cloudParticipants.filter((participant) => participant.online).map((participant) => participant.email).join(', ')}
+            onClick={() => setDialog('cloud')}>👥 {cloudParticipants.filter((participant) => participant.online).length}/2</button>}
           <button className="tb-btn cloud-header-account" type="button" title={`Учётная запись: ${cloudUser.email}`} onClick={() => setDialog('account')}>
             {cloudUser.email.split('@')[0]}</button>
         </div>}
@@ -4673,7 +4763,7 @@ export default function App({ cloudUser, onLogout }: { cloudUser?: CloudUser; on
       {dialog === 'about' && <AboutDialog version={appVer} onClose={() => setDialog(null)} />}
       {dialog === 'tour' && <TourDialog onClose={() => setDialog(null)} onPractice={startPractice} />}
       {cloudUser && dialog === 'cloud' && <CloudProjectsDialog
-        current={activeCloud} docName={doc.name} status={cloudStatus} statusMessage={cloudMessage}
+        current={activeCloud} userId={cloudUser.id} docName={doc.name} status={cloudStatus} statusMessage={cloudMessage}
         onClose={() => setDialog(null)} onCreate={createCloud} onOpen={loadCloud} onSave={saveCloud}
         onReload={reloadCloud} onRename={renameCloud} onDelete={deleteCloud} onSaveFile={saveFile}
       />}
