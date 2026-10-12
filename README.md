@@ -527,6 +527,34 @@ blue pill
   `ETag`/immutable-кэшем — на слабом компьютере и медленном канале страница грузится
   заметно быстрее.
 
+## Релизы и история изменений
+
+Каждый смерженный в `main` PR получает свой релиз на GitHub:
+[releases](https://github.com/danilka-revin/linux_pcb_app/releases) — там видно, как
+проект рос от коммита к коммиту. Номера простые: `v0.0.<номер PR>` (например, `v0.0.64` —
+это PR #64), поэтому порядок релизов совпадает с порядком мержей. Заметки релиза
+собираются из описания PR, плюс ссылка на сравнение с предыдущим релизом.
+
+Ставить релизы руками не нужно — после мержа это делает
+`scripts/release.yml` (логика в `scripts/make-release.mjs`). GitHub Actions читает
+воркфлоу только из `.github/workflows`, поэтому файл туда надо положить один раз
+(или выдать боту право `workflows`):
+
+```bash
+mkdir -p .github/workflows && cp scripts/release.yml .github/workflows/release.yml
+```
+
+Если релиз всё же потерялся, его можно создать вручную или пересоздать:
+
+```bash
+node scripts/make-release.mjs --pr 65        # релиз для конкретного PR
+node scripts/make-release.mjs --backfill     # досоздать отсутствующие по всем смерженным PR
+node scripts/make-release.mjs --backfill --dry-run   # только показать, что будет
+```
+
+Автообновление программы завязано на коммит в `main`, а не на релизы, так что теги
+и релизы на него не влияют.
+
 ## Технологии
 Vite + React + TypeScript, отрисовка на canvas 2D; геометрия ЧПУ —
 [`clipper-lib`](https://www.npmjs.com/package/clipper-lib) (Angus Johnson / Timo,
