@@ -580,8 +580,9 @@ export default function App({ cloudUser, onLogout }: { cloudUser?: CloudUser; on
     setUiConf(c);
     saveUi(c);
   }, []);
-  // версия сборки (сервер отдаёт /version из dist/version.json)
+  // версия продукта и SHA сборки (сервер отдаёт /version из dist/version.json)
   const [appVer, setAppVer] = useState<string | null>(null);
+  const [productVersion, setProductVersion] = useState<string | null>(null);
   const upd = useUpdater(appVer, !cloudUser && prefs.checkUpdates);
   // «Тест цепи»: подсвеченная электрическая цепь (все связные пятки и дорожки)
   const [probe, setProbe] = useState<{
@@ -610,8 +611,12 @@ export default function App({ cloudUser, onLogout }: { cloudUser?: CloudUser; on
   useEffect(() => {
     fetch('/version')
       .then((r) => r.json())
-      .then((v) => setAppVer(v && (v.short || v.sha) ? `${v.short}${v.built ? ' от ' + new Date(v.built).toLocaleDateString('ru-RU') : ''}` : null))
-      .catch(() => setAppVer(null));
+      .then((v) => {
+        const rawVersion = String(v?.productVersion || '');
+        setProductVersion(rawVersion.replace(/^(\d+\.\d+)\.0$/, '$1') || null);
+        setAppVer(v && (v.short || v.sha) ? `${v.short}${v.built ? ' от ' + new Date(v.built).toLocaleDateString('ru-RU') : ''}` : null);
+      })
+      .catch(() => { setAppVer(null); setProductVersion(null); });
   }, []);
 
   /** состояния платы по порядку: последнее — текущее (см. src/pcb/history.ts) */
@@ -4760,7 +4765,7 @@ export default function App({ cloudUser, onLogout }: { cloudUser?: CloudUser; on
           cursor={{ x: mouse.wx, y: mouse.wy }}
         />
       )}
-      {dialog === 'about' && <AboutDialog version={appVer} onClose={() => setDialog(null)} />}
+      {dialog === 'about' && <AboutDialog version={appVer} productVersion={productVersion} onClose={() => setDialog(null)} />}
       {dialog === 'tour' && <TourDialog onClose={() => setDialog(null)} onPractice={startPractice} />}
       {cloudUser && dialog === 'cloud' && <CloudProjectsDialog
         current={activeCloud} userId={cloudUser.id} docName={doc.name} status={cloudStatus} statusMessage={cloudMessage}

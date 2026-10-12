@@ -2,7 +2,7 @@
 # Чтобы GitHub Actions подхватил этот файл, скопируйте его в
 #   .github/workflows/windows.yml
 # Артефакты: PSBees-Setup-*.exe (NSIS) и PSBees-portable-*.exe.
-name: Windows
+name: Сборка Windows
 
 on:
   push:
@@ -24,6 +24,13 @@ jobs:
         with:
           node-version: '20'
           cache: npm
+
+      - name: Версия пакета из тега релиза
+        if: startsWith(github.ref, 'refs/tags/v1.')
+        shell: pwsh
+        env:
+          RELEASE_TAG: ${{ github.ref_name }}
+        run: node scripts/set-package-version.mjs $env:RELEASE_TAG
 
       - name: Зависимости
         run: npm ci --no-audit --no-fund
@@ -49,4 +56,6 @@ jobs:
           files: |
             release/PSBees-Setup*.exe
             release/PSBees-portable*.exe
-          generate_release_notes: true
+          # Релиз и русские заметки уже созданы scripts/make-release.mjs;
+          # здесь к нему только добавляются установщик и portable exe.
+          generate_release_notes: false
