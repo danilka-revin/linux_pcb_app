@@ -1,0 +1,60 @@
+# Релиз на каждый смерженный в main PR: тег v0.0.<номер PR> + релиз с описанием из PR.
+#
+# Чтобы GitHub Actions подхватил этот файл, скопируйте его в
+#   .github/workflows/release.yml
+# (в .github/workflows напрямую пушить нельзя, если у бота нет права workflows —
+#  так же, как с scripts/win/windows.yml).
+#
+# Логика в scripts/make-release.mjs — там же меняется формат заметок. Скриптом можно
+# пользоваться и локально: node scripts/make-release.mjs --backfill --dry-run
+name: Release per merged PR
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+    inputs:
+      pr:
+        description: 'Номер PR для пересоздания релиза (пусто — пройтись по всем смерженным)'
+        required: false
+        type: string
+
+# Нужен доступ на запись: пушим тег и создаём релиз.
+permissions:
+  contents: write
+
+# Релизы заводим строго по одному: два параллельных пуша в main не должны
+# поспорить за «последний релиз» и ссылку на сравнение с предыдущим.
+concurrency:
+  group: release-per-merged-pr
+  cancel-in-progress: false
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Код и полная история
+        uses: actions/checkout@v4
+        with:
+          # История нужна, чтобы по диапазону коммитов пуша найти все смерженные PR
+          # (merge queue или один push с несколькими мержами — это несколько релизов).
+          fetch-depth: 0
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      - name: Создать релизы по смерженным PR
+        env:
+          # GITHUB_TOKEN даёт gh право создать тег и релиз в этом же репозитории.
+          GH_TOKEN: ${{ github.token }}
+          RANGE: ${{ github.event.before }}..${{ github.sha }}
+          PR: ${{ inputs.pr }}
+        run: |
+          if [ -n "${PR}" ]; then
+            node scripts/make-release.mjs --pr "${PR}" --force
+          elif [ "${GITHUB_EVENT_NAME}" = "push" ]; then
+            node scripts/make-release.mjs --range "${RANGE}"
+          else
+            node scripts/make-release.mjs --backfill
+          fi
