@@ -19,6 +19,15 @@ const COOKIE = 'psbees_session';
 const MAX_PROJECT_BYTES = 8 * 1024 * 1024;
 const DEFAULT_QUOTA_BYTES = 250 * 1024 * 1024;
 const MAX_PROJECTS = 1000;
+// Общая библиотека хранится в той же закрытой SQLite, но отдельно от пользовательских проектов.
+const MAX_LIBRARY_ENTRY_BYTES = 512 * 1024;
+const MAX_LIBRARY_BATCH = 20;
+const MAX_LIBRARY_PER_USER = 1000;
+const MAX_LIBRARY_PER_USER_BYTES = 32 * 1024 * 1024;
+const MAX_LIBRARY_ENTRIES = 10_000;
+const MAX_LIBRARY_TOTAL_BYTES = 512 * 1024 * 1024;
+const LIBRARY_ENTITY_KINDS = new Set(['pad', 'smd', 'track', 'via', 'hole', 'line', 'rect', 'circle', 'text', 'poly', 'dim', 'comp']);
+const LIBRARY_LAYERS = new Set(['k1', 'k2', 's1', 's2', 'outline']);
 // Совместная плата: владелец + один приглашённый редактор (всего двое).
 const MAX_PROJECT_MEMBERS = 1;
 // Именованные версии (снимки) одного проекта. Автоматически не удаляются: их решает пользователь.
@@ -132,6 +141,168 @@ function parseDocument(document, name, maxBytes) {
   const bytes = Buffer.byteLength(text);
   if (bytes > maxBytes) fail(413, `Проект слишком большой (максимум ${Math.floor(maxBytes / 1048576)} МиБ).`);
   return { text, bytes, entityCount: document.entities.length };
+}
+function libraryText(value, label, maxLength, { optional = false, multiline = false } = {}) {
+  if (value === undefined || value === null) {
+    if (optional) return '';
+    fail(400, `${label}: обязательное текстовое поле.`);
+  }
+  if (typeof value !== 'string') fail(400, `${label}: ожидается текст.`);
+  const text = value.trim();
+  const controls = multiline ? /[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]/u : /[\x00-\x1f\x7f]/u;
+  if ((!optional && !text) || text.length > maxLength || controls.test(text)) {
+    fail(400, `${label}: допустимо от ${optional ? '0' : '1'} до ${maxLength} символов без управляющих знаков.`);
+  }
+  return text;
+}
+function libraryNumber(entity, key, { min = -1_000_000, max = 1_000_000 } = {}) {
+  const value = entity[key];
+  if (!Number.isFinite(value) || value < min || value > max) fail(400, 'У элемента библиотеки некорректная геометрия.');
+  return value;
+}
+function libraryLayer(entity, copperOnly = false) {
+  const value = entity.layer;
+  if (!(copperOnly ? value === 'k1' || value === 'k2' : LIBRARY_LAYERS.has(value))) {
+    fail(400, 'У элемента библиотеки указан неизвестный слой.');
+  }
+}
+function libraryPoints(value, minLength, state) {
+  if (!Array.isArray(value) || value.length < minLength || value.length > 12_000) {
+    fail(400, 'У элемента библиотеки некорректный список точек.');
+  }
+  for (const point of value) {
+    if (!point || typeof point !== 'object' || Array.isArray(point)) fail(400, 'У элемента библиотеки некорректная точка.');
+    libraryNumber(point, 'x'); libraryNumber(point, 'y');
+  }
+  state.points += value.length;
+  if (state.points > 24_000) fail(413, 'В элементе библиотеки слишком много точек.');
+}
+function validateLibraryJson(value, state = { nodes: 0 }, depth = 0) {
+  if (depth > 32) fail(400, 'Структура элемента библиотеки слишком глубоко вложена.');
+  state.nodes++;
+  if (state.nodes > 100_000) fail(413, 'Элемент библиотеки слишком сложный.');
+  if (value === null || typeof value === 'boolean') return;
+  if (typeof value === 'string') {
+    if (value.length > 32_000) fail(413, 'В элементе библиотеки слишком длинная строка.');
+    return;
+  }
+  if (typeof value === 'number') {
+    if (!Number.isFinite(value) || Math.abs(value) > 1_000_000) fail(400, 'В элементе библиотеки есть некорректное число.');
+    return;
+  }
+  if (Array.isArray(value)) {
+    if (value.length > 50_000) fail(413, 'В элементе библиотеки слишком большой список.');
+    for (const item of value) validateLibraryJson(item, state, depth + 1);
+    return;
+  }
+  if (typeof value !== 'object' || Object.getPrototypeOf(value) !== Object.prototype) {
+    fail(400, 'Элемент библиотеки должен содержать только обычные JSON-данные.');
+  }
+  const keys = Object.keys(value);
+  if (keys.length > 256) fail(413, 'В элементе библиотеки слишком много свойств.');
+  for (const key of keys) {
+    if (['__proto__', 'prototype', 'constructor'].includes(key)) fail(400, 'Элемент библиотеки содержит запрещённое свойство.');
+    validateLibraryJson(value[key], state, depth + 1);
+  }
+}
+function validateLibraryEntities(entities, state, depth = 0) {
+  if (depth > 12) fail(400, 'Компоненты в элементе библиотеки вложены слишком глубоко.');
+  if (!Array.isArray(entities) || (depth === 0 && !entities.length) || entities.length > 12_000) {
+    fail(400, 'Деталь должна содержать от 1 до 12 000 примитивов.');
+  }
+  for (const entity of entities) {
+    if (!entity || typeof entity !== 'object' || Array.isArray(entity)
+      || !LIBRARY_ENTITY_KINDS.has(entity.kind) || typeof entity.id !== 'string'
+      || !entity.id || entity.id.length > 160 || state.ids.has(entity.id)) {
+      fail(400, 'В элементе библиотеки есть примитив с неизвестным типом или повторяющимся ID.');
+    }
+    state.ids.add(entity.id);
+    state.entities++;
+    if (state.entities > 12_000) fail(413, 'В элементе библиотеки слишком много примитивов.');
+    const n = (key, options) => libraryNumber(entity, key, options);
+    switch (entity.kind) {
+      case 'pad':
+        n('x'); n('y'); n('size', { min: Number.MIN_VALUE }); n('drill', { min: 0 });
+        if (!['round', 'square', 'oct'].includes(entity.shape)) fail(400, 'У площадки неизвестная форма.');
+        break;
+      case 'smd':
+        n('x'); n('y'); n('w', { min: Number.MIN_VALUE }); n('h', { min: Number.MIN_VALUE }); n('rot'); libraryLayer(entity, true);
+        break;
+      case 'track':
+        libraryPoints(entity.pts, 2, state); n('w', { min: Number.MIN_VALUE }); libraryLayer(entity, true);
+        break;
+      case 'via':
+        n('x'); n('y'); n('size', { min: Number.MIN_VALUE }); n('drill', { min: 0 });
+        break;
+      case 'hole':
+        n('x'); n('y'); n('d', { min: Number.MIN_VALUE });
+        break;
+      case 'line':
+        n('x1'); n('y1'); n('x2'); n('y2'); n('w', { min: Number.MIN_VALUE }); libraryLayer(entity);
+        break;
+      case 'circle':
+        n('x'); n('y'); n('r', { min: Number.MIN_VALUE }); n('w', { min: Number.MIN_VALUE }); libraryLayer(entity);
+        break;
+      case 'rect':
+        n('x'); n('y'); n('w', { min: Number.MIN_VALUE }); n('h', { min: Number.MIN_VALUE });
+        n('th', { min: 0 }); libraryLayer(entity);
+        if (typeof entity.filled !== 'boolean') fail(400, 'У прямоугольника не указан тип заливки.');
+        break;
+      case 'text':
+        n('x'); n('y'); n('size', { min: Number.MIN_VALUE }); n('th', { min: Number.MIN_VALUE }); n('rot'); libraryLayer(entity);
+        if (typeof entity.text !== 'string' || entity.text.length > 10_000 || typeof entity.mirror !== 'boolean') {
+          fail(400, 'У текстового примитива некорректные параметры.');
+        }
+        break;
+      case 'poly':
+        libraryPoints(entity.pts, 3, state); libraryLayer(entity);
+        if (entity.holes !== undefined) {
+          if (!Array.isArray(entity.holes) || entity.holes.length > 1000) fail(400, 'У полигона некорректные отверстия.');
+          for (const hole of entity.holes) libraryPoints(hole, 3, state);
+        }
+        break;
+      case 'dim':
+        n('x1'); n('y1'); n('x2'); n('y2'); n('off'); n('th', { min: Number.MIN_VALUE }); n('size', { min: Number.MIN_VALUE }); libraryLayer(entity);
+        if (!['aligned', 'horiz', 'vert'].includes(entity.mode)) fail(400, 'У размера неизвестный режим.');
+        if (entity.text !== undefined && (typeof entity.text !== 'string' || entity.text.length > 10_000)) fail(400, 'У размера слишком длинная подпись.');
+        break;
+      case 'comp': {
+        n('x'); n('y'); n('rot');
+        if (typeof entity.lib !== 'string' || entity.lib.length > 500
+          || typeof entity.name !== 'string' || !entity.name.trim() || entity.name.length > 500
+          || !['top', 'bottom'].includes(entity.side)) fail(400, 'У компонента некорректные параметры.');
+        if (!Array.isArray(entity.bl) || entity.bl.length !== 4
+          || entity.bl.some((v) => !Number.isFinite(v) || Math.abs(v) > 1_000_000)
+          || entity.bl[0] > entity.bl[2] || entity.bl[1] > entity.bl[3]) fail(400, 'У компонента некорректный габарит.');
+        for (const key of ['ref', 'value', 'footprint', 'manufacturer', 'mpn', 'datasheet']) {
+          if (entity[key] !== undefined && (typeof entity[key] !== 'string' || entity[key].length > 2000)) {
+            fail(400, 'У компонента слишком длинные текстовые данные.');
+          }
+        }
+        if (entity.ents !== undefined) validateLibraryEntities(entity.ents, state, depth + 1);
+        break;
+      }
+    }
+  }
+}
+function parseLibraryEntryInput(body) {
+  if (!body || typeof body !== 'object' || Array.isArray(body)) fail(400, 'Некорректные данные элемента библиотеки.');
+  const name = libraryText(body.name, 'Название детали', 60);
+  const category = libraryText(body.category, 'Папка', 120, { optional: true });
+  const query = libraryText(body.query, 'Строка генератора', 500, { optional: true });
+  const note = libraryText(body.note, 'Описание', 4000, { optional: true, multiline: true });
+  if (!Array.isArray(body.bl) || body.bl.length !== 4
+    || body.bl.some((v) => !Number.isFinite(v) || Math.abs(v) > 1_000_000)
+    || body.bl[0] > body.bl[2] || body.bl[1] > body.bl[3]) {
+    fail(400, 'У детали некорректный габарит.');
+  }
+  const state = { ids: new Set(), entities: 0, points: 0 };
+  validateLibraryJson(body.ents);
+  validateLibraryEntities(body.ents, state);
+  const bl = body.bl.slice();
+  const nameKey = name.normalize('NFKC').toLowerCase();
+  const categoryKey = category.normalize('NFKC').toLowerCase();
+  return { name, nameKey, category, categoryKey, ents: body.ents, bl, query, note, entityCount: state.entities };
 }
 function versionNameOf(value) {
   if (typeof value !== 'string' || !value.trim() || value.trim().length > 120 || /[\x00-\x1f\x7f]/u.test(value)) {
@@ -267,6 +438,15 @@ export async function openCloudStore(dataDir, opts = {}) {
     );
     CREATE INDEX IF NOT EXISTS project_versions_project ON project_versions(project_id, created_at DESC);
     CREATE INDEX IF NOT EXISTS project_versions_owner ON project_versions(owner_id);
+    CREATE TABLE IF NOT EXISTS community_library (
+      id TEXT PRIMARY KEY, owner_id TEXT REFERENCES users(id) ON DELETE SET NULL,
+      name TEXT NOT NULL, name_key TEXT NOT NULL, category TEXT NOT NULL DEFAULT '', category_key TEXT NOT NULL DEFAULT '',
+      macro_json TEXT NOT NULL, bytes INTEGER NOT NULL, entity_count INTEGER NOT NULL,
+      created_at INTEGER NOT NULL, updated_at INTEGER NOT NULL,
+      UNIQUE(owner_id,name_key,category_key)
+    );
+    CREATE INDEX IF NOT EXISTS community_library_recent ON community_library(updated_at DESC);
+    CREATE INDEX IF NOT EXISTS community_library_owner ON community_library(owner_id, updated_at DESC);
     CREATE TABLE IF NOT EXISTS settings (key TEXT PRIMARY KEY, value TEXT NOT NULL);
     INSERT OR IGNORE INTO settings (key, value) VALUES ('registration_open', '1');
     CREATE TABLE IF NOT EXISTS audit (
@@ -322,6 +502,13 @@ export async function openCloudStore(dataDir, opts = {}) {
   const versionMeta = (row) => ({
     id: row.id, projectId: row.project_id, name: row.name, bytes: row.bytes,
     entityCount: row.entity_count, createdAt: row.created_at,
+  });
+  const libraryMeta = (row, userId, isAdmin = false) => ({
+    id: row.id, name: row.name, category: row.category,
+    entityCount: row.entity_count, bytes: row.bytes,
+    createdAt: row.created_at, updatedAt: row.updated_at,
+    isOwner: row.owner_id === userId,
+    canDelete: row.owner_id === userId || isAdmin,
   });
   const projectMeta = (row) => ({
     id: row.id, ownerId: row.owner_id, name: row.name, version: row.version,
@@ -542,6 +729,94 @@ export async function openCloudStore(dataDir, opts = {}) {
         FROM project_members m JOIN projects p ON p.id=m.project_id JOIN users owner ON owner.id=p.owner_id
         WHERE m.user_id=? ORDER BY updated_at DESC`, userId, userId);
       return { projects: rows.map(projectMeta), usedBytes: usedBytes(userId), quotaBytes };
+    },
+    listLibrary(userId, isAdmin, url) {
+      const { limit, offset } = pageOf(url);
+      const query = (url.searchParams.get('q') ?? '').trim().toLocaleLowerCase();
+      const rows = all(`SELECT id,owner_id,name,category,bytes,entity_count,created_at,updated_at
+        FROM community_library ORDER BY updated_at DESC,name COLLATE NOCASE`);
+      const matches = query
+        ? rows.filter((row) => `${row.name} ${row.category}`.toLocaleLowerCase().includes(query))
+        : rows;
+      return { total: matches.length, entries: matches.slice(offset, offset + limit).map((row) => libraryMeta(row, userId, isAdmin)) };
+    },
+    getLibraryEntry(id, userId, isAdmin = false) {
+      const row = get('SELECT * FROM community_library WHERE id=?', id);
+      if (!row) fail(404, 'Общий элемент не найден.');
+      return { ...libraryMeta(row, userId, isAdmin), macro: JSON.parse(row.macro_json) };
+    },
+    publishLibraryEntries(userId, rawEntries) {
+      if (!Array.isArray(rawEntries) || rawEntries.length < 1 || rawEntries.length > MAX_LIBRARY_BATCH) {
+        fail(400, `За один запрос можно опубликовать от 1 до ${MAX_LIBRARY_BATCH} деталей.`);
+      }
+      const entries = rawEntries.map(parseLibraryEntryInput);
+      const batchKeys = new Set();
+      for (const entry of entries) {
+        const key = entry.nameKey + String.fromCharCode(0) + entry.categoryKey;
+        if (batchKeys.has(key)) fail(400, 'В одной отправке повторяются название и папка детали.');
+        batchKeys.add(key);
+      }
+      const now = Date.now();
+      return tx(() => {
+        let userCount = get('SELECT COUNT(*) AS n FROM community_library WHERE owner_id=?', userId).n;
+        let userBytes = get('SELECT COALESCE(SUM(bytes),0) AS bytes FROM community_library WHERE owner_id=?', userId).bytes;
+        let totalCount = get('SELECT COUNT(*) AS n FROM community_library').n;
+        let totalBytes = get('SELECT COALESCE(SUM(bytes),0) AS bytes FROM community_library').bytes;
+        const prepared = entries.map((entry) => {
+          const existing = get(`SELECT * FROM community_library
+            WHERE owner_id=? AND name_key=? AND category_key=?`, userId, entry.nameKey, entry.categoryKey);
+          const id = existing?.id ?? randomUUID();
+          const createdAt = existing?.created_at ?? now;
+          const macro = {
+            id, name: entry.name, folderId: null, ents: entry.ents, bl: entry.bl,
+            ...(entry.query ? { query: entry.query } : {}), ...(entry.note ? { note: entry.note } : {}),
+            createdAt,
+          };
+          const macroJson = JSON.stringify(macro);
+          const bytes = Buffer.byteLength(macroJson) + Buffer.byteLength(entry.category);
+          if (bytes > MAX_LIBRARY_ENTRY_BYTES) fail(413, `«${entry.name}» слишком велика (максимум ${Math.floor(MAX_LIBRARY_ENTRY_BYTES / 1024)} КиБ).`);
+          return { ...entry, id, createdAt, existing, macroJson, bytes, updatedAt: now };
+        });
+        for (const entry of prepared) {
+          const delta = entry.bytes - (entry.existing?.bytes ?? 0);
+          userBytes += delta; totalBytes += delta;
+          if (!entry.existing) { userCount++; totalCount++; }
+        }
+        if (userCount > MAX_LIBRARY_PER_USER || userBytes > MAX_LIBRARY_PER_USER_BYTES) {
+          fail(413, `Лимит общей библиотеки: до ${MAX_LIBRARY_PER_USER} деталей и ${Math.floor(MAX_LIBRARY_PER_USER_BYTES / 1048576)} МиБ на пользователя.`);
+        }
+        if (totalCount > MAX_LIBRARY_ENTRIES || totalBytes > MAX_LIBRARY_TOTAL_BYTES) {
+          fail(413, 'Общая библиотека сервера достигла лимита. Обратитесь к администратору.');
+        }
+        const result = prepared.map((entry) => {
+          if (entry.existing) {
+            run(`UPDATE community_library SET name=?,name_key=?,category=?,category_key=?,macro_json=?,bytes=?,entity_count=?,updated_at=?
+              WHERE id=? AND owner_id=?`, entry.name, entry.nameKey, entry.category, entry.categoryKey,
+            entry.macroJson, entry.bytes, entry.entityCount, entry.updatedAt, entry.id, userId);
+          } else {
+            run(`INSERT INTO community_library(id,owner_id,name,name_key,category,category_key,macro_json,bytes,entity_count,created_at,updated_at)
+              VALUES(?,?,?,?,?,?,?,?,?,?,?)`, entry.id, userId, entry.name, entry.nameKey, entry.category, entry.categoryKey,
+            entry.macroJson, entry.bytes, entry.entityCount, entry.createdAt, entry.updatedAt);
+          }
+          audit(userId, entry.existing ? 'library.update' : 'library.publish', entry.id, entry.name);
+          const row = {
+            id: entry.id, owner_id: userId, name: entry.name, category: entry.category,
+            bytes: entry.bytes, entity_count: entry.entityCount,
+            created_at: entry.createdAt, updated_at: entry.updatedAt,
+          };
+          return { entry: libraryMeta(row, userId), created: !entry.existing };
+        });
+        return result;
+      });
+    },
+    deleteLibraryEntry(id, actorId, isAdmin = false) {
+      return tx(() => {
+        const row = get('SELECT * FROM community_library WHERE id=?', id);
+        if (!row) fail(404, 'Общий элемент не найден.');
+        if (row.owner_id !== actorId && !isAdmin) fail(403, 'Удалить общий элемент может только его автор или администратор.');
+        run('DELETE FROM community_library WHERE id=?', id);
+        audit(actorId, 'library.delete', id, row.name);
+      });
     },
     listMembers(projectId, userId) {
       const project = accessibleProject(projectId, userId);
@@ -1088,6 +1363,32 @@ export async function createCloudService(dataDir, opts = {}) {
       const body = await readJson(req);
       stillAuthorized();
       return json(res, 201, { ok: true, project: store.createProject(actor.id, body.name, body.document) });
+    }
+    if (path === '/library' && method === 'GET') {
+      stillAuthorized();
+      return json(res, 200, { ok: true, ...store.listLibrary(actor.id, actor.role === 'admin', url) });
+    }
+    if (path === '/library' && method === 'POST') {
+      const body = await readJson(req, MAX_LIBRARY_ENTRY_BYTES + 32 * 1024);
+      const fresh = stillAuthorized();
+      const [result] = store.publishLibraryEntries(fresh.id, [body]);
+      return json(res, result.created ? 201 : 200, { ok: true, ...result });
+    }
+    if (path === '/library/batch' && method === 'POST') {
+      const body = await readJson(req, MAX_LIBRARY_BATCH * MAX_LIBRARY_ENTRY_BYTES + 2 * 1024 * 1024);
+      const fresh = stillAuthorized();
+      if (!Array.isArray(body.entries)) fail(400, 'Для публикации передайте список деталей.');
+      return json(res, 200, { ok: true, results: store.publishLibraryEntries(fresh.id, body.entries) });
+    }
+    const libraryEntry = /^\/library\/([0-9a-f-]{36})$/i.exec(path);
+    if (libraryEntry && method === 'GET') {
+      stillAuthorized();
+      return json(res, 200, { ok: true, entry: store.getLibraryEntry(libraryEntry[1], actor.id, actor.role === 'admin') });
+    }
+    if (libraryEntry && method === 'DELETE') {
+      const fresh = stillAuthorized();
+      store.deleteLibraryEntry(libraryEntry[1], fresh.id, fresh.role === 'admin');
+      return json(res, 200, { ok: true });
     }
 
     const presenceRoute = /^\/projects\/([0-9a-f-]{36})\/presence$/i.exec(path);
