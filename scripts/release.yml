@@ -1,4 +1,5 @@
-# Релиз на каждый смерженный в main PR: тег v0.0.<номер PR> + релиз с описанием из PR.
+# Релиз на каждый смерженный в main PR: начиная с v1.6.0 — semver и русские заметки из PR.
+# Старые теги v0.0.<номер PR> остаются на месте для совместимости.
 #
 # Чтобы GitHub Actions подхватил этот файл, скопируйте его в
 #   .github/workflows/release.yml
@@ -7,7 +8,7 @@
 #
 # Логика в scripts/make-release.mjs — там же меняется формат заметок. Скриптом можно
 # пользоваться и локально: node scripts/make-release.mjs --backfill --dry-run
-name: Release per merged PR
+name: Релизы PSBees
 
 on:
   push:

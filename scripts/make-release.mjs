@@ -1,26 +1,34 @@
 #!/usr/bin/env node
-// Релизы по каждому смерженному в main PR — чтобы история проекта читалась прямо
-// на странице Releases: тег v0.0.<номер PR>. Номер PR растёт вместе с проектом,
-// поэтому сортировка GitHub (по semver) совпадает с хронологией мерджей.
+// Релиз на каждый PR, смерженный в main. Исторические теги v0.0.<номер PR>
+// сохраняются для совместимости; с версии 1.6.0 релизы получают semver-теги,
+// а номер исправления увеличивается для каждого следующего PR.
 //
 // Запуск:
 //   node scripts/make-release.mjs --backfill             # все смерженные PR (идемпотентно)
-//   node scripts/make-release.mjs --pr 65                # один PR
-//   node scripts/make-release.mjs --range A..B           # PR из диапазона коммитов (это использует CI)
+//   node scripts/make-release.mjs --pr 66                # один PR
+//   node scripts/make-release.mjs --range A..B            # PR из диапазона коммитов (это использует CI)
 //   node scripts/make-release.mjs --backfill --dry-run    # показать, что будет, ничего не создавая
 //
 // Опции:
 //   --repo owner/name    репозиторий (по умолчанию GITHUB_REPOSITORY или origin)
-//   --prefix v0.0.        префикс тега
+//   --prefix v0.0.        формат исторических тегов для старых PR
 //   --force              обновить заметки уже существующего релиза
 //
 // Нужно: git и gh (авторизованный, права write на contents). В CI вызывается из
-// .github/workflows/release.yml. Заметки релиза собираются из тела PR, поэтому
-// описание ветки в PR = описание релиза: пишите «Что нового» по-человечески.
+// .github/workflows/release.yml. Заметки релиза собираются из тела PR — пишите
+// заголовок и раздел «Что нового» по-русски, тогда и описание релиза будет русским.
 import { execFileSync } from 'node:child_process';
-import { mkdtempSync, writeFileSync, rmSync } from 'node:fs';
+import { mkdtempSync, writeFileSync, rmSync, readFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { fileURLToPath } from 'node:url';
+import {
+  compareReleaseVersions,
+  formatReleaseVersion,
+  nextReleaseVersion,
+  parseReleaseVersion,
+  releaseTag,
+} from './release-version.mjs';
 
 const argv = process.argv.slice(2);
 const flag = (name, def) => {
@@ -32,6 +40,9 @@ const flag = (name, def) => {
 const DRY = flag('dry-run') === true || argv.includes('--dry-run');
 const FORCE = flag('force') === true || argv.includes('--force');
 const PREFIX = typeof flag('prefix') === 'string' ? flag('prefix') : 'v0.0.';
+const PACKAGE = JSON.parse(readFileSync(fileURLToPath(new URL('../package.json', import.meta.url)), 'utf8'));
+const BASE_VERSION = String(PACKAGE.version || '');
+if (!parseReleaseVersion(BASE_VERSION)) throw new Error('В package.json указана некорректная версия релиза.');
 
 const sh = (cmd, args) => {
   try {
@@ -99,23 +110,25 @@ function summarize(body) {
   return head + NL + NL + '_(полное описание — по ссылке на PR ниже)_';
 }
 
-function notesFor(pr, prevTag) {
-  const tag = PREFIX + pr.number;
+function notesFor(pr, prevTag, tag) {
+  const version = formatReleaseVersion(tag);
   const url = pr.url || 'https://github.com/' + REPO + '/pull/' + pr.number;
   const sha = (pr.mergeCommit && pr.mergeCommit.oid) || '';
   return [
-    '## ' + String(pr.title || tag).trim(),
+    '## Версия ' + version,
+    '',
+    '### ' + String(pr.title || 'Изменения').trim(),
     '',
     summarize(pr.body),
     '',
     '---',
     '',
-    '- **Смержено в `main`:** ' + String(pr.mergedAt || '').slice(0, 10),
-    '- **PR:** [#' + pr.number + '](' + url + ')' + (pr.headRefName ? ' (ветка `' + pr.headRefName + '`)' : ''),
+    '- **Дата выхода:** ' + String(pr.mergedAt || '').slice(0, 10),
+    '- **Запрос на включение изменений:** [#' + pr.number + '](' + url + ')' + (pr.headRefName ? ' (ветка `' + pr.headRefName + '`)' : ''),
     sha ? '- **Коммит:** [' + sha.slice(0, 7) + '](https://github.com/' + REPO + '/commit/' + sha + ')' : null,
-    '- **Объём:** ' + (pr.changedFiles || 0) + ' файл(ов), +' + (pr.additions || 0) + ' / −' + (pr.deletions || 0),
+    '- **Изменено файлов:** ' + (pr.changedFiles || 0) + ', добавлено +' + (pr.additions || 0) + ' / удалено −' + (pr.deletions || 0),
     prevTag
-      ? '- **Изменения с прошлого релиза:** [' + prevTag + '...' + tag + '](https://github.com/' + REPO + '/compare/' + prevTag + '...' + tag + ')'
+      ? '- **Сравнение с предыдущим релизом:** [' + prevTag + '…' + tag + '](https://github.com/' + REPO + '/compare/' + prevTag + '...' + tag + ')'
       : null,
   ]
     .filter((x) => x !== null)
@@ -167,32 +180,92 @@ function prsFromRange(range) {
 const tagExists = (tag) => git(['ls-remote', '--exit-code', 'origin', 'refs/tags/' + tag]).code === 0;
 const releaseExists = (tag) => gh(['release', 'view', tag]).code === 0;
 
-// предыдущий релиз по факту на GitHub — нужен для ссылки на сравнение
-function prevRelease(n) {
+function releaseList() {
   const r = gh(['release', 'list', '--limit', '300']);
-  if (r.code !== 0) return null;
-  const nums = [];
-  for (const line of r.out.split(NL)) {
-    const col = line.split('\t').find((c) => c.trim().startsWith(PREFIX));
-    if (!col) continue;
-    const v = Number(col.trim().slice(PREFIX.length));
-    if (Number.isFinite(v) && v < n) nums.push(v);
-  }
-  return nums.length ? PREFIX + Math.max.apply(null, nums) : null;
+  if (r.code !== 0) throw new Error('gh release list: ' + r.out.slice(0, 300));
+  return r.out.split(NL).filter(Boolean).map((line) => {
+    const columns = line.split('\t');
+    return { name: (columns[0] || '').trim(), tag: (columns[2] || '').trim(), body: null };
+  }).filter((release) => release.tag);
 }
 
-function createRelease(pr, prevTag) {
-  const tag = PREFIX + pr.number;
+function remoteTagMap() {
+  const r = git(['ls-remote', '--tags', '--refs', 'origin']);
+  if (r.code !== 0) throw new Error('git ls-remote --tags: ' + r.out.slice(0, 300));
+  const tags = new Map();
+  for (const line of r.out.split(NL).filter(Boolean)) {
+    const match = line.match(/^([0-9a-f]+)\s+refs\/tags\/(.+)$/);
+    if (match) tags.set(match[2], match[1]);
+  }
+  return tags;
+}
+
+function isLegacyTag(tag) {
+  return tag.startsWith(PREFIX) && /^\d+$/.test(tag.slice(PREFIX.length));
+}
+
+function legacyPrMax(tags) {
+  return tags.reduce((max, tag) => {
+    if (!isLegacyTag(tag)) return max;
+    return Math.max(max, Number(tag.slice(PREFIX.length)));
+  }, 0);
+}
+
+function previousReleaseTag(tag, occupiedTags) {
+  const version = parseReleaseVersion(tag);
+  if (!version) return null;
+  const previous = [...occupiedTags]
+    .filter((candidate) => {
+      const parsed = parseReleaseVersion(candidate);
+      return parsed && compareReleaseVersions(parsed, version) < 0;
+    })
+    .sort(compareReleaseVersions);
+  return previous.at(-1) || null;
+}
+
+function containsPr(body, number) {
+  return String(body || '').includes(`https://github.com/${REPO}/pull/${number}`);
+}
+
+function releaseForPr(pr, releases, tags) {
+  const sha = pr.mergeCommit && pr.mergeCommit.oid;
+  for (const [tag, target] of tags) {
+    if (!isLegacyTag(tag) && parseReleaseVersion(tag) && target === sha) return tag;
+  }
+  for (const release of releases) {
+    if (isLegacyTag(release.tag) || !parseReleaseVersion(release.tag)) continue;
+    if (release.body == null) {
+      const view = gh(['release', 'view', release.tag, '--json', 'body']);
+      if (view.code === 0) {
+        try { release.body = JSON.parse(view.out).body || ''; } catch { release.body = ''; }
+      } else {
+        release.body = '';
+      }
+    }
+    if (containsPr(release.body, pr.number)) return release.tag;
+  }
+  return null;
+}
+
+function releaseTitle(pr, tag) {
+  const version = formatReleaseVersion(tag);
+  const subject = String(pr.title || 'Обновления программы').replace(/\s+/g, ' ').trim();
+  return ('Версия ' + version + ' — ' + subject).slice(0, 200);
+}
+
+function createRelease(pr, tag, prevTag) {
   const sha = pr.mergeCommit && pr.mergeCommit.oid;
   if (!sha) {
     console.log('пропуск #' + pr.number + ': нет merge-коммита');
     return 'skip';
   }
-  if (releaseExists(tag) && !FORCE) {
+  const exists = releaseExists(tag);
+  if (exists && !FORCE) {
     console.log('уже есть: ' + tag);
     return 'skip';
   }
-  const title = String(pr.title || tag).replace(/\s+/g, ' ').trim().slice(0, 200);
+  const title = releaseTitle(pr, tag);
+  const notes = notesFor(pr, prevTag, tag);
   if (DRY) {
     console.log('[dry-run] ' + tag + ' @ ' + sha.slice(0, 7) + ' — ' + title);
     return 'dry';
@@ -200,17 +273,17 @@ function createRelease(pr, prevTag) {
 
   const dir = mkdtempSync(join(tmpdir(), 'psbees-release-'));
   const file = join(dir, 'notes.md');
-  writeFileSync(file, notesFor(pr, prevTag));
+  writeFileSync(file, notes);
   try {
     // Тег пушим git'ом, а не через API релиза: push refs/tags/v* — стандартный крючок
-    // для CI-сборок (см. scripts/win/windows.yml), которые положат exe в этот же релиз.
+    // для CI-сборок (см. scripts/win/windows.yml), которые добавят exe к этому релизу.
     let haveTag = tagExists(tag);
     if (!haveTag) {
       const push = git(['push', 'origin', '+' + sha + ':refs/tags/' + tag]);
       haveTag = push.code === 0 || tagExists(tag);
       if (!haveTag) console.log('  тег не пушнулся — создадим его релизом: ' + push.out.slice(0, 160));
     }
-    const created = releaseExists(tag)
+    const created = exists
       ? gh(['release', 'edit', tag, '--title', title, '--notes-file', file])
       : gh(
           ['release', 'create', tag, '--title', title, '--notes-file', file, '--latest'].concat(
@@ -249,15 +322,35 @@ function main() {
     return;
   }
 
-  let last = 0;
+  const releases = releaseList();
+  const tags = remoteTagMap();
+  const occupiedTags = new Set([...releases.map((release) => release.tag), ...tags.keys()]);
+  const firstSemverPr = legacyPrMax([...occupiedTags]) + 1;
   let done = 0;
   let failed = 0;
-  for (const p of list) {
-    const prev = last > 0 && last < p.number ? PREFIX + last : prevRelease(p.number);
-    const res = createRelease(p, prev);
-    if (res === 'ok') done++;
-    if (res === 'fail') failed++;
-    if (p.number > last) last = p.number;
+
+  for (const pr of list) {
+    const legacyTag = PREFIX + pr.number;
+    let tag;
+    if (pr.number < firstSemverPr || isLegacyTag(legacyTag) && occupiedTags.has(legacyTag)) {
+      // Старые релизы сохраняют прежние теги, чтобы не ломать ссылки на сравнение и ассеты.
+      tag = legacyTag;
+    } else {
+      tag = releaseForPr(pr, releases, tags);
+      if (!tag) tag = releaseTag(nextReleaseVersion([...occupiedTags], BASE_VERSION));
+    }
+
+    const prevTag = previousReleaseTag(tag, occupiedTags);
+    const result = createRelease(pr, tag, prevTag);
+    if (result === 'ok') done++;
+    if (result === 'fail') failed++;
+
+    // В dry-run тоже резервируем номер, чтобы батч показывал непрерывную нумерацию.
+    occupiedTags.add(tag);
+    if (result === 'ok' || result === 'dry') {
+      const notes = notesFor(pr, prevTag, tag);
+      releases.unshift({ tag, name: releaseTitle(pr, tag), body: notes });
+    }
   }
   console.log('создано релизов: ' + done + ' из ' + list.length + ' (' + REPO + ')' + (failed ? ', ошибок: ' + failed : ''));
   if (failed) process.exit(1);

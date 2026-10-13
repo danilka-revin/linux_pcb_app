@@ -267,7 +267,7 @@ export function ColorsDialog({
   );
 }
 
-export function AboutDialog({ version, onClose }: { version: string | null; onClose: () => void }) {
+export function AboutDialog({ version, productVersion, onClose }: { version: string | null; productVersion?: string | null; onClose: () => void }) {
   return (
     <Modal
       title="О программе"
@@ -288,9 +288,11 @@ export function AboutDialog({ version, onClose }: { version: string | null; onCl
         интерфейса (акцент, фон, панели, текст) настраиваются кнопкой палитры рядом.
       </p>
       <p style={{ fontSize: 12, opacity: 0.85 }}>
-        {version
-          ? `Версия сборки: ${version}.`
-          : 'Версия: разработка (сборка без метки).'}
+        {productVersion
+          ? `Версия программы: ${productVersion}${version ? ` (сборка ${version})` : ''}.`
+          : version
+            ? `Версия сборки: ${version}.`
+            : 'Версия: разработка (сборка без метки).'}
         {' '}На Linux обновления подтягиваются из GitHub при запуске; на Windows
         скачайте свежий установщик <code>PSBees-Setup.exe</code>.
       </p>
