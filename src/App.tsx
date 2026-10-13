@@ -13,7 +13,7 @@ import { drawBoardComment, hitBoardComment, normalizeBoardComments } from './pcb
 import { bboxOf as libBBox } from './pcb/footprint';
 import { lay6ToDoc, docToLay6, hasLay6Magic, lmkToEnts } from './pcb/lay6';
 import {
-  addMacro, buildTree, createFolder, exportJSON, importJSON, loadStore, makeMacro,
+  addMacro, buildTree, createFolder, exportJSON, folderPath, importJSON, loadStore, makeMacro,
   moveMacro, removeFolder, removeMacro, renameFolder, safeName, saveStore, updateMacro,
   type Macro, type Store,
 } from './pcb/userlib';
@@ -70,6 +70,7 @@ import {
   type LeftTabId, type UiState,
 } from './ui/uiconf';
 import { GenPanel, MacroTree, genSpecText } from './ui/genpanel';
+import { CommunityLibraryPanel } from './ui/community-library';
 import { GroupsPanel } from './ui/groups';
 import { FootprintCatalog, type CatalogSelection } from './ui/catalog';
 import {
@@ -471,7 +472,10 @@ export default function App({ cloudUser, onLogout }: { cloudUser?: CloudUser; on
   const [preview, setPreview] = useState<Detail | null>(null);
   const [query, setQueryRaw] = useState<string>(() => loadQuery(cloudUser?.id));
   const [store, setStore] = useState<Store>(() => loadStore(cloudUser?.id));
-  const [libTab, setLibTab] = useState<'gen' | 'lib' | 'catalog'>('gen');
+  const [libTab, setLibTab] = useState<'gen' | 'lib' | 'catalog' | 'shared'>('gen');
+  const [publishingMacroId, setPublishingMacroId] = useState<string | null>(null);
+  const [publishingAll, setPublishingAll] = useState(false);
+  const [publishProgress, setPublishProgress] = useState<{ done: number; total: number } | null>(null);
   const [libFilter, setLibFilter] = useState('');
   const [collapsed, setCollapsed] = useState<Set<string>>(new Set());
   // деталь из библиотеки, которую правим строкой генератора («Обновить»)
@@ -1745,6 +1749,55 @@ export default function App({ cloudUser, onLogout }: { cloudUser?: CloudUser; on
     setPlace((prev) => (prev && prev.macroId === editId ? d : prev));
   }, [detailFromGen, editId, gen.query, patchStore]);
 
+  const cloudLibraryBody = useCallback((macro: Macro) => ({
+    name: macro.name,
+    category: folderPath(store, macro.folderId, ' / '),
+    ents: macro.ents,
+    bl: macro.bl,
+    query: macro.query,
+    note: macro.note,
+  }), [store]);
+
+  const publishMacroToCloud = useCallback(async (macro: Macro) => {
+    if (!cloudUser) return;
+    setPublishingMacroId(macro.id);
+    try {
+      await cloudApi('/library', 'POST', cloudLibraryBody(macro));
+      setLibTab('shared');
+    } catch (error) {
+      alert(cloudError(error));
+    } finally {
+      setPublishingMacroId(null);
+    }
+  }, [cloudUser, cloudLibraryBody]);
+
+  const publishAllToCloud = useCallback(async () => {
+    if (!cloudUser || !store.macros.length || publishingAll) return;
+    const macros = [...store.macros];
+    if (!window.confirm(`Опубликовать все ${macros.length} деталей личной библиотеки в общую библиотеку? Они станут доступны всем пользователям этого сервера.`)) return;
+    setPublishingAll(true);
+    setPublishProgress({ done: 0, total: macros.length });
+    let done = 0;
+    try {
+      for (let index = 0; index < macros.length; index += 20) {
+        const batch = macros.slice(index, index + 20);
+        const { results } = await cloudApi<{ results: Array<{ entry: unknown; created: boolean }> }>(
+          '/library/batch', 'POST', { entries: batch.map(cloudLibraryBody) },
+        );
+        done += results.length;
+        setPublishProgress({ done, total: macros.length });
+      }
+      setLibTab('shared');
+      alert(`Готово: опубликовано или обновлено деталей — ${done}.`);
+    } catch (error) {
+      setLibTab('shared');
+      alert(`Отправлено деталей: ${done} из ${macros.length}. ${cloudError(error)}`);
+    } finally {
+      setPublishingAll(false);
+      setPublishProgress(null);
+    }
+  }, [cloudUser, store, publishingAll, cloudLibraryBody]);
+
   const exportLibJson = useCallback(() => {
     download('library.json', new Blob([exportJSON(store)], { type: 'application/json' }));
   }, [store]);
@@ -2027,6 +2080,12 @@ export default function App({ cloudUser, onLogout }: { cloudUser?: CloudUser; on
     setToolRaw('comp');
     setPreview(null);
   }, []);
+
+  const copyCloudMacroToPersonal = useCallback((macro: Macro) => {
+    const copy = makeMacro(macro.name, macro.ents, { query: macro.query, note: macro.note });
+    patchStore((current) => addMacro(current, copy));
+    setLibTab('lib');
+  }, [patchStore]);
 
   // имя детали из панели свойств: спрашиваем и складываем выделенное в библиотеку
   const saveSelFromProps = useCallback(() => {
@@ -4224,6 +4283,12 @@ export default function App({ cloudUser, onLogout }: { cloudUser?: CloudUser; on
           <button type="button" className={libTab === 'catalog' ? 'on' : ''} onClick={() => setLibTab('catalog')}>
             Каталог
           </button>
+          {cloudUser && (
+            <button type="button" className={libTab === 'shared' ? 'on' : ''} onClick={() => setLibTab('shared')}
+              title="Общая облачная библиотека: элементы доступны всем пользователям сервера">
+              <Ic n="cloud" size={13} /> Общая
+            </button>
+          )}
         </div>
         <div className="pane-scroll">
           {libTab === 'gen' ? (
@@ -4243,7 +4308,7 @@ export default function App({ cloudUser, onLogout }: { cloudUser?: CloudUser; on
             </div>
           ) : libTab === 'lib' ? (
             <>
-            {cloudUser && <div className="cloud-library-hint">Детали хранятся только в этом браузере (для вашего аккаунта). Для переноса используйте экспорт/импорт библиотеки.</div>}
+            {cloudUser && <div className="cloud-library-hint">Личная библиотека остаётся в этом браузере. Нажмите ☁ у детали, чтобы поделиться ею, или «Опубликовать все» для переноса библиотеки в общую — её увидят остальные пользователи сервера.</div>}
             <MacroTree
               store={store}
               tree={tree}
@@ -4275,8 +4340,19 @@ export default function App({ cloudUser, onLogout }: { cloudUser?: CloudUser; on
               }}
               onExport={exportLibJson}
               onImport={() => libFileRef.current?.click()}
+              onPublish={cloudUser ? publishMacroToCloud : undefined}
+              publishingId={publishingMacroId}
+              onPublishAll={cloudUser ? publishAllToCloud : undefined}
+              publishingAll={publishingAll}
+              publishProgress={publishProgress}
             />
             </>
+          ) : libTab === 'shared' && cloudUser ? (
+            <CommunityLibraryPanel
+              onPlace={pickMacro}
+              onPreview={(macro) => setPreview(detailFromMacro(macro))}
+              onCopyToPersonal={copyCloudMacroToPersonal}
+            />
           ) : (
             <FootprintCatalog onPlace={placeFromCatalog} onSave={saveCatalogToLibrary} onExport={(selection) => {
               const detail = detailFromCatalog(selection);
@@ -4352,6 +4428,7 @@ export default function App({ cloudUser, onLogout }: { cloudUser?: CloudUser; on
     activeCommentId, beginComment, focusComment, editComment, deleteComment, toggleCommentResolved,
     cloudUser, libTab, libFilter, collapsed, editId, toggleHidden, toggleLayerLocked, unlockAllLayers, setQuery, setLeftTab,
     placeFromGen, placeFromCatalog, saveCatalogToLibrary, pickMacro, editMacro, saveGenToLibrary, updateGenMacro, exportLibJson, patchStore,
+    publishingMacroId, publishingAll, publishProgress, publishMacroToCloud, publishAllToCloud, copyCloudMacroToPersonal,
     // вкладка «Группы»
     groupCount, selGroup, selGroups, canGroupSel, groupSel, selectGroup, ungroupOne, ungroupAllGroups, renameGroupCb,
     // вкладка «Объекты»

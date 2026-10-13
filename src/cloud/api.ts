@@ -1,4 +1,5 @@
 import type { Doc } from '../pcb/model';
+import type { Macro } from '../pcb/userlib';
 
 export interface CloudUser {
   id: string; email: string; role: 'admin' | 'user'; createdAt: number;
@@ -28,6 +29,11 @@ export interface SyncResponse {
   serverTime: number;
 }
 export interface CloudProjectDetail extends CloudProject { document: Doc }
+export interface CloudLibraryEntry {
+  id: string; name: string; category: string; entityCount: number; bytes: number;
+  createdAt: number; updatedAt: number; isOwner: boolean; canDelete: boolean;
+}
+export interface CloudLibraryEntryDetail extends CloudLibraryEntry { macro: Macro }
 export interface CloudOverview {
   users: number; disabledUsers: number; verifiedUsers: number; unverifiedUsers: number;
   usersMustChangePassword: number; projects: number; bytes: number;

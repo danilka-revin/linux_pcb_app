@@ -1190,6 +1190,25 @@ canvas { display: block; }
   .admin-issued-password-row .txt { min-width: 0; }
 }
 .cloud-library-hint { margin: 8px 10px; padding: 8px; border-radius: 7px; background: var(--info-bg); color: var(--muted); font-size: 10.5px; line-height: 1.5; }
+.mtree .publish-macro { display: inline-flex; flex: none; align-items: center; justify-content: center; width: 23px; height: 21px; padding: 2px; }
+.community-library { padding: 9px 10px 14px; font-size: 11px; }
+.community-library-intro { display: flex; flex-direction: column; gap: 3px; color: var(--muted); line-height: 1.45; }
+.community-library-intro strong { color: var(--text); font-size: 12px; }
+.community-library-search { display: flex; gap: 5px; margin-top: 9px; }
+.community-library-search .txt { min-width: 0; flex: 1; padding: 6px 8px; }
+.community-library-search .btn { flex: none; }
+.community-library-count { margin: 8px 1px 3px; color: var(--muted); font-size: 10px; }
+.community-library-list { display: flex; flex-direction: column; }
+.community-library-item { display: flex; flex-wrap: wrap; align-items: center; gap: 5px 8px; padding: 8px 3px; border-bottom: 1px solid var(--line); }
+.community-library-meta { flex: 1 1 100%; min-width: 0; }
+.community-library-meta strong { display: flex; align-items: center; gap: 6px; min-width: 0; overflow-wrap: anywhere; color: var(--text); font-size: 11px; }
+.community-library-meta small { display: block; margin-top: 2px; color: var(--muted); font-size: 9.5px; line-height: 1.4; overflow-wrap: anywhere; }
+.community-library-owner { flex: none; padding: 1px 5px; border-radius: 5px; background: var(--accent-soft); color: var(--accent-text); font-size: 8px; font-weight: 600; }
+.community-library-actions { display: flex; flex-wrap: wrap; gap: 4px; }
+.community-library-actions .btn { white-space: nowrap; }
+.community-library-empty { padding: 15px 8px; color: var(--muted); text-align: center; line-height: 1.5; }
+.community-library-error { margin-top: 8px; padding: 7px 8px; border: 1px solid var(--danger); border-radius: 7px; background: var(--danger-bg); color: var(--danger-ink); font-size: 10.5px; line-height: 1.4; overflow-wrap: anywhere; }
+.community-library-pagination { display: flex; align-items: center; justify-content: center; gap: 12px; padding: 10px 0; color: var(--muted); font-size: 10px; }
 
 /* ---------- ЧПУ: подготовка G-code, безопасность и предпросмотр ---------- */
 .cnc-modal { width: 920px; max-width: 96vw; }

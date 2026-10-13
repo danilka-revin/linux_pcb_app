@@ -260,6 +260,12 @@ export interface MacroTreeProps {
   onFilter: (s: string) => void;
   onExport: () => void;
   onImport: () => void;
+  /** Публикация деталей личной библиотеки в общую библиотеку сервера. */
+  onPublish?: (m: Macro) => void;
+  publishingId?: string | null;
+  onPublishAll?: () => void;
+  publishingAll?: boolean;
+  publishProgress?: { done: number; total: number } | null;
 }
 
 /** Дерево папок с сохранёнными деталями: свои папки, переименование, перенос */
@@ -284,6 +290,14 @@ export function MacroTree(p: MacroTreeProps) {
         <button type="button" className="btn tiny" onClick={p.onImport} title="Дозагрузить библиотеку из JSON-файла">
           Импорт…
         </button>
+        {p.onPublishAll && p.store.macros.length > 0 && (
+          <button type="button" className="btn tiny" onClick={p.onPublishAll} disabled={p.publishingAll}
+            title="Опубликовать все детали личной библиотеки в общей библиотеке для пользователей сервера">
+            <Ic n="cloud" size={13} /> {p.publishingAll
+              ? `Публикация ${p.publishProgress?.done ?? 0}/${p.publishProgress?.total ?? p.store.macros.length}`
+              : 'Опубликовать все'}
+          </button>
+        )}
       </div>
       {!p.store.macros.length && (
         <div className="lib-hint">
@@ -300,6 +314,7 @@ function Node(props: MacroTreeProps & { node: Tree; depth: number }) {
   const {
     node, depth, store, pickedId, onPick, onPreview, onEdit, onRename, onDelete, onMove,
     onNewFolder, onRenameFolder, onDeleteFolder, collapsed, toggle,
+    onPublish, publishingId, publishingAll,
   } = props;
   const [edit, setEdit] = useState<string | null>(null);
   const open = node.id === null || !collapsed.has(node.id);
@@ -351,6 +366,18 @@ function Node(props: MacroTreeProps & { node: Tree; depth: number }) {
                   <span className="lib-name">{m.name}</span>
                   <span className="lib-spec">{m.query ? 'генератор' : `${m.ents.length} прим.`}</span>
                 </>
+              )}
+              {onPublish && (
+                <button
+                  type="button"
+                  className="btn tiny publish-macro"
+                  title={`Опубликовать «${m.name}» в общей библиотеке для всех пользователей сервера`}
+                  aria-label={`Опубликовать ${m.name} в общую библиотеку`}
+                  disabled={publishingAll || (publishingId !== null && publishingId !== undefined)}
+                  onClick={(e) => { e.stopPropagation(); onPublish(m); }}
+                >
+                  {publishingId === m.id ? '…' : <Ic n="cloud" size={12} />}
+                </button>
               )}
               <span className="acts" onClick={(e) => e.stopPropagation()}>
                 <select

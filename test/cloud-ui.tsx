@@ -4,6 +4,7 @@ import { renderToString } from 'react-dom/server.browser';
 import App from '../src/App';
 import AdminApp, { UserProfilePanel } from '../src/cloud/admin';
 import { CloudProjectsDialog } from '../src/cloud/projects';
+import { CommunityLibraryPanel } from '../src/ui/community-library';
 import { discoverCloud, ForcedPasswordChange } from '../src/cloud/Workspace';
 import { emptyStore, loadStore, saveStore } from '../src/pcb/userlib';
 import type { CloudUser } from '../src/cloud/api';
@@ -15,6 +16,12 @@ for (const text of ['Облачное хранилище', 'Проекты', 'al
 }
 if (html.includes('Обновить программу из ветки main')) throw new Error('HTTP-обновление не должно быть доступно на общем сервере');
 if (html.includes('локально · офлайн')) throw new Error('Статус локального режима показан вместо общего');
+const sharedLibrary = renderToString(createElement(CommunityLibraryPanel, {
+  onPlace: () => {}, onPreview: () => {}, onCopyToPersonal: () => {},
+}));
+for (const text of ['Общая библиотека PSBees', 'Поиск по названию и папке']) {
+  if (!sharedLibrary.includes(text)) throw new Error(`В общей библиотеке отсутствует: ${text}`);
+}
 const admin = renderToString(createElement(AdminApp, { user, onLogout: async () => {} }));
 for (const text of ['Администрирование', 'Пользователи', 'Проекты', 'Журнал действий', 'Регистрация по почте', 'Сброс пароля', 'временный пароль']) {
   if (!admin.includes(text)) throw new Error(`В админ-приложении отсутствует: ${text}`);

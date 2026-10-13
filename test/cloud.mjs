@@ -94,6 +94,55 @@ try {
   assert.equal((await api(alice, '/admin/users', 'GET', undefined, 403)).data.ok, false);
   assert.equal((await api(alice, '/admin/overview', 'GET', undefined, 403)).data.ok, false);
 
+  // Общая библиотека читается всеми пользователями облачного сервера; публиковать
+  // и удалять свои элементы можно после входа. Чужое удаление запрещено.
+  await api(null, '/library', 'GET', undefined, 401);
+  assert.equal((await api(alice, '/library')).data.total, 0);
+  const communityMacro = {
+    name: 'SOIC-8 общий', category: 'Микросхемы',
+    ents: [
+      { id: 'lib-pad-1', kind: 'pad', x: -2, y: 0, shape: 'round', size: 1.8, drill: 0.8 },
+      { id: 'lib-smd-1', kind: 'smd', x: 2, y: 0, w: 1.4, h: 0.8, rot: 0, layer: 'k1' },
+    ],
+    bl: [-3, -1, 3, 1], query: 'soic-8 шаг 1.27', note: 'Общая тестовая деталь',
+  };
+  const published = await api(alice, '/library', 'POST', communityMacro, 201);
+  const sharedId = published.data.entry.id;
+  assert.equal(published.data.created, true);
+  assert.equal(published.data.entry.isOwner, true);
+  const bobLibrary = await api(bob, '/library?q=soic');
+  assert.equal(bobLibrary.data.total, 1, 'другой аккаунт видит опубликованную деталь');
+  assert.equal(bobLibrary.data.entries[0].canDelete, false);
+  assert.equal(Object.hasOwn(bobLibrary.data.entries[0], 'macro'), false, 'список не отдаёт геометрию до выбора элемента');
+  const sharedDetail = await api(bob, `/library/${sharedId}`);
+  assert.equal(sharedDetail.data.entry.macro.name, communityMacro.name);
+  assert.deepEqual(sharedDetail.data.entry.macro.ents, communityMacro.ents);
+  await api(bob, `/library/${sharedId}`, 'DELETE', {}, 403);
+  const republished = await api(alice, '/library', 'POST', { ...communityMacro, note: 'Обновлено автором' }, 200);
+  assert.equal(republished.data.created, false, 'повторная публикация обновляет свою запись, а не плодит копию');
+  assert.equal(republished.data.entry.id, sharedId);
+  assert.equal((await api(bob, `/library/${sharedId}`)).data.entry.macro.note, 'Обновлено автором');
+  const ownCommunityMacro = {
+    name: 'Катушка общего пользования', category: 'Пассивные',
+    ents: [{ id: 'lib-via-1', kind: 'via', x: 0, y: 0, size: 1.6, drill: 0.8 }],
+    bl: [-1, -1, 1, 1],
+  };
+  const bobPublished = await api(bob, '/library', 'POST', ownCommunityMacro, 201);
+  assert.equal(bobPublished.data.entry.canDelete, true);
+  assert.equal((await api(bob, '/library?q=катушка')).data.total, 1, 'поиск работает и для кириллицы');
+  const deletable = await api(bob, '/library', 'POST', { ...ownCommunityMacro, name: 'Деталь для удаления' }, 201);
+  await api(bob, `/library/${deletable.data.entry.id}`, 'DELETE');
+  assert.equal((await api(bob, '/library')).data.total, 2, 'автор может удалить свою публикацию');
+  const batchPublished = await api(alice, '/library/batch', 'POST', { entries: [
+    { ...communityMacro, name: 'Пакетная деталь 1', category: 'Импорт' },
+    { ...communityMacro, name: 'Пакетная деталь 2', category: 'Импорт', ents: communityMacro.ents.map((e) => ({ ...e, id: e.id + '-2' })) },
+  ] }, 200);
+  assert.equal(batchPublished.data.results.length, 2);
+  await api(alice, '/library/batch', 'POST', { entries: [communityMacro, communityMacro] }, 400);
+  await api(alice, '/library', 'POST', { ...communityMacro, name: 'Пустая деталь', ents: [] }, 400);
+  await api(alice, '/library', 'POST', { ...communityMacro, name: 'Неизвестная геометрия', ents: [{ id: 'bad', kind: 'unknown' }] }, 400);
+  assert.equal((await api(bob, '/library')).data.total, 4, 'неудачные публикации не меняют библиотеку');
+
   const doc = { name: 'Моя плата', w: 100, h: 80, entities: [{ id: 'p1', kind: 'pad', x: 10, y: 20, size: 2, drill: 1 }] };
   const created = (await api(alice, '/projects', 'POST', { name: doc.name, document: doc }, 201)).data.project;
   assert.equal(created.version, 1);
@@ -312,6 +361,8 @@ try {
   base = started.url;
   assert.equal((await api(alice, '/projects')).data.projects[0].version, 7);
   assert.equal((await api(alice, vpath)).data.versions.length, 49, 'версии переживают перезапуск');
+  assert.equal((await api(bob, '/library')).data.total, 4, 'общая библиотека переживает перезапуск сервера');
+  assert.deepEqual((await api(alice, `/library/${sharedId}`)).data.entry.macro.ents, communityMacro.ents);
   await api(admin, '/admin/projects/' + created.id, 'DELETE');
   assert.equal((await api(alice, '/projects')).data.projects.length, 0);
   assert.equal((await api(alice, '/projects')).data.usedBytes, 0, 'удаление проекта удаляет версии и освобождает квоту');
@@ -321,6 +372,13 @@ try {
   assert.equal((await api(alice, '/me', 'GET', undefined, 401)).data.ok, false);
   assert.equal((await api(admin, '/admin/overview')).data.users, 2);
   assert.equal((await api(admin, '/admin/projects')).data.total, 0);
+  const retainedLibrary = await api(bob, '/library?q=soic');
+  assert.equal(retainedLibrary.data.total, 1, 'удаление аккаунта автора не удаляет полезный общий элемент');
+  assert.equal(retainedLibrary.data.entries[0].canDelete, false, 'осиротевшую запись может удалить только администратор');
+  const adminLibrary = await api(admin, '/library?q=soic');
+  assert.equal(adminLibrary.data.entries[0].canDelete, true);
+  await api(admin, `/library/${adminLibrary.data.entries[0].id}`, 'DELETE');
+  assert.equal((await api(bob, '/library?q=soic')).data.total, 0, 'администратор может удалить осиротевшую публикацию');
   await api(admin, '/logout', 'POST');
   await api(admin, '/admin/overview', 'GET', undefined, 401);
   console.log('cloud HTTP/SQLite OK');

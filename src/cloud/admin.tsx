@@ -15,6 +15,8 @@ const EVENTS: Record<string, string> = {
   'admin.user.view': 'Администратор открыл сводку пользователя',
   'project.create': 'Создан проект', 'project.save': 'Сохранён проект',
   'project.rename': 'Переименован проект', 'project.delete': 'Удалён проект',
+  'library.publish': 'Деталь опубликована в общей библиотеке',
+  'library.update': 'Общая деталь обновлена', 'library.delete': 'Общая деталь удалена',
   'admin.user.disable': 'Пользователь заблокирован', 'admin.user.enable': 'Пользователь разблокирован',
   'admin.user.role': 'Изменена роль', 'admin.user.sessions_revoked': 'Сеансы отозваны',
   'admin.user.delete': 'Пользователь удалён', 'admin.project.delete': 'Проект удалён администратором',
