@@ -412,6 +412,8 @@ export async function startServer(opts = {}) {
     cloud = await createCloudService(dataPath, {
       quotaBytes: opts.cloudQuotaBytes ?? quotaMb * 1024 * 1024,
       ...(opts.cloudMailer ? { mailer: opts.cloudMailer } : {}),
+      // Админ-панель обновляет программу тем же механизмом, что и локальная версия.
+      updater: (req, res, cmd, url) => cloudUpdate(req, res, cmd, url),
     });
   }
 
@@ -889,6 +891,18 @@ export async function startServer(opts = {}) {
     const t = setTimeout(reply, 25000);
     upd.waiters.add(reply);
     req.on('close', () => { if (!done) { done = true; clearTimeout(t); upd.waiters.delete(reply); } });
+  };
+
+  /**
+   * Обновление с GitHub для админ-панели общего сервера (/api/cloud/admin/update/*).
+   * Права проверяет cloud.mjs; здесь только выбор действия.
+   */
+  const cloudUpdate = async (req, res, cmd, url) => {
+    if (cmd === 'check') return checkUpdate(res, url.searchParams.get('force') === '1');
+    if (cmd === 'status') return statusUpdate(req, res, url);
+    if (cmd === 'run') return runUpdate(res);
+    if (cmd === 'cancel') return cancelUpdate(res);
+    return json(res, 404, { ok: false, error: 'неизвестная команда обновления' });
   };
 
   const server = createServer(async (req, res) => {

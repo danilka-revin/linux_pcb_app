@@ -45,10 +45,11 @@ export function AuthScreen({ config, onLogin }: { config: CloudConfig; onLogin: 
     e.preventDefault();
     const name = email.trim();
     if (!name) { setError('Введите имя или ник.'); return; }
+    if (register && password !== confirm) { setError('Пароли не совпадают.'); return; }
     setBusy(true); setError('');
     try {
       const result = await cloudApi<{ user: CloudUser }>(
-        register ? '/register' : '/login', 'POST', { name },
+        register ? '/register' : '/login', 'POST', { name, password },
       );
       onLogin(result.user);
     } catch (err) { setError(cloudError(err)); }
@@ -65,24 +66,35 @@ export function AuthScreen({ config, onLogin }: { config: CloudConfig; onLogin: 
           </div>
           <h1>{register ? 'Регистрация по нику' : 'Войти в PSBees'}</h1>
           <p>{register
-            ? 'Придумайте свободное имя или ник — почта и пароль не нужны.'
+            ? 'Придумайте свободное имя или ник и пароль (не менее 10 символов). Почта не нужна.'
             : config.registrationOpen !== false
-              ? 'Введите своё имя или ник. Если вы заходите впервые, профиль создастся автоматически — без почты и пароля.'
-              : 'Введите свой ник для входа в рабочее пространство.'}</p>
+              ? 'Введите ник и пароль. Если ник свободен, учётная запись создастся автоматически — пароль при этом нужно придумать.'
+              : 'Введите ник и пароль для входа в рабочее пространство.'}</p>
           <form onSubmit={(e) => void submitNickname(e)}>
             <label htmlFor="auth-nickname">{register ? 'Придумайте имя или ник' : 'Ваше имя или ник'}</label>
             <input id="auth-nickname" className="txt" type="text" autoComplete="username" required autoFocus
               value={email} onChange={(e) => setEmail(e.target.value)}
               placeholder="Например: Данил, Alex, Конструктор" maxLength={120} />
+            <label htmlFor="auth-nickname-password">{register ? 'Придумайте пароль' : 'Пароль'}</label>
+            <input id="auth-nickname-password" className="txt" type="password"
+              autoComplete={register ? 'new-password' : 'current-password'}
+              required={register} minLength={register ? 10 : undefined} maxLength={128}
+              value={password} onChange={(e) => setPassword(e.target.value)}
+              placeholder={register ? 'Не менее 10 символов' : 'Пароль от вашего ника'} />
+            {register && <>
+              <label htmlFor="auth-nickname-confirm">Повторите пароль</label>
+              <input id="auth-nickname-confirm" className="txt" type="password" autoComplete="new-password" required
+                maxLength={128} value={confirm} onChange={(e) => setConfirm(e.target.value)} />
+            </>}
             {error && <div className="cloud-error" role="alert">{error}</div>}
-            <button className="btn primary" disabled={busy || !email.trim()} type="submit">
+            <button className="btn primary" disabled={busy || !email.trim() || (register && (!password || !confirm))} type="submit">
               {busy ? 'Входим…' : register ? 'Зарегистрироваться и войти' : 'Войти'}
             </button>
             {busy && <ProgressBar slim live indeterminate title="Входим в рабочее пространство" />}
           </form>
           {config.registrationOpen !== false ? (
-            <button className="cloud-switch" type="button" onClick={() => { setRegister(!register); setError(''); }}>
-              {register ? 'Уже есть ник? Войти' : 'Хотите проверить свободен ли ник? Отдельная регистрация'}
+            <button className="cloud-switch" type="button" onClick={() => { setRegister(!register); setError(''); setPassword(''); setConfirm(''); }}>
+              {register ? 'Уже есть ник? Войти' : 'Новый ник? Регистрация с паролем'}
             </button>
           ) : (
             <div className="cloud-auth-note">Регистрация новых пользователей закрыта администратором. Войти могут только уже созданные ники.</div>

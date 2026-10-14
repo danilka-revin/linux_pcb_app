@@ -5,8 +5,9 @@ import {
   type AdminUser, type AdminUserProfile, type CloudEvent, type CloudOverview, type CloudProject,
   type CloudProjectDetail, type CloudUser,
 } from './api';
+import AdminUpdatePanel from './admin-update';
 
-type Tab = 'overview' | 'users' | 'projects' | 'events';
+type Tab = 'overview' | 'users' | 'projects' | 'events' | 'update';
 const EVENTS: Record<string, string> = {
   'admin.bootstrap': 'Создан администратор', 'admin.password_reset_cli': 'Сброшен пароль администратора',
   'user.register': 'Регистрация', 'user.login': 'Вход', 'user.password_change': 'Смена пароля',
@@ -22,6 +23,7 @@ const EVENTS: Record<string, string> = {
   'admin.user.delete': 'Пользователь удалён', 'admin.project.delete': 'Проект удалён администратором',
   'admin.project.download': 'Администратор скачал проект',
   'admin.registration': 'Изменена регистрация',
+  'admin.update.run': 'Запущено обновление программы из GitHub',
 };
 const PAGE_SIZE = 30;
 function Pagination({ total, page, setPage }: { total: number; page: number; setPage: (n: number) => void }) {
@@ -125,6 +127,8 @@ export default function AdminApp({ user, onLogout }: { user: CloudUser; onLogout
             '/admin/projects' + params + (ownerId ? '&ownerId=' + encodeURIComponent(ownerId) : ''),
           );
           if (active) { setProjects(data.projects); setTotal(data.total); }
+        } else if (tab === 'update') {
+          // панель обновления загружает свои данные сама
         } else {
           const data = await cloudApi<{ total: number; events: CloudEvent[] }>(
             `/admin/events?limit=${tab === 'overview' ? 6 : PAGE_SIZE}&offset=${tab === 'overview' ? 0 : page * PAGE_SIZE}`,
@@ -214,12 +218,12 @@ export default function AdminApp({ user, onLogout }: { user: CloudUser; onLogout
         <button className="btn" onClick={() => void action(onLogout)}>Выйти</button></div>
     </header>
     <nav className="admin-nav" aria-label="Разделы управления">
-      {([['overview', 'Обзор'], ['users', 'Пользователи'], ['projects', 'Проекты'], ['events', 'Журнал действий']] as const).map(([id, name]) =>
+      {([['overview', 'Обзор'], ['users', 'Пользователи'], ['projects', 'Проекты'], ['events', 'Журнал действий'], ['update', 'Обновление']] as const).map(([id, name]) =>
         <button key={id} className={tab === id ? 'on' : ''} onClick={() => switchTab(id)}>{name}</button>)}
     </nav>
     <main className="admin-body">
-      <div className="admin-heading"><div><h1>{tab === 'overview' ? 'Обзор сервера' : tab === 'users' ? 'Пользователи' : tab === 'projects' ? 'Проекты' : 'Журнал действий'}</h1>
-        <p>{tab === 'overview' ? 'Состояние общего хранилища и управление регистрацией' : tab === 'users' ? 'Учётные записи, роли и доступ' : tab === 'projects' ? 'Все платы на сервере: владельцы и резервные копии' : 'Последние изменения на сервере'}</p></div>
+      <div className="admin-heading"><div><h1>{tab === 'overview' ? 'Обзор сервера' : tab === 'users' ? 'Пользователи' : tab === 'projects' ? 'Проекты' : tab === 'update' ? 'Обновление программы' : 'Журнал действий'}</h1>
+        <p>{tab === 'overview' ? 'Состояние общего хранилища и управление регистрацией' : tab === 'users' ? 'Учётные записи, роли и доступ' : tab === 'projects' ? 'Все платы на сервере: владельцы и резервные копии' : tab === 'update' ? 'Установка новой версии из GitHub без терминала' : 'Последние изменения на сервере'}</p></div>
         <button className="btn" disabled={busy} onClick={() => setRefresh((n) => n + 1)}>↻ Обновить</button></div>
       {error && <div className="cloud-error" role="alert">{error}</div>}
       {issuedPassword && tab === 'users' && <section className="admin-issued-password" role="status">
@@ -297,7 +301,8 @@ export default function AdminApp({ user, onLogout }: { user: CloudUser; onLogout
       {tab === 'events' && <div className="admin-table-wrap"><table className="admin-table"><thead><tr><th>Время</th><th>Действие</th><th>Пользователь</th><th>Детали</th></tr></thead>
         <tbody>{events.map((e) => <tr key={e.id}><td>{cloudDate(e.at)}</td><td>{EVENTS[e.action] ?? e.action}</td><td>{e.actorEmail || 'Администратор сервера'}</td><td>{e.detail}</td></tr>)}</tbody>
       </table>{!events.length && !busy && <div className="admin-empty">Записей пока нет.</div>}</div>}
-      {tab !== 'overview' && <Pagination total={total} page={page} setPage={setPage} />}
+      {tab === 'update' && <AdminUpdatePanel />}
+      {tab !== 'overview' && tab !== 'update' && <Pagination total={total} page={page} setPage={setPage} />}
     </main>
   </div>;
 }

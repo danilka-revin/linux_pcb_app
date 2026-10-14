@@ -1,8 +1,9 @@
-import { useCallback, useEffect, useMemo, useState, type FormEvent } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState, type FormEvent } from 'react';
 import { download } from '../pcb/zip';
 import { Modal } from '../ui/widgets';
 import { cloudApi, cloudBytes, cloudDate, cloudError, type CloudProject, type CloudProjectDetail, type CloudUser, type ProjectMember } from './api';
 import { ProgressBar, StatBar } from '../ui/progress';
+import { renderBoardThumbnail } from './thumbnail';
 
 export type CloudSaveState = 'local' | 'saved' | 'dirty' | 'saving' | 'error' | 'conflict';
 const LABELS: Record<CloudSaveState, string> = {
@@ -43,10 +44,45 @@ export function CloudProjectsDialog({ current, userId, docName, status, statusMe
   const [members, setMembers] = useState<ProjectMember[]>([]);
   const [shareEmail, setShareEmail] = useState('');
   const [shareBusy, setShareBusy] = useState(false);
+  // Превью всей платы строим в фоне по одной плате за раз: только там, где миниатюра устарела или её нет.
+  const alive = useRef(true);
+  const thumbQueue = useRef<CloudProject[]>([]);
+  const thumbSeen = useRef(new Set<string>());
+  const thumbRunning = useRef(false);
+  useEffect(() => () => { alive.current = false; }, []);
+  const runThumbQueue = useCallback(async () => {
+    if (thumbRunning.current) return;
+    thumbRunning.current = true;
+    try {
+      while (alive.current && thumbQueue.current.length) {
+        const item = thumbQueue.current.shift()!;
+        try {
+          const { project } = await cloudApi<{ project: CloudProjectDetail }>(`/projects/${item.id}`);
+          const thumbnail = renderBoardThumbnail(project.document);
+          await cloudApi(`/projects/${item.id}/thumbnail`, 'POST', { image: thumbnail, version: project.version });
+          if (alive.current) {
+            setItems((prev) => prev.map((p) => (p.id === item.id ? { ...p, thumbnail, thumbnailVersion: project.version } : p)));
+          }
+        } catch { /* превью не обязательно: плата остаётся доступна в списке */ }
+      }
+    } finally {
+      thumbRunning.current = false;
+    }
+  }, []);
+  const queueThumbnails = useCallback((list: CloudProject[]) => {
+    for (const p of list) {
+      const key = `${p.id}:${p.version}`;
+      if (p.thumbnailVersion === p.version || thumbSeen.current.has(key)) continue;
+      thumbSeen.current.add(key);
+      thumbQueue.current.push(p);
+    }
+    void runThumbQueue();
+  }, [runThumbQueue]);
   const load = useCallback(async () => {
     const data = await cloudApi<{ projects: CloudProject[]; usedBytes: number; quotaBytes: number }>('/projects');
     setItems(data.projects); setUsed(data.usedBytes); setQuota(data.quotaBytes);
-  }, []);
+    queueThumbnails(data.projects);
+  }, [queueThumbnails]);
   useEffect(() => { let live = true; void load().catch((e) => { if (live) setError(cloudError(e)); }).finally(() => { if (live) setLoading(false); });
     return () => { live = false; }; }, [load]);
   const perform = async (fn: () => Promise<unknown>) => {
@@ -133,6 +169,11 @@ export function CloudProjectsDialog({ current, userId, docName, status, statusMe
         const isSharedPanel = shareProject?.id === p.id;
         return <div className="cloud-project-entry" key={p.id}>
           <div className={'cloud-list-item' + (p.id === current?.id ? ' current' : '')}>
+            <div className="cloud-thumb" title={`Вся плата «${p.name}»`}>
+              {p.thumbnail
+                ? <img src={p.thumbnail} alt={`Плата «${p.name}»`} loading="lazy" decoding="async" />
+                : <span aria-label="Превью готовится">Превью…</span>}
+            </div>
             <div className="cloud-list-meta"><strong>{p.name}{p.id === current?.id && <span className="cloud-pill ok">Открыт</span>}
               {!isOwner && <span className="cloud-pill">Общая</span>}</strong>
               <small>{cloudDate(p.updatedAt)} · {p.entityCount} эл. · {cloudBytes(p.bytes)} · версия {p.version}
@@ -177,7 +218,6 @@ export function CloudProjectsDialog({ current, userId, docName, status, statusMe
 export function CloudAccountDialog({ user, onClose, onLogout }: {
   user: CloudUser; onClose: () => void; onLogout: () => Promise<void>;
 }) {
-  const [current, setCurrent] = useState('');
   const [next, setNext] = useState('');
   const [repeat, setRepeat] = useState('');
   const [busy, setBusy] = useState(false);
@@ -188,8 +228,8 @@ export function CloudAccountDialog({ user, onClose, onLogout }: {
     if (next !== repeat) { setError('Пароли не совпадают.'); return; }
     setBusy(true); setError(''); setDone('');
     try {
-      await cloudApi('/password', 'POST', { currentPassword: current, newPassword: next });
-      setCurrent(''); setNext(''); setRepeat(''); setDone('Пароль изменён. Все остальные сеансы завершены.');
+      await cloudApi('/password', 'POST', { newPassword: next });
+      setNext(''); setRepeat(''); setDone('Пароль изменён. Все остальные сеансы завершены.');
     } catch (err) { setError(cloudError(err)); }
     finally { setBusy(false); }
   };
@@ -202,8 +242,8 @@ export function CloudAccountDialog({ user, onClose, onLogout }: {
     <p><strong>{user.email}</strong> · {user.role === 'admin' ? 'Администратор' : 'Пользователь'}</p>
     {user.role === 'admin' && <p><a className="admin-link" href="/admin">Перейти в админ-панель →</a></p>}
     <h3>Сменить пароль</h3>
+    <p className="cloud-footnote">Текущий пароль не нужен: достаточно быть в учётной записи. Остальные сеансы будут завершены.</p>
     <form className="cloud-password-form" onSubmit={(e) => void changePassword(e)}>
-      <label>Текущий пароль<input className="txt" type="password" autoComplete="current-password" required value={current} onChange={(e) => setCurrent(e.target.value)} /></label>
       <label>Новый пароль<input className="txt" type="password" autoComplete="new-password" required minLength={10} maxLength={128} value={next} onChange={(e) => setNext(e.target.value)} /></label>
       <label>Повторите новый пароль<input className="txt" type="password" autoComplete="new-password" required value={repeat} onChange={(e) => setRepeat(e.target.value)} /></label>
       <button className="btn primary" type="submit" disabled={busy}>Сменить пароль</button>
