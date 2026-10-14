@@ -32,25 +32,33 @@ function secret(label) {
   });
 }
 
-const [, , action, email] = process.argv;
-if (!['create-admin', 'reset-admin-password', 'reset-user-password'].includes(action) || !email || process.argv.length !== 4) {
-  console.error('Использование: PSBEES_DATA_DIR=/путь/к/данным node scripts/cloud-admin.mjs create-admin admin@example.com');
-  console.error('            PSBEES_DATA_DIR=/путь/к/данным node scripts/cloud-admin.mjs reset-admin-password admin@example.com');
-  console.error('            PSBEES_DATA_DIR=/путь/к/данным node scripts/cloud-admin.mjs reset-user-password user@example.com');
+const [, , action, email, flag] = process.argv;
+const noPassword = action === 'create-admin' && flag === '--no-password';
+if (!['create-admin', 'reset-admin-password', 'reset-user-password'].includes(action)
+  || !email
+  || (process.argv.length !== 4 && !(noPassword && process.argv.length === 5))) {
+  console.error('Использование: PSBEES_DATA_DIR=/путь/к/данным node scripts/cloud-admin.mjs create-admin <ник-или-почта> [--no-password]');
+  console.error('            PSBEES_DATA_DIR=/путь/к/данным node scripts/cloud-admin.mjs reset-admin-password <ник-или-почта>');
+  console.error('            PSBEES_DATA_DIR=/путь/к/данным node scripts/cloud-admin.mjs reset-user-password <ник-или-почта>');
   process.exitCode = 1;
 } else {
   let store;
   try {
     store = await openCloudStore(process.env.PSBEES_DATA_DIR);
-    const password = await secret('Новый пароль (10–128 символов, ввод скрыт): ');
-    const confirm = await secret('Повторите пароль: ');
-    if (password !== confirm) throw new Error('Пароли не совпадают.');
-    if (action === 'create-admin') await store.createAdmin(email, password);
-    else if (action === 'reset-admin-password') await store.resetAdminPassword(email, password);
-    else await store.resetUserPassword(email, password);
-    console.log(action === 'create-admin' ? 'Администратор создан. Теперь можно войти через браузер.'
-      : action === 'reset-user-password' ? 'Пароль изменён, все старые сеансы отозваны. Передайте его пользователю лично: при следующем входе потребуется задать новый пароль.'
-        : 'Пароль администратора изменён, все старые сеансы отозваны.');
+    if (noPassword) {
+      await store.createAdmin(email, '');
+      console.log('Администратор создан (вход по нику без пароля). Теперь можно войти через браузер.');
+    } else {
+      const password = await secret('Новый пароль (10–128 символов, ввод скрыт): ');
+      const confirm = await secret('Повторите пароль: ');
+      if (password !== confirm) throw new Error('Пароли не совпадают.');
+      if (action === 'create-admin') await store.createAdmin(email, password);
+      else if (action === 'reset-admin-password') await store.resetAdminPassword(email, password);
+      else await store.resetUserPassword(email, password);
+      console.log(action === 'create-admin' ? 'Администратор создан. Теперь можно войти через браузер.'
+        : action === 'reset-user-password' ? 'Пароль изменён, все старые сеансы отозваны. Передайте его пользователю лично: при следующем входе потребуется задать новый пароль.'
+          : 'Пароль администратора изменён, все старые сеансы отозваны.');
+    }
   } catch (e) {
     console.error('Ошибка:', e?.message || e);
     process.exitCode = 1;

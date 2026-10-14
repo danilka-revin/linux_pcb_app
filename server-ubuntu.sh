@@ -28,22 +28,21 @@ usage() {
   cat <<'EOF'
 PSBees — общий сервер печатных плат для Ubuntu
 
-  sudo bash server-ubuntu.sh install    установить, создать администратора и запустить
+  sudo bash server-ubuntu.sh install    установить и запустить одной командой (без настройки почты)
   sudo bash server-ubuntu.sh update     обновить код/сборку без изменения пользователей и плат
   sudo bash server-ubuntu.sh start      запустить systemd-сервис
   sudo bash server-ubuntu.sh stop       остановить сервис
   sudo bash server-ubuntu.sh restart    перезапустить сервис
   sudo bash server-ubuntu.sh status     показать состояние и локальный health-check
   sudo bash server-ubuntu.sh logs       последние 100 строк журнала, далее — просмотр вживую
-  sudo bash server-ubuntu.sh smtp-check проверить SMTP без отправки письма
+  sudo bash server-ubuntu.sh smtp-check проверить SMTP без отправки письма (если включён SMTP)
   sudo bash server-ubuntu.sh backup     безопасно создать архив SQLite-каталога
 
 Установка настроек: PSBEES_APP_DIR (по умолчанию /opt/psbees),
 PSBEES_DATA_DIR (/var/lib/psbees), PSBEES_PORT (8080), PSBEES_BIND_HOST
-(0.0.0.0), PSBEES_LAN_CIDR (например, 192.168.1.0/24),
-PSBEES_RECONFIGURE_SMTP=1. HTTPS proxy: PSBEES_TRUST_PROXY=1 и
-PSBEES_SECURE_COOKIES=1.
-Для первого запуска понадобятся SMTP host/port/from и, если требуется, логин/пароль.
+(0.0.0.0), PSBEES_LAN_CIDR (например, 192.168.1.0/24).
+По умолчанию вход и регистрация работают просто по имени (нику) без почты и пароля;
+первый вошедший пользователь автоматически становится администратором.
 EOF
 }
 
@@ -177,9 +176,23 @@ check_saved_smtp() {
 
 configure_smtp() {
   local smtp_host smtp_port smtp_from smtp_user smtp_pass smtp_secure
-  if [[ -f "$ENV_FILE" && "${PSBEES_RECONFIGURE_SMTP:-0}" != "1" ]]; then
-    say "Существующий SMTP-конфиг сохраняю ($ENV_FILE). Для изменения задайте PSBEES_RECONFIGURE_SMTP=1."
-    check_saved_smtp
+  if [[ -f "$ENV_FILE" && "${PSBEES_RECONFIGURE_SMTP:-0}" != "1" && -z "${PSBEES_SMTP_HOST:-}" ]]; then
+    say "Существующий конфиг сохраняю ($ENV_FILE)."
+    return 0
+  fi
+  if [[ "${PSBEES_RECONFIGURE_SMTP:-0}" != "1" && -z "${PSBEES_SMTP_HOST:-}" ]]; then
+    say "Создаю конфигурацию сервера ($ENV_FILE) — вход и регистрация по имени/нику без почты"
+    install -d -m 0755 "$ENV_DIR"
+    umask 077
+    {
+      printf 'PSBEES_APP_DIR=%s\nPSBEES_DATA_DIR=%s\n' "$APP_DIR" "$DATA_DIR"
+      printf 'HOST=%s\nPORT=%s\n' "$(systemd_quote "$APP_HOST")" "$DEFAULT_PORT"
+      printf 'PSBEES_USER_QUOTA_MB=%s\nPSBEES_TRUST_PROXY=%s\nPSBEES_SECURE_COOKIES=%s\n' \
+        "$USER_QUOTA_MB" "$TRUST_PROXY" "$SECURE_COOKIES"
+      if [[ -n "$LAN_CIDR" ]]; then printf 'PSBEES_LAN_CIDR=%s\n' "$LAN_CIDR"; fi
+    } > "$ENV_FILE"
+    chown root:root "$ENV_FILE"
+    chmod 0600 "$ENV_FILE"
     return 0
   fi
   if [[ ! -t 0 ]]; then
@@ -323,8 +336,6 @@ configure_firewall_hint() {
     ufw insert "$rule_index" deny "$DEFAULT_PORT"/tcp comment 'PSBees non-LAN' >/dev/null
   elif command -v ufw >/dev/null 2>&1; then
     cidr="$LAN_CIDR"
-    if [[ -z "$cidr" && -t 0 ]]; then read -r -p "CIDR вашей локальной сети для UFW (пусто — не менять firewall): " cidr; fi
-    if [[ -n "$cidr" ]]; then LAN_CIDR="$cidr"; fi
     if [[ -n "$cidr" ]]; then
       validate_cidr "$cidr" || die "неверная сеть CIDR: $cidr"
       if ! grep -q '^PSBEES_LAN_CIDR=' "$ENV_FILE"; then printf 'PSBEES_LAN_CIDR=%s\n' "$cidr" >> "$ENV_FILE"; fi
@@ -344,14 +355,13 @@ bootstrap_admin() {
     say "База уже существует; учётные записи и проекты не сбрасываю."
     return 0
   fi
-  local admin_email
-  [[ -t 0 && -t 1 ]] || die "для безопасного создания первого администратора нужен интерактивный терминал (TTY); повторите install из SSH/консоли Ubuntu."
-  admin_email=""
-  read -r -p "Почта первого администратора PSBees: " admin_email || die "не удалось прочитать почту администратора."
-  [[ -n "$admin_email" ]] || die "нужен адрес администратора."
-  say "Создаю администратора. Пароль вводится скрыто; сохраните его в менеджере паролей."
-  runuser -u "$SERVICE_USER" -- env PSBEES_DATA_DIR="$DATA_DIR" \
-    "$NODE_BIN" "$APP_DIR/scripts/cloud-admin.mjs" create-admin "$admin_email"
+  if [[ -n "${PSBEES_ADMIN:-}" ]]; then
+    say "Создаю администратора «${PSBEES_ADMIN}» (вход по нику без пароля)"
+    runuser -u "$SERVICE_USER" -- env PSBEES_DATA_DIR="$DATA_DIR" \
+      "$NODE_BIN" "$APP_DIR/scripts/cloud-admin.mjs" create-admin "$PSBEES_ADMIN" --no-password
+    return 0
+  fi
+  say "Первый пользователь, который войдёт через браузер по своему имени/нику, автоматически станет администратором."
 }
 
 wait_health() {
@@ -389,13 +399,14 @@ install_server() {
 
 print_addresses() {
   local address
-  printf '\nPSBees запущен. С компьютеров в локальной сети откройте:\n'
+  printf '\nPSBees запущен! С любого компьютера в сети откройте:\n'
   while IFS= read -r address; do
     [[ -n "$address" ]] && printf '  http://%s:%s/\n' "$address" "$DEFAULT_PORT"
   done < <(hostname -I 2>/dev/null | tr ' ' '\n' | grep -E '^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$' || true)
+  printf 'Вход и регистрация — просто по имени/нику (без почты и пароля).\n'
+  printf 'Первый вошедший пользователь становится администратором.\n'
   printf 'Админ-панель: http://<IP-сервера>:%s/admin\n' "$DEFAULT_PORT"
   printf 'Данные: %s/psbees.sqlite · журнал: sudo journalctl -u %s -f\n' "$DATA_DIR" "$SERVICE"
-  printf '\nДля настоящей эксплуатации настройте HTTPS reverse proxy; HTTP в LAN не шифрует пароль и cookie.\n'
 }
 
 update_server() {

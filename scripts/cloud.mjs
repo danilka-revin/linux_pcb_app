@@ -54,6 +54,16 @@ function emailOf(value) {
   if (email.length > 254 || !/^[^\s@]+@[^\s@]+\.[^\s@]+$/u.test(email)) fail(400, 'Введите корректный адрес электронной почты.');
   return email;
 }
+function loginOf(value) {
+  if (typeof value !== 'string') fail(400, 'Введите имя пользователя (ник).');
+  const login = value.trim();
+  if (!login || login.length > 254 || /[\x00-\x1f\x7f]/u.test(login)) {
+    fail(400, 'Имя пользователя (ник): от 1 до 120 символов без управляющих знаков.');
+  }
+  if (login.includes('@')) return emailOf(login);
+  if (login.length > 120) fail(400, 'Имя пользователя (ник): от 1 до 120 символов.');
+  return login;
+}
 function passwordOf(value) {
   if (typeof value !== 'string' || value.length < 10 || value.length > 128 || Buffer.byteLength(value) > 256) {
     fail(400, 'Пароль должен содержать от 10 до 128 символов.');
@@ -486,7 +496,14 @@ export async function openCloudStore(dataDir, opts = {}) {
     if (id % 100 === 0) run('DELETE FROM audit WHERE id<?', id - 20_000);
   };
   const registrationOpen = () => get("SELECT value FROM settings WHERE key='registration_open'").value === '1';
-  const findUser = (email) => get('SELECT * FROM users WHERE email=?', email);
+  const findUser = (login) => {
+    const exact = get('SELECT * FROM users WHERE email=?', login);
+    if (exact) return exact;
+    const lower = String(login).toLocaleLowerCase();
+    const byLower = get('SELECT * FROM users WHERE email=?', lower);
+    if (byLower) return byLower;
+    return all('SELECT * FROM users').find((u) => String(u.email).toLocaleLowerCase() === lower) ?? undefined;
+  };
   const session = (token) => {
     if (!token) return null;
     const row = get(`SELECT u.*, s.token_hash FROM sessions s JOIN users u ON u.id=s.user_id
@@ -621,6 +638,53 @@ export async function openCloudStore(dataDir, opts = {}) {
   return {
     dir, dbPath, quotaBytes, maxProjectBytes, close: () => db.close(),
     registrationOpen, session, findUser, activeSessions,
+    async registerByNickname(loginInput, passwordInput) {
+      const login = loginOf(loginInput);
+      const hashed = passwordInput !== undefined && passwordInput !== ''
+        ? await passwordHash(passwordOf(passwordInput))
+        : 'none';
+      return tx(() => {
+        if (!registrationOpen()) fail(403, 'Самостоятельная регистрация отключена администратором.');
+        if (findUser(login)) fail(409, 'Это имя (ник) уже занято. Войдите под ним или выберите другое.');
+        const hasAdmin = get("SELECT COUNT(*) AS n FROM users WHERE role='admin'").n > 0;
+        const role = hasAdmin ? 'user' : 'admin';
+        const id = randomUUID(), now = Date.now();
+        run('INSERT INTO users(id,email,password_hash,role,created_at,last_login,email_verified_at) VALUES(?,?,?,?,?,?,?)',
+          id, login, hashed, role, now, now, now);
+        if (!hasAdmin) audit(id, 'admin.bootstrap', id, login);
+        audit(id, 'user.register', id, login);
+        const user = publicUser({ id, email: login, role, created_at: now });
+        return { user, token: newSession(id), created: true };
+      });
+    },
+    async loginByNickname(loginInput, passwordInput) {
+      const login = loginOf(loginInput);
+      const existing = findUser(login);
+      if (!existing) {
+        if (passwordInput !== undefined && passwordInput !== '') {
+          fail(401, 'Неверное имя пользователя или пароль.');
+        }
+        return this.registerByNickname(login);
+      }
+      if (existing.disabled) fail(401, 'Учётная запись отключена администратором.');
+      if (existing.password_hash && existing.password_hash !== 'none') {
+        if (passwordInput !== undefined && passwordInput !== '') {
+          const valid = await checkPassword(passwordInput, existing.password_hash);
+          if (!valid) fail(401, 'Неверный пароль.');
+        } else if (existing.must_change_password) {
+          fail(401, 'Для этой учётной записи задан временный пароль.');
+        }
+      }
+      return tx(() => {
+        const fresh = get('SELECT * FROM users WHERE id=? AND disabled=0', existing.id);
+        if (!fresh) fail(401, 'Учётная запись отключена администратором.');
+        const now = Date.now();
+        run('DELETE FROM sessions WHERE expires_at<?', now);
+        run('UPDATE users SET last_login=?,email_verified_at=COALESCE(email_verified_at,?) WHERE id=?', now, now, fresh.id);
+        audit(fresh.id, 'user.login', fresh.id);
+        return { user: publicUser(fresh), token: newSession(fresh.id), created: false };
+      });
+    },
     async beginRegistration(emailInput, passwordInput) {
       const email = emailOf(emailInput), password = passwordOf(passwordInput);
       if (!registrationOpen()) fail(403, 'Самостоятельная регистрация отключена администратором.');
@@ -665,19 +729,21 @@ export async function openCloudStore(dataDir, opts = {}) {
       return { challengeId, ...changed, code, expiresAt: now + AUTH_CODE_MS, resendAt: now + AUTH_RESEND_MS };
     },
     async createAdmin(emailInput, passwordInput) {
-      const email = emailOf(emailInput), password = passwordOf(passwordInput);
-      const hashed = await passwordHash(password);
+      const email = loginOf(emailInput);
+      const hashed = passwordInput === undefined || passwordInput === ''
+        ? 'none'
+        : await passwordHash(passwordOf(passwordInput));
       return tx(() => {
         if (get("SELECT COUNT(*) AS n FROM users WHERE role='admin'").n) fail(409, 'Администратор уже создан. Для восстановления используйте reset-admin-password.');
         if (findUser(email)) fail(409, 'Этот адрес уже зарегистрирован. Укажите другой адрес администратора.');
         const id = randomUUID(), now = Date.now();
-        run("INSERT INTO users(id,email,password_hash,role,created_at) VALUES(?,?,?,'admin',?)", id, email, hashed, now);
+        run("INSERT INTO users(id,email,password_hash,role,created_at,email_verified_at) VALUES(?,?,?,'admin',?,?)", id, email, hashed, now, now);
         audit(id, 'admin.bootstrap', id, email);
         return publicUser({ id, email, role: 'admin', created_at: now });
       });
     },
     async resetAdminPassword(emailInput, passwordInput) {
-      const email = emailOf(emailInput), password = passwordOf(passwordInput);
+      const email = loginOf(emailInput), password = passwordOf(passwordInput);
       const hashed = await passwordHash(password);
       tx(() => {
         const user = findUser(email);
@@ -689,7 +755,7 @@ export async function openCloudStore(dataDir, opts = {}) {
       });
     },
     async resetUserPassword(emailInput, passwordInput) {
-      const email = emailOf(emailInput), password = passwordOf(passwordInput);
+      const email = loginOf(emailInput), password = passwordOf(passwordInput);
       const hashed = await passwordHash(password);
       tx(() => {
         const user = findUser(email);
@@ -830,11 +896,11 @@ export async function openCloudStore(dataDir, opts = {}) {
       ] };
     },
     addMember(projectId, actorId, emailInput) {
-      const email = emailOf(emailInput);
+      const email = loginOf(emailInput);
       return tx(() => {
         const project = ownProject(projectId, actorId);
         const member = findUser(email);
-        if (!member || member.disabled) fail(404, 'Пользователь с этой почтой не найден или отключён. Попросите его зарегистрироваться и повторите.');
+        if (!member || member.disabled) fail(404, 'Пользователь с таким именем (ником) или почтой не найден либо отключён. Попросите его войти на сервер и повторите.');
         if (member.id === actorId) fail(400, 'Вы уже владелец этой платы.');
         if (get('SELECT 1 FROM project_members WHERE project_id=? AND user_id=?', projectId, member.id)) fail(409, 'Этот пользователь уже имеет доступ.');
         if (get('SELECT COUNT(*) AS n FROM project_members WHERE project_id=?', projectId).n >= MAX_PROJECT_MEMBERS) {
@@ -1175,9 +1241,11 @@ function clientIp(req) {
 
 /** HTTP-маршруты /api/cloud/*; не раздавайте этот префикс как SPA. */
 export async function createCloudService(dataDir, opts = {}) {
-  // Email OTP является обязательным вторым фактором; без SMTP сервер не должен
-  // незаметно запускаться в режиме, где администратор не сможет войти.
-  const mailer = await createOtpMailer(opts);
+  // По умолчанию сервер работает в простом режиме входа/регистрации по нику (без SMTP и пароля).
+  // Если передан mailer или задан PSBEES_SMTP_HOST, включается двухфакторный режим по почте.
+  const hasSmtp = Boolean(opts.mailer?.sendOtp || String(process.env.PSBEES_SMTP_HOST ?? '').trim());
+  const mailer = hasSmtp ? await createOtpMailer(opts) : null;
+  const twoFactorRequired = Boolean(mailer);
   const store = await openCloudStore(dataDir, opts);
   const projectWaiters = new Map();
   const presence = new Map();
@@ -1274,11 +1342,19 @@ export async function createCloudService(dataDir, opts = {}) {
     if (method !== 'GET' && method !== 'HEAD') requireWriteRequest(req);
     if (path === '/config' && method === 'GET') return json(res, 200, {
       ok: true, enabled: true, registrationOpen: store.registrationOpen(),
-      twoFactorRequired: true,
+      twoFactorRequired,
+      passwordRequired: twoFactorRequired,
+      authMode: twoFactorRequired ? 'email-otp' : 'nickname',
       maxProjectBytes: store.maxProjectBytes, quotaBytes: store.quotaBytes,
     });
     if (path === '/register' && method === 'POST') {
       const body = await readJson(req, 2048);
+      if (!twoFactorRequired) {
+        limitAttempt('reg:' + clientIp(req), 30, 15 * 60_000);
+        const rawLogin = body.name ?? body.login ?? body.nickname ?? body.email;
+        const result = await store.registerByNickname(rawLogin, body.password);
+        return json(res, 200, { ok: true, user: result.user, created: true }, { 'set-cookie': cookieHeader(req, result.token) });
+      }
       limitAttempt('reg:' + clientIp(req), 8, 60 * 60_000);
       const email = typeof body.email === 'string' ? body.email.trim().toLowerCase() : '';
       if (email) limitAttempt('reg-email:' + email, 5, 60 * 60_000);
@@ -1293,6 +1369,12 @@ export async function createCloudService(dataDir, opts = {}) {
     }
     if (path === '/login' && method === 'POST') {
       const body = await readJson(req, 2048);
+      if (!twoFactorRequired) {
+        limitAttempt('login:' + clientIp(req), 60, 15 * 60_000);
+        const rawLogin = body.name ?? body.login ?? body.nickname ?? body.email;
+        const result = await store.loginByNickname(rawLogin, body.password);
+        return json(res, 200, { ok: true, user: result.user, created: result.created }, { 'set-cookie': cookieHeader(req, result.token) });
+      }
       const ipKey = 'login:' + clientIp(req);
       const emailKey = typeof body.email === 'string' && body.email.length < 255
         ? 'login-email:' + body.email.trim().toLowerCase() : null;

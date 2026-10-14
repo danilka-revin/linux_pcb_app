@@ -29,6 +29,7 @@
     "test:cloud": "node test/cloud.mjs",
     "start": "node scripts/server.mjs",
     "start:cloud": "node scripts/server.mjs --cloud",
+    "server": "node scripts/server.mjs --cloud",
     "test:route": "esbuild test/autoroute.ts --bundle --platform=node --format=esm --outfile=node_modules/.cache/autoroute.mjs --log-level=warning && node node_modules/.cache/autoroute.mjs",
     "test:group": "esbuild test/group.ts --bundle --platform=node --format=esm --outfile=node_modules/.cache/group.mjs --log-level=warning && node node_modules/.cache/group.mjs",
     "test:group-dom": "esbuild test/group-dom.tsx --bundle --platform=node --format=esm --external:jsdom --outfile=node_modules/.cache/group-dom.mjs --log-level=warning && node node_modules/.cache/group-dom.mjs",

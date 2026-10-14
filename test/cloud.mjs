@@ -381,6 +381,38 @@ try {
   assert.equal((await api(bob, '/library?q=soic')).data.total, 0, 'администратор может удалить осиротевшую публикацию');
   await api(admin, '/logout', 'POST');
   await api(admin, '/admin/overview', 'GET', undefined, 401);
+
+  // Простой режим по умолчанию (без SMTP и пароля — вход/регистрация по имени/нику):
+  await new Promise((done) => server.close(done));
+  server = null;
+  const nickData = join(temp, 'nick-data');
+  started = await startServer({ port: 0, host: '127.0.0.1', root, cloudDataDir: nickData });
+  server = started.server;
+  base = started.url;
+  const cfgNick = (await api(null, '/config')).data;
+  assert.equal(cfgNick.enabled, true);
+  assert.equal(cfgNick.twoFactorRequired, false);
+  assert.equal(cfgNick.authMode, 'nickname');
+  const danil = { cookie: '' }, alex = { cookie: '' };
+  // Первый вошедший по нику автоматически становится администратором
+  const firstLogin = await api(danil, '/login', 'POST', { name: 'Данил' }, 200);
+  assert.equal(firstLogin.data.user.email, 'Данил');
+  assert.equal(firstLogin.data.user.role, 'admin');
+  assert.equal(firstLogin.data.created, true);
+  // Второй человек регистрируется просто по нику без почты и пароля
+  const secondReg = await api(alex, '/register', 'POST', { name: 'Алексей' }, 200);
+  assert.equal(secondReg.data.user.email, 'Алексей');
+  assert.equal(secondReg.data.user.role, 'user');
+  // Повторная регистрация занятого ника отклоняется, но вход по нику (в т.ч. в другом регистре) работает
+  await api(null, '/register', 'POST', { name: 'данил' }, 409);
+  const danilAgain = await api(danil, '/login', 'POST', { name: 'данил' }, 200);
+  assert.equal(danilAgain.data.user.email, 'Данил');
+  assert.equal(danilAgain.data.created, false);
+  // Совместная работа с платой по нику (без email)
+  const nickProject = (await api(danil, '/projects', 'POST', { name: 'Плата по нику', document: doc }, 201)).data.project;
+  await api(danil, `/projects/${nickProject.id}/members`, 'POST', { email: 'алексей' }, 201);
+  assert.equal((await api(alex, '/projects')).data.projects.length, 1);
+
   console.log('cloud HTTP/SQLite OK');
 } finally {
   if (server) await new Promise((done) => server.close(done));

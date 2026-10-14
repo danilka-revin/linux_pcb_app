@@ -9,6 +9,8 @@ export interface CloudConfig {
   enabled: boolean;
   registrationOpen?: boolean;
   twoFactorRequired?: boolean;
+  passwordRequired?: boolean;
+  authMode?: 'nickname' | 'email-otp';
   maxProjectBytes?: number;
   quotaBytes?: number;
 }

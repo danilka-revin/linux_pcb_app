@@ -22,7 +22,8 @@ export async function discoverCloud(): Promise<CloudConfig> {
   return config;
 }
 
-function AuthScreen({ config, onLogin }: { config: CloudConfig; onLogin: (user: CloudUser) => void }) {
+export function AuthScreen({ config, onLogin }: { config: CloudConfig; onLogin: (user: CloudUser) => void }) {
+  const useEmailOtp = config.twoFactorRequired === true;
   const [register, setRegister] = useState(false);
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
@@ -39,6 +40,58 @@ function AuthScreen({ config, onLogin }: { config: CloudConfig; onLogin: (user: 
     const timer = window.setTimeout(() => setResendIn((value) => Math.max(0, value - 1)), 1000);
     return () => window.clearTimeout(timer);
   }, [resendIn]);
+
+  const submitNickname = async (e: FormEvent) => {
+    e.preventDefault();
+    const name = email.trim();
+    if (!name) { setError('Введите имя или ник.'); return; }
+    setBusy(true); setError('');
+    try {
+      const result = await cloudApi<{ user: CloudUser }>(
+        register ? '/register' : '/login', 'POST', { name },
+      );
+      onLogin(result.user);
+    } catch (err) { setError(cloudError(err)); }
+    finally { setBusy(false); }
+  };
+
+  if (!useEmailOtp) {
+    return (
+      <div className="cloud-gate">
+        <div className="cloud-auth">
+          <div className="cloud-auth-brand">
+            <img src="/logo.png" width={54} height={54} alt="PSBees" />
+            <div><b>PS<em>Bees</em></b><span>Общее рабочее пространство для печатных плат</span></div>
+          </div>
+          <h1>{register ? 'Регистрация по нику' : 'Войти в PSBees'}</h1>
+          <p>{register
+            ? 'Придумайте свободное имя или ник — почта и пароль не нужны.'
+            : config.registrationOpen !== false
+              ? 'Введите своё имя или ник. Если вы заходите впервые, профиль создастся автоматически — без почты и пароля.'
+              : 'Введите свой ник для входа в рабочее пространство.'}</p>
+          <form onSubmit={(e) => void submitNickname(e)}>
+            <label htmlFor="auth-nickname">{register ? 'Придумайте имя или ник' : 'Ваше имя или ник'}</label>
+            <input id="auth-nickname" className="txt" type="text" autoComplete="username" required autoFocus
+              value={email} onChange={(e) => setEmail(e.target.value)}
+              placeholder="Например: Данил, Alex, Конструктор" maxLength={120} />
+            {error && <div className="cloud-error" role="alert">{error}</div>}
+            <button className="btn primary" disabled={busy || !email.trim()} type="submit">
+              {busy ? 'Входим…' : register ? 'Зарегистрироваться и войти' : 'Войти'}
+            </button>
+            {busy && <ProgressBar slim live indeterminate title="Входим в рабочее пространство" />}
+          </form>
+          {config.registrationOpen !== false ? (
+            <button className="cloud-switch" type="button" onClick={() => { setRegister(!register); setError(''); }}>
+              {register ? 'Уже есть ник? Войти' : 'Хотите проверить свободен ли ник? Отдельная регистрация'}
+            </button>
+          ) : (
+            <div className="cloud-auth-note">Регистрация новых пользователей закрыта администратором. Войти могут только уже созданные ники.</div>
+          )}
+          <div className="cloud-auth-note">Проекты и общая библиотека деталей сохраняются на сервере. Первый вошедший пользователь становится администратором (<code>/admin</code>).</div>
+        </div>
+      </div>
+    );
+  }
 
   const submitCredentials = async (e: FormEvent) => {
     e.preventDefault();
