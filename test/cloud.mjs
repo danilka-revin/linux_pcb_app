@@ -299,8 +299,14 @@ try {
   await api(admin, '/admin/users/' + aliceId + '/sessions', 'DELETE');
   await api(alice, '/me', 'GET', undefined, 401);
   await login(alice, 'alice@work.test', 'alice-long-password');
-  await api(alice, '/password', 'POST', { currentPassword: 'wrong', newPassword: 'brand-new-long-password' }, 401);
-  await api(alice, '/password', 'POST', { currentPassword: 'alice-long-password', newPassword: 'brand-new-long-password' });
+  // Смена пароля без текущего: достаточно вошедшего сеанса, но новый пароль проверяется как обычно.
+  await api(alice, '/password', 'POST', { newPassword: 'short' }, 400);
+  await api(alice, '/password', 'POST', { currentPassword: 'wrong', newPassword: 'brand-new-long-password' });
+  await api(null, '/login', 'POST', { email: 'alice@work.test', password: 'alice-long-password' }, 401);
+  await login(alice, 'alice@work.test', 'brand-new-long-password');
+  await api(alice, '/password', 'POST', { newPassword: 'alice-long-password' });
+  await api(null, '/password', 'POST', { newPassword: 'anonymous-long-password' }, 401);
+  await login(alice, 'alice@work.test', 'alice-long-password');
   assert.equal((await api(alice, '/me')).data.user.email, 'alice@work.test');
 
   await api(admin, '/admin/users/' + adminId + '/password', 'POST', {}, 403);
@@ -394,24 +400,69 @@ try {
   assert.equal(cfgNick.twoFactorRequired, false);
   assert.equal(cfgNick.authMode, 'nickname');
   const danil = { cookie: '' }, alex = { cookie: '' };
-  // Первый вошедший по нику автоматически становится администратором
-  const firstLogin = await api(danil, '/login', 'POST', { name: 'Данил' }, 200);
+  // В режиме ника пароль обязателен: без него учётная запись не создаётся.
+  await api(danil, '/login', 'POST', { name: 'Данил' }, 400);
+  await api(danil, '/register', 'POST', { name: 'Данил' }, 400);
+  await api(danil, '/register', 'POST', { name: 'Данил', password: 'short' }, 400);
+  // Первый вошедший по нику (с паролем) автоматически становится администратором
+  const firstLogin = await api(danil, '/login', 'POST', { name: 'Данил', password: 'danil-nick-password' }, 200);
   assert.equal(firstLogin.data.user.email, 'Данил');
   assert.equal(firstLogin.data.user.role, 'admin');
   assert.equal(firstLogin.data.created, true);
-  // Второй человек регистрируется просто по нику без почты и пароля
-  const secondReg = await api(alex, '/register', 'POST', { name: 'Алексей' }, 200);
+  // Второй человек регистрируется ником и паролем
+  await api(alex, '/register', 'POST', { name: 'Алексей' }, 400);
+  const secondReg = await api(alex, '/register', 'POST', { name: 'Алексей', password: 'alex-nick-password' }, 200);
   assert.equal(secondReg.data.user.email, 'Алексей');
   assert.equal(secondReg.data.user.role, 'user');
-  // Повторная регистрация занятого ника отклоняется, но вход по нику (в т.ч. в другом регистре) работает
-  await api(null, '/register', 'POST', { name: 'данил' }, 409);
-  const danilAgain = await api(danil, '/login', 'POST', { name: 'данил' }, 200);
+  // Повторная регистрация занятого ника отклоняется; вход по нику требует пароль
+  await api(null, '/register', 'POST', { name: 'данил', password: 'another-nick-password' }, 409);
+  await api(null, '/login', 'POST', { name: 'данил' }, 401);
+  await api(null, '/login', 'POST', { name: 'данил', password: 'wrong-nick-password' }, 401);
+  const danilAgain = await api(danil, '/login', 'POST', { name: 'данил', password: 'danil-nick-password' }, 200);
   assert.equal(danilAgain.data.user.email, 'Данил');
   assert.equal(danilAgain.data.created, false);
+  // Смена пароля без текущего: в сеансе достаточно нового пароля
+  await api(danil, '/password', 'POST', { newPassword: 'danil-changed-password' });
+  await api(null, '/login', 'POST', { name: 'Данил', password: 'danil-nick-password' }, 401);
+  await api(danil, '/login', 'POST', { name: 'Данил', password: 'danil-changed-password' }, 200);
+  await api(danil, '/password', 'POST', { newPassword: 'danil-nick-password' });
+  await api(danil, '/login', 'POST', { name: 'Данил', password: 'danil-nick-password' }, 200);
   // Совместная работа с платой по нику (без email)
   const nickProject = (await api(danil, '/projects', 'POST', { name: 'Плата по нику', document: doc }, 201)).data.project;
   await api(danil, `/projects/${nickProject.id}/members`, 'POST', { email: 'алексей' }, 201);
   assert.equal((await api(alex, '/projects')).data.projects.length, 1);
+
+  // Миниатюры проектов: автор и приглашённый редактор сохраняют превью; список отдаёт его вместе с версией.
+  const jpegPreview = 'data:image/jpeg;base64,/9j/4AAQSkZJRg==';
+  await api(danil, `/projects/${nickProject.id}/thumbnail`, 'POST', { image: jpegPreview, version: nickProject.version }, 200);
+  await api(danil, `/projects/${nickProject.id}/thumbnail`, 'POST', { image: 'data:image/png;base64,AAAA', version: nickProject.version }, 400);
+  await api(danil, `/projects/${nickProject.id}/thumbnail`, 'POST', { image: '<svg></svg>', version: nickProject.version }, 400);
+  await api(danil, `/projects/${nickProject.id}/thumbnail`, 'POST', { image: jpegPreview, version: nickProject.version + 5 }, 409);
+  await api(null, `/projects/${nickProject.id}/thumbnail`, 'POST', { image: jpegPreview, version: nickProject.version }, 401);
+  const cardOwner = (await api(danil, '/projects')).data.projects.find((p) => p.id === nickProject.id);
+  assert.equal(cardOwner.thumbnail, jpegPreview);
+  assert.equal(cardOwner.thumbnailVersion, nickProject.version);
+  assert.equal(Object.hasOwn(cardOwner, 'document'), false, 'список не тянет документ платы');
+  await api(alex, `/projects/${nickProject.id}/thumbnail`, 'POST', { image: jpegPreview, version: nickProject.version }, 200);
+  const stranger = { cookie: '' };
+  await api(null, '/register', 'POST', { name: 'Посторонний', password: 'stranger-nick-password' }, 200);
+  await api(stranger, '/login', 'POST', { name: 'Посторонний', password: 'stranger-nick-password' }, 200);
+  await api(stranger, `/projects/${nickProject.id}/thumbnail`, 'POST', { image: jpegPreview, version: nickProject.version }, 404);
+
+  // Обновление программы из админ-панели: только администратор, только через /api/cloud/admin/update/*.
+  await api(alex, '/admin/update/status', 'GET', undefined, 403);
+  await api(null, '/admin/update/status', 'GET', undefined, 401);
+  const updState = (await api(danil, '/admin/update/status', 'GET', undefined, 200)).data;
+  assert.equal(updState.status, 'idle');
+  assert.equal(typeof updState.rev, 'number');
+  await api(danil, '/admin/update/cancel', 'POST', {}, 409);
+  await api(danil, '/admin/update/status', 'POST', {}, 405);
+  await api(alex, '/admin/update/run', 'POST', {}, 403);
+  await api(danil, '/admin/update/unknown', 'GET', undefined, 404);
+  // обычный путь /update/* на общем сервере по-прежнему закрыт
+  assert.equal((await fetch(base + '/update/status', { headers: { cookie: danil.cookie } })).status, 403);
+  const adminEvents = (await api(danil, '/admin/events')).data.events;
+  assert.equal(adminEvents.some((e) => e.action === 'user.register' && e.actorEmail === 'Алексей'), true);
 
   console.log('cloud HTTP/SQLite OK');
 } finally {

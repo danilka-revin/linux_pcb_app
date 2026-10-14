@@ -5,6 +5,12 @@ export interface CloudUser {
   id: string; email: string; role: 'admin' | 'user'; createdAt: number;
   mustChangePassword?: boolean;
 }
+/** Состояние обновления программы из GitHub (ответ /api/cloud/admin/update/*). */
+export interface CloudUpdateCheck {
+  ok: true; repo: string; branch: string; local: string; latest: string; latestSha: string;
+  latestMsg: string; latestDate: string; behind: number; updateAvailable: boolean;
+  mode: 'clone' | 'install'; tooling: { git: boolean; npm: boolean }; cached: boolean;
+}
 export interface CloudConfig {
   enabled: boolean;
   registrationOpen?: boolean;
@@ -19,6 +25,9 @@ export interface CloudProject {
   bytes: number; entityCount: number; createdAt: number; updatedAt: number;
   ownerEmail?: string;
   accessRole?: 'owner' | 'editor';
+  /** JPEG-превью всей платы (data-URL) и версия, для которой оно снято. */
+  thumbnail?: string | null;
+  thumbnailVersion?: number | null;
 }
 export interface ProjectMember {
   id: string; email: string; role: 'owner' | 'editor'; online?: boolean; joinedAt?: number;

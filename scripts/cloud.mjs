@@ -314,6 +314,13 @@ function parseLibraryEntryInput(body) {
   const categoryKey = category.normalize('NFKC').toLowerCase();
   return { name, nameKey, category, categoryKey, ents: body.ents, bl, query, note, entityCount: state.entities };
 }
+function thumbnailOf(value) {
+  // Только JPEG из data-URL, созданный редактором: около 360×225 px, ≤ 120 КБ.
+  if (typeof value !== 'string' || value.length > 120_000 || !/^data:image\/jpeg;base64,[A-Za-z0-9+/]+={0,2}$/.test(value)) {
+    fail(400, 'Некорректное превью платы.');
+  }
+  return value;
+}
 function versionNameOf(value) {
   if (typeof value !== 'string' || !value.trim() || value.trim().length > 120 || /[\x00-\x1f\x7f]/u.test(value)) {
     fail(400, 'Название версии: от 1 до 120 символов без управляющих символов.');
@@ -473,6 +480,13 @@ export async function openCloudStore(dataDir, opts = {}) {
   if (!userColumns.some((column) => column.name === 'must_change_password')) {
     db.exec('ALTER TABLE users ADD COLUMN must_change_password INTEGER NOT NULL DEFAULT 0');
   }
+  const projectColumns = db.prepare('PRAGMA table_info(projects)').all();
+  if (!projectColumns.some((column) => column.name === 'thumbnail')) {
+    db.exec('ALTER TABLE projects ADD COLUMN thumbnail TEXT');
+  }
+  if (!projectColumns.some((column) => column.name === 'thumbnail_version')) {
+    db.exec('ALTER TABLE projects ADD COLUMN thumbnail_version INTEGER');
+  }
 
   const quotaBytes = opts.quotaBytes ?? DEFAULT_QUOTA_BYTES;
   const maxProjectBytes = opts.maxProjectBytes ?? MAX_PROJECT_BYTES;
@@ -532,6 +546,12 @@ export async function openCloudStore(dataDir, opts = {}) {
     bytes: row.bytes, entityCount: row.entity_count, createdAt: row.created_at, updatedAt: row.updated_at,
     ...(row.owner_email ? { ownerEmail: row.owner_email } : {}),
     ...(row.access_role ? { accessRole: row.access_role } : {}),
+  });
+  // Миниатюра (JPEG-превью всей платы) отдаётся только в списке проектов.
+  const projectCard = (row) => ({
+    ...projectMeta(row),
+    thumbnail: row.thumbnail ?? null,
+    thumbnailVersion: row.thumbnail_version ?? null,
   });
   const ownProject = (id, userId) => {
     const row = get('SELECT * FROM projects WHERE id=? AND owner_id=?', id, userId);
@@ -638,11 +658,11 @@ export async function openCloudStore(dataDir, opts = {}) {
   return {
     dir, dbPath, quotaBytes, maxProjectBytes, close: () => db.close(),
     registrationOpen, session, findUser, activeSessions,
+    auditEvent(actorId, action, detail = '') { audit(actorId, action, null, detail); },
     async registerByNickname(loginInput, passwordInput) {
       const login = loginOf(loginInput);
-      const hashed = passwordInput !== undefined && passwordInput !== ''
-        ? await passwordHash(passwordOf(passwordInput))
-        : 'none';
+      // В режиме ника пароль обязателен при регистрации: без него учётная запись не создаётся.
+      const hashed = await passwordHash(passwordOf(passwordInput));
       return tx(() => {
         if (!registrationOpen()) fail(403, 'Самостоятельная регистрация отключена администратором.');
         if (findUser(login)) fail(409, 'Это имя (ник) уже занято. Войдите под ним или выберите другое.');
@@ -659,21 +679,20 @@ export async function openCloudStore(dataDir, opts = {}) {
     },
     async loginByNickname(loginInput, passwordInput) {
       const login = loginOf(loginInput);
+      const hasPassword = typeof passwordInput === 'string' && passwordInput !== '';
       const existing = findUser(login);
       if (!existing) {
-        if (passwordInput !== undefined && passwordInput !== '') {
-          fail(401, 'Неверное имя пользователя или пароль.');
-        }
-        return this.registerByNickname(login);
+        // Свободный ник: вход и создание учётной записи — одно действие, и пароль задаётся сразу.
+        if (!registrationOpen()) fail(403, 'Самостоятельная регистрация отключена администратором.');
+        if (!hasPassword) fail(400, 'Ник свободен. Придумайте пароль (от 10 до 128 символов), чтобы создать учётную запись.');
+        return this.registerByNickname(login, passwordInput);
       }
       if (existing.disabled) fail(401, 'Учётная запись отключена администратором.');
+      // Учётные записи, созданные до обязательного пароля (без хеша), входят только по нику.
       if (existing.password_hash && existing.password_hash !== 'none') {
-        if (passwordInput !== undefined && passwordInput !== '') {
-          const valid = await checkPassword(passwordInput, existing.password_hash);
-          if (!valid) fail(401, 'Неверный пароль.');
-        } else if (existing.must_change_password) {
-          fail(401, 'Для этой учётной записи задан временный пароль.');
-        }
+        if (!hasPassword) fail(401, 'Введите пароль от этого ника.');
+        const valid = await checkPassword(passwordInput, existing.password_hash);
+        if (!valid) fail(401, 'Неверный пароль.');
       }
       return tx(() => {
         const fresh = get('SELECT * FROM users WHERE id=? AND disabled=0', existing.id);
@@ -767,13 +786,11 @@ export async function openCloudStore(dataDir, opts = {}) {
       });
     },
     logout(token) { if (token) run('DELETE FROM sessions WHERE token_hash=?', hashToken(token)); },
-    async changePassword(userId, current, next) {
+    async changePassword(userId, next) {
+      // Смена пароля доступна любому вошедшему пользователю без ввода текущего пароля.
       const password = passwordOf(next);
       const row = get('SELECT password_hash,must_change_password FROM users WHERE id=?', userId);
       if (!row) fail(401, 'Учётная запись не найдена.');
-      if (!row.must_change_password && (typeof current !== 'string' || !await checkPassword(current, row.password_hash))) {
-        fail(401, 'Текущий пароль неверный.');
-      }
       const hashed = await passwordHash(password);
       return tx(() => {
         if (get('SELECT disabled FROM users WHERE id=?', userId)?.disabled) fail(401, 'Учётная запись отключена.');
@@ -788,13 +805,24 @@ export async function openCloudStore(dataDir, opts = {}) {
       });
     },
     listProjects(userId) {
-      const rows = all(`SELECT p.*,owner.email AS owner_email,'owner' AS access_role
+      // Документ плат не нужен для списка: читаем только метаданные и превью.
+      const columns = `p.id,p.owner_id,p.name,p.version,p.bytes,p.entity_count,p.created_at,p.updated_at,
+        p.thumbnail,p.thumbnail_version`;
+      const rows = all(`SELECT ${columns},owner.email AS owner_email,'owner' AS access_role
         FROM projects p JOIN users owner ON owner.id=p.owner_id WHERE p.owner_id=?
         UNION ALL
-        SELECT p.*,owner.email AS owner_email,'editor' AS access_role
+        SELECT ${columns},owner.email AS owner_email,'editor' AS access_role
         FROM project_members m JOIN projects p ON p.id=m.project_id JOIN users owner ON owner.id=p.owner_id
         WHERE m.user_id=? ORDER BY updated_at DESC`, userId, userId);
-      return { projects: rows.map(projectMeta), usedBytes: usedBytes(userId), quotaBytes };
+      return { projects: rows.map(projectCard), usedBytes: usedBytes(userId), quotaBytes };
+    },
+    setProjectThumbnail(projectId, userId, version, image) {
+      const row = accessibleProject(projectId, userId);
+      const checked = thumbnailOf(image);
+      // Превью относится к конкретной версии: если плату уже изменили, оно устарело.
+      if (row.version !== version) fail(409, 'Плата уже изменилась. Превью будет обновлено позже.');
+      run('UPDATE projects SET thumbnail=?, thumbnail_version=? WHERE id=? AND version=?', checked, version, projectId, version);
+      return { thumbnailVersion: version };
     },
     listLibrary(userId, isAdmin, url) {
       const { limit, offset } = pageOf(url);
@@ -1241,6 +1269,8 @@ function clientIp(req) {
 
 /** HTTP-маршруты /api/cloud/*; не раздавайте этот префикс как SPA. */
 export async function createCloudService(dataDir, opts = {}) {
+  // updater(req, res, cmd, url) — обработчик обновления программы из GitHub (передаёт server.mjs).
+  const updater = typeof opts.updater === 'function' ? opts.updater : null;
   // По умолчанию сервер работает в простом режиме входа/регистрации по нику (без SMTP и пароля).
   // Если передан mailer или задан PSBEES_SMTP_HOST, включается двухфакторный режим по почте.
   const hasSmtp = Boolean(opts.mailer?.sendOtp || String(process.env.PSBEES_SMTP_HOST ?? '').trim());
@@ -1343,7 +1373,7 @@ export async function createCloudService(dataDir, opts = {}) {
     if (path === '/config' && method === 'GET') return json(res, 200, {
       ok: true, enabled: true, registrationOpen: store.registrationOpen(),
       twoFactorRequired,
-      passwordRequired: twoFactorRequired,
+      passwordRequired: true,
       authMode: twoFactorRequired ? 'email-otp' : 'nickname',
       maxProjectBytes: store.maxProjectBytes, quotaBytes: store.quotaBytes,
     });
@@ -1437,7 +1467,7 @@ export async function createCloudService(dataDir, opts = {}) {
     if (path === '/password' && method === 'POST') {
       const body = await readJson(req, 2048);
       stillAuthorized();
-      const nextToken = await store.changePassword(actor.id, body.currentPassword, body.newPassword);
+      const nextToken = await store.changePassword(actor.id, body.newPassword);
       return json(res, 200, { ok: true }, { 'set-cookie': cookieHeader(req, nextToken) });
     }
     if (path === '/projects' && method === 'GET') return json(res, 200, { ok: true, ...store.listProjects(actor.id) });
@@ -1506,6 +1536,14 @@ export async function createCloudService(dataDir, opts = {}) {
       return json(res, 200, { ok: true, project });
     }
 
+    const thumbnailRoute = /^\/projects\/([0-9a-f-]{36})\/thumbnail$/i.exec(path);
+    if (thumbnailRoute && method === 'POST') {
+      const body = await readJson(req, 160 * 1024);
+      const fresh = stillAuthorized();
+      const result = store.setProjectThumbnail(thumbnailRoute[1], fresh.id, body.version, body.image);
+      return json(res, 200, { ok: true, ...result });
+    }
+
     const members = /^\/projects\/([0-9a-f-]{36})\/members$/i.exec(path);
     if (members) {
       if (method === 'GET') return json(res, 200, { ok: true, ...store.listMembers(members[1], actor.id) });
@@ -1564,6 +1602,18 @@ export async function createCloudService(dataDir, opts = {}) {
         store.deleteVersion(version[1], version[2], actor.id);
         return json(res, 200, { ok: true });
       }
+    }
+    if (path.startsWith('/admin/update/')) {
+      // Обновление программы из GitHub: только администратор; логика живёт в server.mjs.
+      if (actor.role !== 'admin') fail(403, 'Доступно только администратору.');
+      if (!updater) fail(501, 'Обновление из GitHub недоступно в этом режиме запуска.');
+      const cmd = path.slice('/admin/update/'.length);
+      const expected = cmd === 'run' || cmd === 'cancel' ? 'POST' : 'GET';
+      if (!['check', 'status', 'run', 'cancel'].includes(cmd)) fail(404, 'Неизвестная команда обновления.');
+      if (method !== expected) fail(405, 'Метод не поддерживается.');
+      const fresh = stillAuthorized(true);
+      if (cmd === 'run') store.auditEvent(fresh.id, 'admin.update.run', fresh.email);
+      return updater(req, res, cmd, url);
     }
     if (path.startsWith('/admin')) {
       if (actor.role !== 'admin') fail(403, 'Доступно только администратору.');

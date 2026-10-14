@@ -6,6 +6,8 @@ import AdminApp, { UserProfilePanel } from '../src/cloud/admin';
 import { CloudProjectsDialog } from '../src/cloud/projects';
 import { CommunityLibraryPanel } from '../src/ui/community-library';
 import { discoverCloud, ForcedPasswordChange, AuthScreen } from '../src/cloud/Workspace';
+import AdminUpdatePanel from '../src/cloud/admin-update';
+import { CloudAccountDialog } from '../src/cloud/projects';
 import { emptyStore, loadStore, saveStore } from '../src/pcb/userlib';
 import type { CloudUser } from '../src/cloud/api';
 
@@ -30,9 +32,23 @@ const nickAuth = renderToString(createElement(AuthScreen, {
   config: { enabled: true, twoFactorRequired: false, registrationOpen: true },
   onLogin: () => {},
 }));
-for (const text of ['Ваше имя или ник', 'без почты и пароля']) {
+for (const text of ['Ваше имя или ник', 'Введите ник и пароль', 'Пароль от вашего ника']) {
   if (!nickAuth.includes(text)) throw new Error(`В экране входа по нику отсутствует: ${text}`);
 }
+const nickRegister = renderToString(createElement(AuthScreen, {
+  config: { enabled: true, twoFactorRequired: false, registrationOpen: true },
+  onLogin: () => {},
+}));
+if (nickRegister.includes('Повторите пароль')) throw new Error('Подтверждение пароля не должно показываться до режима регистрации');
+const updatePanel = renderToString(createElement(AdminUpdatePanel));
+for (const text of ['Обновление программы из GitHub', 'Проверить на GitHub']) {
+  if (!updatePanel.includes(text)) throw new Error(`В панели обновления отсутствует: ${text}`);
+}
+const account = renderToString(createElement(CloudAccountDialog, { user, onClose: () => {}, onLogout: async () => {} }));
+for (const text of ['Сменить пароль', 'Новый пароль']) {
+  if (!account.includes(text)) throw new Error(`В учётной записи отсутствует: ${text}`);
+}
+if (account.includes('Текущий пароль<input')) throw new Error('Смена пароля не должна требовать текущий пароль');
 const forcedChange = renderToString(createElement(ForcedPasswordChange, {
   email: 'bob@work.test', onChanged: () => {}, onLogout: async () => {},
 }));
