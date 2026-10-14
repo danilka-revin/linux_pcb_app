@@ -19,6 +19,7 @@ import { readFile, stat, mkdir, writeFile, rm, rename } from 'node:fs/promises';
 import { dirname, extname, isAbsolute, join, normalize, relative, resolve, sep } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { execFile, spawn } from 'node:child_process';
+import { networkInterfaces } from 'node:os';
 
 // Модуль каталога подгружается по требованию (как cloud.mjs), а не при старте.
 // Так неполная установка — например, если старый установщик скопировал только
@@ -388,11 +389,14 @@ export async function startServer(opts = {}) {
   const IS_SELF = (!!opts.self || cli.self) && !explicitAppDir;
   const STATS_FILE = join(APP_DIR, IS_SELF || !explicitAppDir ? 'node_modules/.cache/psbees-update.json' : '.update-cache/stats.json');
 
-  // Совместный режим включается явно. База данных НЕ должна находиться внутри
-  // статического ROOT; Electron всегда передаёт cloudDataDir: null.
-  const dataDir = Object.hasOwn(opts, 'cloudDataDir') ? opts.cloudDataDir : process.env.PSBEES_DATA_DIR;
-  if (cli.cloud && !dataDir) throw new Error('Укажите постоянный каталог PSBEES_DATA_DIR перед запуском --cloud.');
+  // Совместный режим включается явно (--cloud или PSBEES_DATA_DIR). База данных
+  // НЕ должна находиться внутри статического ROOT; Electron всегда передаёт cloudDataDir: null.
+  const defaultCloudDir = cli.cloud ? join(APP_DIR, 'psbees-data') : undefined;
+  const dataDir = Object.hasOwn(opts, 'cloudDataDir')
+    ? opts.cloudDataDir
+    : (process.env.PSBEES_DATA_DIR || defaultCloudDir);
   let cloud = null;
+  let resolvedDataPath = '';
   if (dataDir) {
     const dataPath = resolve(dataDir);
     const rel = relative(ROOT, dataPath);
@@ -404,6 +408,7 @@ export async function startServer(opts = {}) {
       throw new Error('PSBEES_USER_QUOTA_MB: укажите целое число от 8 до 1000000.');
     }
     const { createCloudService } = await import('./cloud.mjs');
+    resolvedDataPath = dataPath;
     cloud = await createCloudService(dataPath, {
       quotaBytes: opts.cloudQuotaBytes ?? quotaMb * 1024 * 1024,
       ...(opts.cloudMailer ? { mailer: opts.cloudMailer } : {}),
@@ -1112,6 +1117,18 @@ export async function startServer(opts = {}) {
   const urlHost = HOST === '0.0.0.0' ? '127.0.0.1' : HOST;
   const url = `http://${urlHost}:${actual}`;
   console.log(`PSBees: ${url}  (корень: ${ROOT})`);
+  if (cloud) {
+    const lanUrls = [];
+    for (const entries of Object.values(networkInterfaces())) {
+      for (const info of entries || []) {
+        if (info && info.family === 'IPv4' && !info.internal && info.address) {
+          lanUrls.push(`http://${info.address}:${actual}`);
+        }
+      }
+    }
+    if (lanUrls.length) console.log(`Сеть (для других людей): ${lanUrls.join('  ')}`);
+    console.log(`Админ-панель: ${(lanUrls[0] || url)}/admin  (база: ${resolvedDataPath}/psbees.sqlite)`);
+  }
   console.log(`${url}/healthz`);
   return { port: actual, host: HOST, root: ROOT, url, server };
 }

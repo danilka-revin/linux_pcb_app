@@ -159,11 +159,11 @@ export function CloudProjectsDialog({ current, userId, docName, status, statusMe
               </li>)}
             </ul>}
             {isOwner && <form className="cloud-share-form" onSubmit={(e) => void inviteMember(e)}>
-              <label htmlFor={`share-${p.id}`}>Пригласить пользователя по почте</label>
-              <div><input id={`share-${p.id}`} className="txt" type="email" autoComplete="email" required maxLength={254}
-                value={shareEmail} onChange={(e) => setShareEmail(e.target.value)} placeholder="colleague@example.com" />
+              <label htmlFor={`share-${p.id}`}>Пригласить пользователя по имени (нику) или почте</label>
+              <div><input id={`share-${p.id}`} className="txt" type="text" autoComplete="off" required maxLength={254}
+                value={shareEmail} onChange={(e) => setShareEmail(e.target.value)} placeholder="Имя (ник) коллеги" />
                 <button className="btn primary" type="submit" disabled={shareBusy || members.some((member) => member.role === 'editor')}>Добавить редактора</button></div>
-              <small>Пользователь должен сначала зарегистрироваться. Всего к плате подключаются владелец и один редактор.</small>
+              <small>Пользователь должен сначала войти на сервер. Всего к плате подключаются владелец и один редактор.</small>
             </form>}
           </section>}
         </div>;

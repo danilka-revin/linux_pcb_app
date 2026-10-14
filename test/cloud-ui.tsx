@@ -5,7 +5,7 @@ import App from '../src/App';
 import AdminApp, { UserProfilePanel } from '../src/cloud/admin';
 import { CloudProjectsDialog } from '../src/cloud/projects';
 import { CommunityLibraryPanel } from '../src/ui/community-library';
-import { discoverCloud, ForcedPasswordChange } from '../src/cloud/Workspace';
+import { discoverCloud, ForcedPasswordChange, AuthScreen } from '../src/cloud/Workspace';
 import { emptyStore, loadStore, saveStore } from '../src/pcb/userlib';
 import type { CloudUser } from '../src/cloud/api';
 
@@ -25,6 +25,13 @@ for (const text of ['Общая библиотека PSBees', 'Поиск по �
 const admin = renderToString(createElement(AdminApp, { user, onLogout: async () => {} }));
 for (const text of ['Администрирование', 'Пользователи', 'Проекты', 'Журнал действий', 'Регистрация по почте', 'Сброс пароля', 'временный пароль']) {
   if (!admin.includes(text)) throw new Error(`В админ-приложении отсутствует: ${text}`);
+}
+const nickAuth = renderToString(createElement(AuthScreen, {
+  config: { enabled: true, twoFactorRequired: false, registrationOpen: true },
+  onLogin: () => {},
+}));
+for (const text of ['Ваше имя или ник', 'без почты и пароля']) {
+  if (!nickAuth.includes(text)) throw new Error(`В экране входа по нику отсутствует: ${text}`);
 }
 const forcedChange = renderToString(createElement(ForcedPasswordChange, {
   email: 'bob@work.test', onChanged: () => {}, onLogout: async () => {},
