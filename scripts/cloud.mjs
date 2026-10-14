@@ -18,7 +18,13 @@ const PRESENCE_MS = 45 * 1000;
 const COOKIE = 'psbees_session';
 const MAX_PROJECT_BYTES = 8 * 1024 * 1024;
 const DEFAULT_QUOTA_BYTES = 250 * 1024 * 1024;
+const MIN_QUOTA_BYTES = 1024 * 1024;
+const MAX_QUOTA_BYTES = 1_000_000 * 1024 * 1024;
+const MIN_MAX_PROJECT_BYTES = 256 * 1024;
+const MAX_MAX_PROJECT_BYTES = 512 * 1024 * 1024;
 const MAX_PROJECTS = 1000;
+const MIN_MAX_PROJECTS = 1;
+const MAX_MAX_PROJECTS = 100_000;
 // Общая библиотека хранится в той же закрытой SQLite, но отдельно от пользовательских проектов.
 const MAX_LIBRARY_ENTRY_BYTES = 512 * 1024;
 const MAX_LIBRARY_BATCH = 20;
@@ -331,6 +337,24 @@ function versionOf(value) {
   if (!Number.isSafeInteger(value) || value < 1) fail(400, 'Не указана версия проекта. Обновите список проектов.');
   return value;
 }
+function quotaBytesOf(value) {
+  if (!Number.isSafeInteger(value) || value < MIN_QUOTA_BYTES || value > MAX_QUOTA_BYTES) {
+    fail(400, `Лимит хранилища должен быть от ${Math.floor(MIN_QUOTA_BYTES / 1048576)} до ${Math.floor(MAX_QUOTA_BYTES / 1048576)} МиБ.`);
+  }
+  return value;
+}
+function maxProjectBytesOf(value) {
+  if (!Number.isSafeInteger(value) || value < MIN_MAX_PROJECT_BYTES || value > MAX_MAX_PROJECT_BYTES) {
+    fail(400, `Макс. размер проекта должен быть от ${Math.floor(MIN_MAX_PROJECT_BYTES / 1024)} КиБ до ${Math.floor(MAX_MAX_PROJECT_BYTES / 1048576)} МиБ.`);
+  }
+  return value;
+}
+function maxProjectsOf(value) {
+  if (!Number.isSafeInteger(value) || value < MIN_MAX_PROJECTS || value > MAX_MAX_PROJECTS) {
+    fail(400, `Лимит количества проектов должен быть целым числом от ${MIN_MAX_PROJECTS} до ${MAX_MAX_PROJECTS}.`);
+  }
+  return value;
+}
 function pageOf(url) {
   const limit = Number(url.searchParams.get('limit') ?? 50);
   const offset = Number(url.searchParams.get('offset') ?? 0);
@@ -416,7 +440,8 @@ export async function openCloudStore(dataDir, opts = {}) {
       id TEXT PRIMARY KEY, email TEXT NOT NULL UNIQUE COLLATE NOCASE, password_hash TEXT NOT NULL,
       role TEXT NOT NULL CHECK(role IN ('user','admin')), disabled INTEGER NOT NULL DEFAULT 0,
       created_at INTEGER NOT NULL, last_login INTEGER, email_verified_at INTEGER,
-      must_change_password INTEGER NOT NULL DEFAULT 0
+      must_change_password INTEGER NOT NULL DEFAULT 0,
+      quota_bytes INTEGER, max_projects INTEGER
     );
     CREATE TABLE IF NOT EXISTS sessions (
       token_hash TEXT PRIMARY KEY, user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
@@ -480,6 +505,12 @@ export async function openCloudStore(dataDir, opts = {}) {
   if (!userColumns.some((column) => column.name === 'must_change_password')) {
     db.exec('ALTER TABLE users ADD COLUMN must_change_password INTEGER NOT NULL DEFAULT 0');
   }
+  if (!userColumns.some((column) => column.name === 'quota_bytes')) {
+    db.exec('ALTER TABLE users ADD COLUMN quota_bytes INTEGER');
+  }
+  if (!userColumns.some((column) => column.name === 'max_projects')) {
+    db.exec('ALTER TABLE users ADD COLUMN max_projects INTEGER');
+  }
   const projectColumns = db.prepare('PRAGMA table_info(projects)').all();
   if (!projectColumns.some((column) => column.name === 'thumbnail')) {
     db.exec('ALTER TABLE projects ADD COLUMN thumbnail TEXT');
@@ -488,9 +519,10 @@ export async function openCloudStore(dataDir, opts = {}) {
     db.exec('ALTER TABLE projects ADD COLUMN thumbnail_version INTEGER');
   }
 
-  const quotaBytes = opts.quotaBytes ?? DEFAULT_QUOTA_BYTES;
-  const maxProjectBytes = opts.maxProjectBytes ?? MAX_PROJECT_BYTES;
-  if (!Number.isSafeInteger(quotaBytes) || quotaBytes < maxProjectBytes || !Number.isSafeInteger(maxProjectBytes) || maxProjectBytes < 1) {
+  const initialQuotaBytes = opts.quotaBytes ?? DEFAULT_QUOTA_BYTES;
+  const initialMaxProjectBytes = opts.maxProjectBytes ?? MAX_PROJECT_BYTES;
+  const initialMaxProjects = opts.maxProjects ?? MAX_PROJECTS;
+  if (!Number.isSafeInteger(initialQuotaBytes) || initialQuotaBytes < initialMaxProjectBytes || !Number.isSafeInteger(initialMaxProjectBytes) || initialMaxProjectBytes < 1) {
     db.close();
     throw new Error('Некорректная квота проектов.');
   }
@@ -501,6 +533,23 @@ export async function openCloudStore(dataDir, opts = {}) {
     db.exec('BEGIN IMMEDIATE');
     try { const value = fn(); db.exec('COMMIT'); return value; }
     catch (e) { db.exec('ROLLBACK'); throw e; }
+  };
+  const settingInt = (key, fallback) => {
+    const row = get('SELECT value FROM settings WHERE key=?', key);
+    if (!row) return fallback;
+    const n = Number(row.value);
+    return Number.isSafeInteger(n) && n > 0 ? n : fallback;
+  };
+  const currentQuotaBytes = () => settingInt('quota_bytes', initialQuotaBytes);
+  const currentMaxProjectBytes = () => settingInt('max_project_bytes', initialMaxProjectBytes);
+  const currentMaxProjects = () => settingInt('max_projects', initialMaxProjects);
+  const userQuotaBytes = (userId) => {
+    const row = get('SELECT quota_bytes FROM users WHERE id=?', userId);
+    return row && Number.isSafeInteger(row.quota_bytes) && row.quota_bytes > 0 ? row.quota_bytes : currentQuotaBytes();
+  };
+  const userMaxProjects = (userId) => {
+    const row = get('SELECT max_projects FROM users WHERE id=?', userId);
+    return row && Number.isSafeInteger(row.max_projects) && row.max_projects > 0 ? row.max_projects : currentMaxProjects();
   };
   const audit = (actor, action, target, detail = '') => {
     const result = run('INSERT INTO audit(actor_id, action, target_id, detail, at) VALUES(?,?,?,?,?)',
@@ -574,7 +623,7 @@ export async function openCloudStore(dataDir, opts = {}) {
     + (SELECT COALESCE(SUM(bytes),0) FROM project_versions WHERE owner_id=?) AS bytes`, ownerId, ownerId).bytes;
   const ensureQuota = (ownerId, nextBytes, oldBytes = 0) => {
     const used = usedBytes(ownerId);
-    if (used - oldBytes + nextBytes > quotaBytes) fail(413, 'Квота проектов исчерпана. Скачайте или удалите ненужные проекты.');
+    if (used - oldBytes + nextBytes > userQuotaBytes(ownerId)) fail(413, 'Квота проектов исчерпана. Скачайте или удалите ненужные проекты.');
   };
   const activeSessions = () => get('SELECT COUNT(*) AS n FROM sessions WHERE expires_at>?', Date.now()).n;
   const issueChallenge = async ({ purpose, email, userId = null, userPasswordHash = null }) => {
@@ -656,7 +705,11 @@ export async function openCloudStore(dataDir, opts = {}) {
   };
 
   return {
-    dir, dbPath, quotaBytes, maxProjectBytes, close: () => db.close(),
+    dir, dbPath,
+    get quotaBytes() { return currentQuotaBytes(); },
+    get maxProjectBytes() { return currentMaxProjectBytes(); },
+    get maxProjects() { return currentMaxProjects(); },
+    close: () => db.close(),
     registrationOpen, session, findUser, activeSessions,
     auditEvent(actorId, action, detail = '') { audit(actorId, action, null, detail); },
     async registerByNickname(loginInput, passwordInput) {
@@ -814,7 +867,12 @@ export async function openCloudStore(dataDir, opts = {}) {
         SELECT ${columns},owner.email AS owner_email,'editor' AS access_role
         FROM project_members m JOIN projects p ON p.id=m.project_id JOIN users owner ON owner.id=p.owner_id
         WHERE m.user_id=? ORDER BY updated_at DESC`, userId, userId);
-      return { projects: rows.map(projectCard), usedBytes: usedBytes(userId), quotaBytes };
+      return {
+        projects: rows.map(projectCard),
+        usedBytes: usedBytes(userId),
+        quotaBytes: userQuotaBytes(userId),
+        maxProjects: userMaxProjects(userId),
+      };
     },
     setProjectThumbnail(projectId, userId, version, image) {
       const row = accessibleProject(projectId, userId);
@@ -965,7 +1023,7 @@ export async function openCloudStore(dataDir, opts = {}) {
       return tx(() => {
         const project = accessibleProject(projectId, userId);
         // Имя документа в снимке совпадает с названием проекта, как и при сохранении.
-        const parsed = parseDocument(document, project.name, maxProjectBytes);
+        const parsed = parseDocument(document, project.name, currentMaxProjectBytes());
         if (get('SELECT COUNT(*) AS n FROM project_versions WHERE project_id=?', projectId).n >= MAX_VERSIONS) {
           fail(413, `У проекта уже ${MAX_VERSIONS} версий. Удалите ненужные, чтобы сохранить новую.`);
         }
@@ -990,9 +1048,12 @@ export async function openCloudStore(dataDir, opts = {}) {
       return { ...projectMeta(row), document: JSON.parse(row.document) };
     },
     createProject(userId, nameInput, document) {
-      const name = projectName(nameInput), parsed = parseDocument(document, name, maxProjectBytes);
+      const name = projectName(nameInput), parsed = parseDocument(document, name, currentMaxProjectBytes());
       return tx(() => {
-        if (get('SELECT COUNT(*) AS n FROM projects WHERE owner_id=?', userId).n >= MAX_PROJECTS) fail(413, 'Достигнут предел: 1000 проектов на пользователя.');
+        const maxProjects = userMaxProjects(userId);
+        if (get('SELECT COUNT(*) AS n FROM projects WHERE owner_id=?', userId).n >= maxProjects) {
+          fail(413, `Достигнут предел: ${maxProjects} проектов на пользователя.`);
+        }
         ensureQuota(userId, parsed.bytes);
         const id = randomUUID(), now = Date.now();
         run('INSERT INTO projects(id,owner_id,name,document,bytes,entity_count,created_at,updated_at) VALUES(?,?,?,?,?,?,?,?)',
@@ -1003,11 +1064,12 @@ export async function openCloudStore(dataDir, opts = {}) {
     },
     syncProject(id, userId, baseVersionInput, baseDocument, document) {
       const baseVersion = versionOf(baseVersionInput);
+      const maxProjBytes = currentMaxProjectBytes();
       return tx(() => {
         const row = accessibleProject(id, userId);
         if (baseVersion > row.version) fail(409, 'Клиентская версия новее сервера. Перезагрузите плату.');
-        const baseParsed = parseDocument(baseDocument, row.name, maxProjectBytes);
-        const localParsed = parseDocument(document, row.name, maxProjectBytes);
+        const baseParsed = parseDocument(baseDocument, row.name, maxProjBytes);
+        const localParsed = parseDocument(document, row.name, maxProjBytes);
         const base = JSON.parse(baseParsed.text), local = JSON.parse(localParsed.text);
         const remote = JSON.parse(row.document);
         if (baseVersion === row.version && !documentsEqual(base, remote)) {
@@ -1018,7 +1080,7 @@ export async function openCloudStore(dataDir, opts = {}) {
           const details = merge.conflicts.slice(0, 6).join(', ');
           fail(409, `Одновременные изменения конфликтуют (${details}). Скачайте свою копию или загрузите версию с сервера.`);
         }
-        const parsed = parseDocument(merge.document, row.name, maxProjectBytes);
+        const parsed = parseDocument(merge.document, row.name, maxProjBytes);
         const canonical = JSON.parse(parsed.text);
         if (documentsEqual(canonical, remote)) {
           return { ...projectMeta(row), document: remote, changed: false };
@@ -1034,7 +1096,7 @@ export async function openCloudStore(dataDir, opts = {}) {
     },
     updateProject(id, userId, nameInput, document, versionInput) {
       const name = projectName(nameInput), version = versionOf(versionInput);
-      const parsed = parseDocument(document, name, maxProjectBytes);
+      const parsed = parseDocument(document, name, currentMaxProjectBytes());
       return tx(() => {
         const row = accessibleProject(id, userId);
         if (row.version !== version) fail(409, 'Проект изменён в другой вкладке или на другом компьютере. Сохраните копию либо откройте новую версию.');
@@ -1051,7 +1113,7 @@ export async function openCloudStore(dataDir, opts = {}) {
       return tx(() => {
         const row = ownProject(id, userId);
         if (row.version !== version) fail(409, 'Проект уже изменён. Обновите список.');
-        const parsed = parseDocument(JSON.parse(row.document), name, maxProjectBytes);
+        const parsed = parseDocument(JSON.parse(row.document), name, currentMaxProjectBytes());
         ensureQuota(userId, parsed.bytes, row.bytes);
         const now = Date.now();
         run('UPDATE projects SET name=?,document=?,bytes=?,version=version+1,updated_at=? WHERE id=?', name, parsed.text, parsed.bytes, now, id);
@@ -1079,13 +1141,16 @@ export async function openCloudStore(dataDir, opts = {}) {
         unverifiedUsers: users.total - users.verified, usersMustChangePassword: users.must_change_password,
         projects: projects.total, versions: versions.total, bytes: projects.bytes + versions.bytes,
         projectBytes: projects.bytes, activeSessions: activeSessions(), registrationOpen: registrationOpen(),
-        quotaBytes, maxProjectBytes };
+        quotaBytes: currentQuotaBytes(), maxProjectBytes: currentMaxProjectBytes(), maxProjects: currentMaxProjects() };
     },
     adminUsers(url) {
       const { limit, offset, q } = pageOf(url);
       const where = 'WHERE u.email LIKE ? ESCAPE \'\\\'';
       const total = get(`SELECT COUNT(*) AS n FROM users u ${where}`, q).n;
+      const defQuota = currentQuotaBytes();
+      const defMaxProjects = currentMaxProjects();
       const rows = all(`SELECT u.id,u.email,u.role,u.disabled,u.created_at,u.last_login,u.email_verified_at,u.must_change_password,
+        u.quota_bytes,u.max_projects,
         COUNT(p.id) AS project_count,
         COALESCE(SUM(p.bytes),0) + COALESCE((SELECT SUM(v.bytes) FROM project_versions v WHERE v.owner_id=u.id),0) AS bytes,
         (SELECT COUNT(*) FROM project_members m WHERE m.user_id=u.id) AS shared_project_count,
@@ -1097,10 +1162,12 @@ export async function openCloudStore(dataDir, opts = {}) {
         disabled: !!row.disabled, createdAt: row.created_at, lastLogin: row.last_login,
         emailVerifiedAt: row.email_verified_at, mustChangePassword: !!row.must_change_password,
         projectCount: row.project_count, sharedProjectCount: row.shared_project_count,
-        versionCount: row.version_count, activeSessions: row.active_sessions, bytes: row.bytes })) };
+        versionCount: row.version_count, activeSessions: row.active_sessions, bytes: row.bytes,
+        quotaBytes: row.quota_bytes ?? defQuota, customQuotaBytes: row.quota_bytes ?? null,
+        maxProjects: row.max_projects ?? defMaxProjects, customMaxProjects: row.max_projects ?? null })) };
     },
     adminUserDetail(targetId, actorId) {
-      const row = get(`SELECT id,email,role,disabled,created_at,last_login,email_verified_at,must_change_password
+      const row = get(`SELECT id,email,role,disabled,created_at,last_login,email_verified_at,must_change_password,quota_bytes,max_projects
         FROM users WHERE id=?`, targetId);
       if (!row) fail(404, 'Пользователь не найден.');
       audit(actorId, 'admin.user.view', targetId, row.email);
@@ -1120,13 +1187,55 @@ export async function openCloudStore(dataDir, opts = {}) {
         WHERE a.actor_id=? OR a.target_id=? ORDER BY a.id DESC LIMIT 20`, targetId, targetId)
         .map((event) => ({ id: event.id, actorId: event.actor_id, actorEmail: event.actor_email,
           action: event.action, targetId: event.target_id, detail: event.detail, at: event.at }));
+      const defQuota = currentQuotaBytes();
+      const defMaxProjects = currentMaxProjects();
+      const effectiveQuota = row.quota_bytes ?? defQuota;
+      const effectiveMaxProjects = row.max_projects ?? defMaxProjects;
+      const versionCount = get('SELECT COUNT(*) AS n FROM project_versions WHERE owner_id=?', targetId).n;
+      const userBytes = usedBytes(targetId);
       return { user: { id: row.id, email: row.email, role: row.role, disabled: !!row.disabled,
         createdAt: row.created_at, lastLogin: row.last_login, emailVerifiedAt: row.email_verified_at,
-        mustChangePassword: !!row.must_change_password }, twoFactorRequired: true,
+        mustChangePassword: !!row.must_change_password,
+        projectCount: ownedProjects.length, sharedProjectCount: shared.projects,
+        versionCount, activeSessions: active.length, bytes: userBytes,
+        quotaBytes: effectiveQuota, customQuotaBytes: row.quota_bytes ?? null,
+        maxProjects: effectiveMaxProjects, customMaxProjects: row.max_projects ?? null },
+        twoFactorRequired: true,
         ownedProjects, sharedProjects, projectCount: ownedProjects.length, sharedProjectCount: shared.projects,
-        versionCount: get('SELECT COUNT(*) AS n FROM project_versions WHERE owner_id=?', targetId).n,
-        bytes: usedBytes(targetId), sharedBytes: shared.bytes, quotaBytes,
+        versionCount,
+        bytes: userBytes, sharedBytes: shared.bytes, quotaBytes: effectiveQuota,
+        defaultQuotaBytes: defQuota, maxProjects: effectiveMaxProjects, defaultMaxProjects: defMaxProjects,
+        maxProjectBytes: currentMaxProjectBytes(),
         activeSessions: active, actionCount, recentEvents };
+    },
+    async adminCreateUser(actorId, body, authorize = () => {}) {
+      if (!body || typeof body !== 'object' || Array.isArray(body)) fail(400, 'Некорректные данные пользователя.');
+      const email = loginOf(body.email ?? body.login ?? body.name);
+      const password = passwordOf(body.password);
+      const role = body.role === undefined ? 'user' : body.role;
+      if (!['user', 'admin'].includes(role)) fail(400, 'Некорректная роль.');
+      const mustChangePassword = body.mustChangePassword === undefined ? false : body.mustChangePassword;
+      if (typeof mustChangePassword !== 'boolean') fail(400, 'Некорректный параметр смены пароля.');
+      const customQuota = body.quotaBytes === undefined || body.quotaBytes === null ? null : quotaBytesOf(body.quotaBytes);
+      const customMaxProjects = body.maxProjects === undefined || body.maxProjects === null ? null : maxProjectsOf(body.maxProjects);
+      const hashed = await passwordHash(password);
+      return tx(() => {
+        authorize();
+        if (findUser(email)) fail(409, 'Пользователь с таким именем (ником) или почтой уже существует.');
+        const id = randomUUID(), now = Date.now();
+        run(`INSERT INTO users(id,email,password_hash,role,disabled,created_at,email_verified_at,must_change_password,quota_bytes,max_projects)
+          VALUES(?,?,?,?,0,?,?,?,?,?)`, id, email, hashed, role, now, now, Number(mustChangePassword), customQuota, customMaxProjects);
+        audit(actorId, 'admin.user.create', id, `${email} (${role})`);
+        const defQuota = currentQuotaBytes();
+        const defMaxProjects = currentMaxProjects();
+        return {
+          id, email, role, disabled: false, createdAt: now, lastLogin: null, emailVerifiedAt: now,
+          mustChangePassword, projectCount: 0, sharedProjectCount: 0, versionCount: 0,
+          activeSessions: 0, bytes: 0,
+          quotaBytes: customQuota ?? defQuota, customQuotaBytes: customQuota,
+          maxProjects: customMaxProjects ?? defMaxProjects, customMaxProjects,
+        };
+      });
     },
     async adminResetUserPassword(actorId, targetId, authorize = () => {}) {
       const temporaryPassword = randomBytes(24).toString('base64url');
@@ -1169,36 +1278,101 @@ export async function openCloudStore(dataDir, opts = {}) {
         .map((row) => ({ id: row.id, actorId: row.actor_id, actorEmail: row.actor_email,
           action: row.action, targetId: row.target_id, detail: row.detail, at: row.at })) };
     },
-    adminUpdateUser(actorId, targetId, patch) {
+    async adminUpdateUser(actorId, targetId, patch, authorize = () => {}) {
+      const allowed = new Set(['disabled', 'role', 'email', 'login', 'quotaBytes', 'maxProjects', 'newPassword', 'mustChangePassword', 'emailVerified']);
       if (patch === null || typeof patch !== 'object' || Array.isArray(patch)
-        || Object.keys(patch).length !== 1
-        || !('disabled' in patch || 'role' in patch)) fail(400, 'Измените статус или роль пользователя.');
+        || !Object.keys(patch).length || Object.keys(patch).some((k) => !allowed.has(k))) {
+        fail(400, 'Измените статус, роль, лимит или параметры пользователя.');
+      }
+      const hasEmail = 'email' in patch || 'login' in patch;
+      const nextEmail = hasEmail ? loginOf(patch.email ?? patch.login) : undefined;
+      if ('disabled' in patch && typeof patch.disabled !== 'boolean') fail(400, 'Некорректный статус пользователя.');
+      if ('role' in patch && !['user', 'admin'].includes(patch.role)) fail(400, 'Некорректная роль.');
+      const nextQuota = 'quotaBytes' in patch
+        ? (patch.quotaBytes === null ? null : quotaBytesOf(patch.quotaBytes))
+        : undefined;
+      const nextMaxProjects = 'maxProjects' in patch
+        ? (patch.maxProjects === null ? null : maxProjectsOf(patch.maxProjects))
+        : undefined;
+      if ('mustChangePassword' in patch && typeof patch.mustChangePassword !== 'boolean') {
+        fail(400, 'Некорректный параметр смены пароля.');
+      }
+      if ('emailVerified' in patch && typeof patch.emailVerified !== 'boolean') {
+        fail(400, 'Некорректный статус подтверждения почты.');
+      }
+      const nextPasswordHash = 'newPassword' in patch ? await passwordHash(passwordOf(patch.newPassword)) : undefined;
       return tx(() => {
+        authorize();
         const user = get('SELECT * FROM users WHERE id=?', targetId);
         if (!user) fail(404, 'Пользователь не найден.');
-        if (targetId === actorId) fail(403, 'Нельзя менять собственную роль или блокировать себя.');
+        if (targetId === actorId) {
+          if ('disabled' in patch || 'role' in patch) fail(403, 'Нельзя менять собственную роль или блокировать себя.');
+          if ('mustChangePassword' in patch && patch.mustChangePassword) {
+            fail(403, 'Нельзя потребовать смену пароля для собственной учётной записи.');
+          }
+        }
+        const nextRole = 'role' in patch ? patch.role : user.role;
+        const nextDisabled = 'disabled' in patch ? patch.disabled : Boolean(user.disabled);
+        const otherActiveAdmins = get("SELECT COUNT(*) AS n FROM users WHERE role='admin' AND disabled=0 AND id<>?", targetId).n;
+        if (user.role === 'admin' && !user.disabled && (nextRole !== 'admin' || nextDisabled) && otherActiveAdmins < 1) {
+          fail(409, nextDisabled ? 'Нельзя отключить последнего активного администратора.' : 'Нельзя снять роль с последнего активного администратора.');
+        }
+        let email = user.email;
+        if (nextEmail !== undefined && nextEmail !== user.email) {
+          const clash = findUser(nextEmail);
+          if (clash && clash.id !== targetId) fail(409, 'Это имя (ник) или почта уже заняты другим пользователем.');
+          run('UPDATE users SET email=? WHERE id=?', nextEmail, targetId);
+          audit(actorId, 'admin.user.rename', targetId, `${user.email} → ${nextEmail}`);
+          email = nextEmail;
+        }
         if ('disabled' in patch) {
-          if (typeof patch.disabled !== 'boolean') fail(400, 'Некорректный статус пользователя.');
-          if (user.role === 'admin' && patch.disabled && get("SELECT COUNT(*) AS n FROM users WHERE role='admin' AND disabled=0").n <= 1)
-            fail(409, 'Нельзя отключить последнего активного администратора.');
           run('UPDATE users SET disabled=? WHERE id=?', Number(patch.disabled), targetId);
           if (patch.disabled) {
             run('DELETE FROM sessions WHERE user_id=?', targetId);
             run("DELETE FROM auth_challenges WHERE user_id=? AND purpose='login'", targetId);
           }
-          audit(actorId, patch.disabled ? 'admin.user.disable' : 'admin.user.enable', targetId, user.email);
-        } else {
-          if (!['user', 'admin'].includes(patch.role)) fail(400, 'Некорректная роль.');
-          if (user.role === 'admin' && patch.role === 'user' && !user.disabled
-            && get("SELECT COUNT(*) AS n FROM users WHERE role='admin' AND disabled=0").n <= 1)
-            fail(409, 'Нельзя снять роль с последнего активного администратора.');
+          audit(actorId, patch.disabled ? 'admin.user.disable' : 'admin.user.enable', targetId, email);
+        }
+        if ('role' in patch) {
           run('UPDATE users SET role=? WHERE id=?', patch.role, targetId);
           run('DELETE FROM sessions WHERE user_id=?', targetId);
           run("DELETE FROM auth_challenges WHERE user_id=? AND purpose='login'", targetId);
-          audit(actorId, 'admin.user.role', targetId, `${user.email} → ${patch.role}`);
+          audit(actorId, 'admin.user.role', targetId, `${email} → ${patch.role}`);
         }
-        return { id: targetId, disabled: 'disabled' in patch ? patch.disabled : !!user.disabled,
-          role: 'role' in patch ? patch.role : user.role };
+        if ('quotaBytes' in patch || 'maxProjects' in patch) {
+          if ('quotaBytes' in patch) run('UPDATE users SET quota_bytes=? WHERE id=?', nextQuota, targetId);
+          if ('maxProjects' in patch) run('UPDATE users SET max_projects=? WHERE id=?', nextMaxProjects, targetId);
+          const parts = [];
+          if ('quotaBytes' in patch) {
+            parts.push(`квота: ${nextQuota === null ? 'по умолчанию' : Math.round(nextQuota / 1048576) + ' МиБ'}`);
+          }
+          if ('maxProjects' in patch) {
+            parts.push(`проектов: ${nextMaxProjects === null ? 'по умолчанию' : nextMaxProjects}`);
+          }
+          audit(actorId, 'admin.user.quota', targetId, `${email} (${parts.join(', ')})`);
+        }
+        if (nextPasswordHash !== undefined) {
+          const mustChange = 'mustChangePassword' in patch ? Number(patch.mustChangePassword) : 0;
+          run('UPDATE users SET password_hash=?,must_change_password=? WHERE id=?', nextPasswordHash, mustChange, targetId);
+          run('DELETE FROM sessions WHERE user_id=?', targetId);
+          run("DELETE FROM auth_challenges WHERE user_id=? AND purpose='login'", targetId);
+          audit(actorId, 'admin.user.password_set', targetId, email);
+        } else if ('mustChangePassword' in patch) {
+          run('UPDATE users SET must_change_password=? WHERE id=?', Number(patch.mustChangePassword), targetId);
+          audit(actorId, 'admin.user.must_change_password', targetId, `${email}: ${patch.mustChangePassword ? 'обязательна' : 'снята'}`);
+        }
+        if ('emailVerified' in patch) {
+          const verifiedAt = patch.emailVerified ? (user.email_verified_at || Date.now()) : null;
+          run('UPDATE users SET email_verified_at=? WHERE id=?', verifiedAt, targetId);
+          audit(actorId, 'admin.user.verify', targetId, `${email}: ${patch.emailVerified ? 'подтверждена' : 'снята'}`);
+        }
+        const updated = get('SELECT * FROM users WHERE id=?', targetId);
+        return {
+          id: targetId, email: updated.email, disabled: !!updated.disabled, role: updated.role,
+          mustChangePassword: !!updated.must_change_password, emailVerifiedAt: updated.email_verified_at,
+          quotaBytes: updated.quota_bytes ?? currentQuotaBytes(), customQuotaBytes: updated.quota_bytes ?? null,
+          maxProjects: updated.max_projects ?? currentMaxProjects(), customMaxProjects: updated.max_projects ?? null,
+        };
       });
     },
     adminRevokeSessions(actorId, targetId) {
@@ -1208,6 +1382,16 @@ export async function openCloudStore(dataDir, opts = {}) {
         run('DELETE FROM sessions WHERE user_id=?', targetId);
         run("DELETE FROM auth_challenges WHERE user_id=? AND purpose='login'", targetId);
         audit(actorId, 'admin.user.sessions_revoked', targetId, user.email);
+      });
+    },
+    adminDeleteUserProjects(actorId, targetId) {
+      return tx(() => {
+        const user = get('SELECT email FROM users WHERE id=?', targetId);
+        if (!user) fail(404, 'Пользователь не найден.');
+        const count = get('SELECT COUNT(*) AS n FROM projects WHERE owner_id=?', targetId).n;
+        run('DELETE FROM projects WHERE owner_id=?', targetId);
+        audit(actorId, 'admin.user.projects_clear', targetId, `${user.email}; проектов: ${count}`);
+        return { deletedProjects: count };
       });
     },
     adminDeleteUser(actorId, targetId) {
@@ -1223,6 +1407,71 @@ export async function openCloudStore(dataDir, opts = {}) {
         audit(actorId, 'admin.user.delete', targetId, `${user.email}; проектов: ${count}`);
       });
     },
+    adminUpdateProject(actorId, projectId, patch) {
+      const allowed = new Set(['name', 'ownerId', 'ownerEmail']);
+      if (!patch || typeof patch !== 'object' || Array.isArray(patch)
+        || !Object.keys(patch).length || Object.keys(patch).some((k) => !allowed.has(k))) {
+        fail(400, 'Укажите новое название или нового владельца проекта.');
+      }
+      return tx(() => {
+        const row = get('SELECT p.*,u.email AS owner_email FROM projects p JOIN users u ON u.id=p.owner_id WHERE p.id=?', projectId);
+        if (!row) fail(404, 'Проект не найден.');
+        let nextName = row.name;
+        let nextDocText = row.document;
+        let nextBytes = row.bytes;
+        let nextOwnerId = row.owner_id;
+        let nextOwnerEmail = row.owner_email;
+        if ('name' in patch) {
+          nextName = projectName(patch.name);
+          const parsed = parseDocument(JSON.parse(row.document), nextName, currentMaxProjectBytes());
+          nextDocText = parsed.text;
+          nextBytes = parsed.bytes;
+        }
+        if ('ownerId' in patch || 'ownerEmail' in patch) {
+          const targetOwner = 'ownerId' in patch
+            ? get('SELECT * FROM users WHERE id=?', String(patch.ownerId))
+            : findUser(loginOf(patch.ownerEmail));
+          if (!targetOwner) fail(404, 'Новый владелец не найден.');
+          nextOwnerId = targetOwner.id;
+          nextOwnerEmail = targetOwner.email;
+        }
+        if (nextOwnerId !== row.owner_id) {
+          const maxProj = userMaxProjects(nextOwnerId);
+          if (get('SELECT COUNT(*) AS n FROM projects WHERE owner_id=?', nextOwnerId).n >= maxProj) {
+            fail(413, `У нового владельца достигнут предел проектов (${maxProj}).`);
+          }
+          const versionsBytes = get('SELECT COALESCE(SUM(bytes),0) AS bytes FROM project_versions WHERE project_id=?', projectId).bytes;
+          ensureQuota(nextOwnerId, nextBytes + versionsBytes);
+        } else if (nextBytes !== row.bytes) {
+          ensureQuota(row.owner_id, nextBytes, row.bytes);
+        }
+        const now = Date.now();
+        run('UPDATE projects SET owner_id=?,name=?,document=?,bytes=?,version=version+1,updated_at=? WHERE id=?',
+          nextOwnerId, nextName, nextDocText, nextBytes, now, projectId);
+        if (nextOwnerId !== row.owner_id) {
+          run('UPDATE project_versions SET owner_id=? WHERE project_id=?', nextOwnerId, projectId);
+          run('DELETE FROM project_members WHERE project_id=? AND user_id=?', projectId, nextOwnerId);
+          audit(actorId, 'admin.project.transfer', projectId, `${nextName}: ${row.owner_email} → ${nextOwnerEmail}`);
+        }
+        if ('name' in patch && nextName !== row.name) {
+          audit(actorId, 'admin.project.rename', projectId, `${row.name} → ${nextName}`);
+        }
+        return projectMeta({
+          ...row, owner_id: nextOwnerId, owner_email: nextOwnerEmail,
+          name: nextName, bytes: nextBytes, version: row.version + 1, updated_at: now,
+        });
+      });
+    },
+    adminRemoveProjectMember(actorId, projectId, memberId) {
+      tx(() => {
+        const project = get('SELECT name FROM projects WHERE id=?', projectId);
+        if (!project) fail(404, 'Проект не найден.');
+        const member = get('SELECT u.email FROM project_members m JOIN users u ON u.id=m.user_id WHERE m.project_id=? AND m.user_id=?', projectId, memberId);
+        if (!member) fail(404, 'Участник проекта не найден.');
+        run('DELETE FROM project_members WHERE project_id=? AND user_id=?', projectId, memberId);
+        audit(actorId, 'admin.project.member_remove', projectId, `${project.name}: ${member.email}`);
+      });
+    },
     adminDeleteProject(actorId, projectId) {
       tx(() => {
         const row = get('SELECT name FROM projects WHERE id=?', projectId);
@@ -1231,12 +1480,48 @@ export async function openCloudStore(dataDir, opts = {}) {
         audit(actorId, 'admin.project.delete', projectId, row.name);
       });
     },
+    adminUpdateSettings(actorId, patch) {
+      const allowed = new Set(['registrationOpen', 'quotaBytes', 'maxProjectBytes', 'maxProjects']);
+      if (!patch || typeof patch !== 'object' || Array.isArray(patch)
+        || !Object.keys(patch).length || Object.keys(patch).some((k) => !allowed.has(k))) {
+        fail(400, 'Некорректные настройки сервера.');
+      }
+      if ('registrationOpen' in patch && typeof patch.registrationOpen !== 'boolean') {
+        fail(400, 'Некорректная настройка регистрации.');
+      }
+      const nextQuota = 'quotaBytes' in patch ? quotaBytesOf(patch.quotaBytes) : currentQuotaBytes();
+      const nextMaxProject = 'maxProjectBytes' in patch ? maxProjectBytesOf(patch.maxProjectBytes) : currentMaxProjectBytes();
+      const nextMaxProjects = 'maxProjects' in patch ? maxProjectsOf(patch.maxProjects) : currentMaxProjects();
+      if (nextQuota < nextMaxProject) {
+        fail(400, 'Лимит аккаунта не может быть меньше максимального размера одного проекта.');
+      }
+      const upsert = (key, value) => run(
+        'INSERT INTO settings(key,value) VALUES(?,?) ON CONFLICT(key) DO UPDATE SET value=excluded.value',
+        key, String(value),
+      );
+      return tx(() => {
+        if ('registrationOpen' in patch) {
+          upsert('registration_open', patch.registrationOpen ? '1' : '0');
+          audit(actorId, 'admin.registration', null, patch.registrationOpen ? 'открыта' : 'закрыта');
+        }
+        if ('quotaBytes' in patch || 'maxProjectBytes' in patch || 'maxProjects' in patch) {
+          if ('quotaBytes' in patch) upsert('quota_bytes', nextQuota);
+          if ('maxProjectBytes' in patch) upsert('max_project_bytes', nextMaxProject);
+          if ('maxProjects' in patch) upsert('max_projects', nextMaxProjects);
+          audit(actorId, 'admin.quota', null,
+            `квота: ${Math.round(nextQuota / 1048576)} МиБ, плата: ${Math.round(nextMaxProject / 1048576)} МиБ, проектов: ${nextMaxProjects}`);
+        }
+        return {
+          registrationOpen: registrationOpen(),
+          quotaBytes: currentQuotaBytes(),
+          maxProjectBytes: currentMaxProjectBytes(),
+          maxProjects: currentMaxProjects(),
+        };
+      });
+    },
     adminSetRegistration(actorId, open) {
       if (typeof open !== 'boolean') fail(400, 'Некорректная настройка регистрации.');
-      tx(() => {
-        run("UPDATE settings SET value=? WHERE key='registration_open'", open ? '1' : '0');
-        audit(actorId, 'admin.registration', null, open ? 'открыта' : 'закрыта');
-      });
+      return this.adminUpdateSettings(actorId, { registrationOpen: open });
     },
   };
 }
@@ -1375,7 +1660,7 @@ export async function createCloudService(dataDir, opts = {}) {
       twoFactorRequired,
       passwordRequired: true,
       authMode: twoFactorRequired ? 'email-otp' : 'nickname',
-      maxProjectBytes: store.maxProjectBytes, quotaBytes: store.quotaBytes,
+      maxProjectBytes: store.maxProjectBytes, quotaBytes: store.quotaBytes, maxProjects: store.maxProjects,
     });
     if (path === '/register' && method === 'POST') {
       const body = await readJson(req, 2048);
@@ -1472,7 +1757,7 @@ export async function createCloudService(dataDir, opts = {}) {
     }
     if (path === '/projects' && method === 'GET') return json(res, 200, { ok: true, ...store.listProjects(actor.id) });
     if (path === '/projects' && method === 'POST') {
-      const body = await readJson(req);
+      const body = await readJson(req, store.maxProjectBytes + 1024 * 1024);
       stillAuthorized();
       return json(res, 201, { ok: true, project: store.createProject(actor.id, body.name, body.document) });
     }
@@ -1529,7 +1814,7 @@ export async function createCloudService(dataDir, opts = {}) {
       });
     }
     if (syncRoute && method === 'POST') {
-      const body = await readJson(req, MAX_PROJECT_BYTES * 2 + 2 * 1024 * 1024);
+      const body = await readJson(req, store.maxProjectBytes * 2 + 2 * 1024 * 1024);
       stillAuthorized();
       const project = store.syncProject(syncRoute[1], actor.id, body.baseVersion, body.baseDocument, body.document);
       if (project.changed) wakeProject(syncRoute[1]);
@@ -1567,7 +1852,7 @@ export async function createCloudService(dataDir, opts = {}) {
     if (project) {
       const id = project[1];
       if (method === 'GET') return json(res, 200, { ok: true, project: store.getProject(id, actor.id) });
-      const body = await readJson(req, method === 'PUT' ? undefined : 2048);
+      const body = await readJson(req, method === 'PUT' ? store.maxProjectBytes + 1024 * 1024 : 2048);
       stillAuthorized();
       if (method === 'PUT') {
         const updated = store.updateProject(id, actor.id, body.name, body.document, body.version);
@@ -1589,7 +1874,7 @@ export async function createCloudService(dataDir, opts = {}) {
     if (versions) {
       if (method === 'GET') return json(res, 200, { ok: true, ...store.listVersions(versions[1], actor.id) });
       if (method === 'POST') {
-        const body = await readJson(req);
+        const body = await readJson(req, store.maxProjectBytes + 1024 * 1024);
         stillAuthorized();
         return json(res, 201, { ok: true, version: store.createVersion(versions[1], actor.id, body.name, body.document) });
       }
@@ -1619,19 +1904,31 @@ export async function createCloudService(dataDir, opts = {}) {
       if (actor.role !== 'admin') fail(403, 'Доступно только администратору.');
       if (path === '/admin/overview' && method === 'GET') return json(res, 200, { ok: true, ...store.adminOverview() });
       if (path === '/admin/users' && method === 'GET') return json(res, 200, { ok: true, ...store.adminUsers(url) });
+      if (path === '/admin/users' && method === 'POST') {
+        const body = await readJson(req, 2048);
+        stillAuthorized(true);
+        const user = await store.adminCreateUser(actor.id, body, () => stillAuthorized(true));
+        return json(res, 201, { ok: true, user });
+      }
       if (path === '/admin/projects' && method === 'GET') return json(res, 200, { ok: true, ...store.adminProjects(url) });
       if (path === '/admin/events' && method === 'GET') return json(res, 200, { ok: true, ...store.adminEvents(url) });
       if (path === '/admin/settings' && method === 'PATCH') {
         const body = await readJson(req, 2048);
         stillAuthorized(true);
-        store.adminSetRegistration(actor.id, body.registrationOpen);
-        return json(res, 200, { ok: true, registrationOpen: body.registrationOpen });
+        return json(res, 200, { ok: true, ...store.adminUpdateSettings(actor.id, body) });
       }
       const userSessions = /^\/admin\/users\/([0-9a-f-]{36})\/sessions$/i.exec(path);
       if (userSessions && method === 'DELETE') {
         stillAuthorized(true);
         store.adminRevokeSessions(actor.id, userSessions[1]);
         return json(res, 200, { ok: true });
+      }
+      const userProjects = /^\/admin\/users\/([0-9a-f-]{36})\/projects$/i.exec(path);
+      if (userProjects && method === 'DELETE') {
+        stillAuthorized(true);
+        const result = store.adminDeleteUserProjects(actor.id, userProjects[1]);
+        wakeAll();
+        return json(res, 200, { ok: true, ...result });
       }
       const userPasswordReset = /^\/admin\/users\/([0-9a-f-]{36})\/password$/i.exec(path);
       if (userPasswordReset && method === 'POST') {
@@ -1646,18 +1943,34 @@ export async function createCloudService(dataDir, opts = {}) {
         if (method === 'PATCH') {
           const body = await readJson(req, 2048);
           stillAuthorized(true);
-          return json(res, 200, { ok: true, user: store.adminUpdateUser(actor.id, user[1], body) });
+          return json(res, 200, { ok: true, user: await store.adminUpdateUser(actor.id, user[1], body, () => stillAuthorized(true)) });
         }
         if (method === 'DELETE') {
+          stillAuthorized(true);
           store.adminDeleteUser(actor.id, user[1]);
           wakeAll();
           return json(res, 200, { ok: true });
         }
       }
+      const adminProjectMember = /^\/admin\/projects\/([0-9a-f-]{36})\/members\/([0-9a-f-]{36})$/i.exec(path);
+      if (adminProjectMember && method === 'DELETE') {
+        stillAuthorized(true);
+        store.adminRemoveProjectMember(actor.id, adminProjectMember[1], adminProjectMember[2]);
+        wakeProject(adminProjectMember[1]);
+        return json(res, 200, { ok: true });
+      }
       const adminProject = /^\/admin\/projects\/([0-9a-f-]{36})$/i.exec(path);
       if (adminProject) {
         if (method === 'GET') return json(res, 200, { ok: true, project: store.adminGetProject(adminProject[1], actor.id) });
+        if (method === 'PATCH') {
+          const body = await readJson(req, 2048);
+          stillAuthorized(true);
+          const updated = store.adminUpdateProject(actor.id, adminProject[1], body);
+          wakeProject(adminProject[1]);
+          return json(res, 200, { ok: true, project: updated });
+        }
         if (method === 'DELETE') {
+          stillAuthorized(true);
           store.adminDeleteProject(actor.id, adminProject[1]);
           wakeProject(adminProject[1]);
           return json(res, 200, { ok: true });

@@ -19,6 +19,7 @@ export interface CloudConfig {
   authMode?: 'nickname' | 'email-otp';
   maxProjectBytes?: number;
   quotaBytes?: number;
+  maxProjects?: number;
 }
 export interface CloudProject {
   id: string; ownerId: string; name: string; version: number;
@@ -47,13 +48,17 @@ export interface CloudLibraryEntry {
 export interface CloudLibraryEntryDetail extends CloudLibraryEntry { macro: Macro }
 export interface CloudOverview {
   users: number; disabledUsers: number; verifiedUsers: number; unverifiedUsers: number;
-  usersMustChangePassword: number; projects: number; bytes: number;
+  usersMustChangePassword: number; projects: number; versions?: number; bytes: number;
+  projectBytes?: number;
   activeSessions: number; registrationOpen: boolean; quotaBytes: number; maxProjectBytes: number;
+  maxProjects?: number;
 }
 export interface AdminUser extends CloudUser {
   disabled: boolean; lastLogin: number | null; emailVerifiedAt: number | null;
   mustChangePassword: boolean; projectCount: number; sharedProjectCount: number;
   versionCount: number; activeSessions: number; bytes: number;
+  quotaBytes?: number; customQuotaBytes?: number | null;
+  maxProjects?: number; customMaxProjects?: number | null;
 }
 export interface AdminUserSession { createdAt: number; expiresAt: number }
 export interface CloudEvent {
@@ -67,6 +72,8 @@ export interface AdminUserProfile {
   sharedProjects: CloudProject[];
   projectCount: number; sharedProjectCount: number; versionCount: number;
   bytes: number; sharedBytes: number; quotaBytes: number;
+  defaultQuotaBytes?: number; maxProjects?: number; defaultMaxProjects?: number;
+  maxProjectBytes?: number;
   activeSessions: AdminUserSession[]; actionCount: number; recentEvents: CloudEvent[];
 }
 
