@@ -464,6 +464,91 @@ try {
   const adminEvents = (await api(danil, '/admin/events')).data.events;
   assert.equal(adminEvents.some((e) => e.action === 'user.register' && e.actorEmail === 'Алексей'), true);
 
+  // Управление лимитом аккаунта и всеми манипуляциями с пользователями со стороны администратора:
+  await api(alex, '/admin/settings', 'PATCH', { quotaBytes: 100 * 1024 * 1024 }, 403);
+  await api(danil, '/admin/settings', 'PATCH', { quotaBytes: 512 }, 400);
+  await api(danil, '/admin/settings', 'PATCH', { quotaBytes: 4 * 1024 * 1024, maxProjectBytes: 8 * 1024 * 1024 }, 400);
+  const updatedSettings = (await api(danil, '/admin/settings', 'PATCH', {
+    quotaBytes: 64 * 1024 * 1024, maxProjectBytes: 4 * 1024 * 1024, maxProjects: 25,
+  })).data;
+  assert.equal(updatedSettings.quotaBytes, 64 * 1024 * 1024);
+  assert.equal(updatedSettings.maxProjectBytes, 4 * 1024 * 1024);
+  assert.equal(updatedSettings.maxProjects, 25);
+  assert.equal((await api(null, '/config')).data.quotaBytes, 64 * 1024 * 1024);
+  assert.equal((await api(alex, '/projects')).data.quotaBytes, 64 * 1024 * 1024);
+  assert.equal((await api(alex, '/projects')).data.maxProjects, 25);
+
+  // Создание пользователя админом (в том числе при закрытой самостоятельной регистрации):
+  await api(danil, '/admin/settings', 'PATCH', { registrationOpen: false });
+  await api(alex, '/admin/users', 'POST', { email: 'Инженер', password: 'engineer-long-password' }, 403);
+  const createdByAdmin = (await api(danil, '/admin/users', 'POST', {
+    email: 'Инженер', password: 'engineer-long-password', role: 'user',
+    quotaBytes: 16 * 1024 * 1024, maxProjects: 2, mustChangePassword: false,
+  }, 201)).data.user;
+  assert.equal(createdByAdmin.email, 'Инженер');
+  assert.equal(createdByAdmin.quotaBytes, 16 * 1024 * 1024);
+  assert.equal(createdByAdmin.customQuotaBytes, 16 * 1024 * 1024);
+  assert.equal(createdByAdmin.maxProjects, 2);
+  assert.equal(createdByAdmin.customMaxProjects, 2);
+  await api(danil, '/admin/users', 'POST', { email: 'Инженер', password: 'engineer-long-password' }, 409);
+
+  const engineer = { cookie: '' };
+  await api(engineer, '/login', 'POST', { name: 'Инженер', password: 'engineer-long-password' }, 200);
+  const engProjectsList = (await api(engineer, '/projects')).data;
+  assert.equal(engProjectsList.quotaBytes, 16 * 1024 * 1024);
+  assert.equal(engProjectsList.maxProjects, 2);
+  // Проверка индивидуального лимита числа проектов (2 проекта максимум):
+  const engP1 = (await api(engineer, '/projects', 'POST', { name: 'Плата 1', document: doc }, 201)).data.project;
+  await api(engineer, '/projects', 'POST', { name: 'Плата 2', document: doc }, 201);
+  await api(engineer, '/projects', 'POST', { name: 'Плата 3 сверх лимита', document: doc }, 413);
+
+  // Админ увеличивает индивидуальный лимит проектов, переименовывает пользователя, меняет пароль и флаги:
+  const patchedEng = (await api(danil, `/admin/users/${createdByAdmin.id}`, 'PATCH', {
+    email: 'СтаршийИнженер', quotaBytes: 32 * 1024 * 1024, maxProjects: 5,
+  })).data.user;
+  assert.equal(patchedEng.email, 'СтаршийИнженер');
+  assert.equal(patchedEng.quotaBytes, 32 * 1024 * 1024);
+  assert.equal(patchedEng.maxProjects, 5);
+  await api(danil, `/admin/users/${createdByAdmin.id}`, 'PATCH', { email: 'Данил' }, 409);
+  await api(engineer, '/projects', 'POST', { name: 'Плата 3 после повышения лимита', document: doc }, 201);
+
+  // Сброс индивидуального лимита к общему лимиту сервера:
+  const resetQuotaEng = (await api(danil, `/admin/users/${createdByAdmin.id}`, 'PATCH', {
+    quotaBytes: null, maxProjects: null,
+  })).data.user;
+  assert.equal(resetQuotaEng.customQuotaBytes, null);
+  assert.equal(resetQuotaEng.quotaBytes, 64 * 1024 * 1024);
+  assert.equal(resetQuotaEng.customMaxProjects, null);
+  assert.equal(resetQuotaEng.maxProjects, 25);
+
+  // Установка пароля вручную админом, переключение подтверждения почты и обязательной смены пароля:
+  await api(danil, `/admin/users/${createdByAdmin.id}`, 'PATCH', {
+    newPassword: 'admin-set-manual-password', mustChangePassword: true, emailVerified: false,
+  });
+  await api(engineer, '/me', 'GET', undefined, 401);
+  const engRelogin = await api(engineer, '/login', 'POST', { name: 'СтаршийИнженер', password: 'admin-set-manual-password' }, 200);
+  assert.equal(engRelogin.data.user.mustChangePassword, true);
+  // Админ может снять требование обязательной смены пароля и подтвердить почту:
+  const clearedMustChange = (await api(danil, `/admin/users/${createdByAdmin.id}`, 'PATCH', {
+    mustChangePassword: false, emailVerified: true,
+  })).data.user;
+  assert.equal(clearedMustChange.mustChangePassword, false);
+  assert.equal(typeof clearedMustChange.emailVerifiedAt, 'number');
+
+  // Переименование и передача проекта другому пользователю администратором, отзыв доступа и очистка проектов:
+  const renamedByAdmin = (await api(danil, `/admin/projects/${engP1.id}`, 'PATCH', {
+    name: 'Переименовано админом', ownerEmail: 'Алексей',
+  })).data.project;
+  assert.equal(renamedByAdmin.name, 'Переименовано админом');
+  assert.equal(renamedByAdmin.ownerEmail, 'Алексей');
+  // Отзыв соавтора из общего проекта через админ-панель:
+  await api(danil, `/admin/projects/${nickProject.id}/members/${secondReg.data.user.id}`, 'DELETE');
+  assert.equal((await api(alex, `/projects/${nickProject.id}`, 'GET', undefined, 404)).data.ok, false);
+  // Очистка всех проектов пользователя без удаления его аккаунта:
+  const clearedProjects = (await api(danil, `/admin/users/${createdByAdmin.id}/projects`, 'DELETE')).data;
+  assert.equal(clearedProjects.deletedProjects, 2);
+  assert.equal((await api(engineer, '/projects')).data.projects.length, 0);
+
   console.log('cloud HTTP/SQLite OK');
 } finally {
   if (server) await new Promise((done) => server.close(done));

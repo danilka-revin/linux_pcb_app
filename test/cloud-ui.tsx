@@ -25,7 +25,10 @@ for (const text of ['Общая библиотека PSBees', 'Поиск по �
   if (!sharedLibrary.includes(text)) throw new Error(`В общей библиотеке отсутствует: ${text}`);
 }
 const admin = renderToString(createElement(AdminApp, { user, onLogout: async () => {} }));
-for (const text of ['Администрирование', 'Пользователи', 'Проекты', 'Журнал действий', 'Регистрация по почте', 'Сброс пароля', 'временный пароль']) {
+for (const text of [
+  'Администрирование', 'Пользователи', 'Проекты', 'Журнал действий', 'Регистрация по почте', 'Сброс пароля', 'временный пароль',
+  'Лимит аккаунта и проектов по умолчанию', 'Лимит хранилища на аккаунт (МиБ)', 'Сохранить лимиты',
+]) {
   if (!admin.includes(text)) throw new Error(`В админ-приложении отсутствует: ${text}`);
 }
 const nickAuth = renderToString(createElement(AuthScreen, {
@@ -70,7 +73,10 @@ const profile = renderToString(createElement(UserProfilePanel, {
   }, loading: false, error: '', busy: false, isCurrentUser: false,
   onResetPassword: () => {}, onRevokeSessions: () => {}, onShowOwnerProjects: () => {},
 }));
-for (const text of ['Проекты владельца', 'Тестовая плата', 'Код требуется при каждом входе', 'Выдать временный пароль', 'scrypt-хеш']) {
+for (const text of [
+  'Проекты владельца', 'Тестовая плата', 'Код требуется при каждом входе', 'Выдать временный пароль', 'scrypt-хеш',
+  'Лимит аккаунта пользователя', 'Сохранить лимит пользователя', 'Управление учётной записью', 'Переименовать', 'Установить пароль',
+]) {
   if (!profile.includes(text)) throw new Error(`В полной сводке пользователя отсутствует: ${text}`);
 }
 const dialog = renderToString(createElement(CloudProjectsDialog, {
