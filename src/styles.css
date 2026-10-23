@@ -2354,3 +2354,269 @@ html[data-compact='1'] .set-head { padding: 5px 8px 5px 10px; }
 .drc-fix-msg { border-radius: 6px; padding: 6px 8px; margin: 8px 0; font-size: 12px; }
 .drc-fix-msg.ok { background: rgba(46, 160, 67, .15); color: #7ee787; }
 .drc-fix-msg.bad { background: rgba(248, 81, 73, .14); color: #ff9d97; }
+
+/* ============================================================
+   Режимы рабочего пространства: Платы · Лазерный · 3D
+   Переключатель живёт в шапке всех трёх режимов и всегда на виду.
+   ============================================================ */
+.mode-switcher {
+  display: flex; align-items: center; gap: 2px; flex: none;
+  padding: 2px; margin-right: 4px;
+  background: var(--surface-2); border: 1px solid var(--line); border-radius: 10px;
+}
+.mode-tab {
+  position: relative;
+  display: flex; align-items: center; gap: 6px;
+  padding: 4px 10px; border-radius: 8px; cursor: pointer;
+  color: var(--muted); font-size: 12px; font-weight: 600; white-space: nowrap;
+  transition: background .14s ease, color .14s ease;
+}
+.mode-tab:hover { background: var(--hover); color: var(--text); }
+.mode-tab.active {
+  background: var(--accent-soft); color: var(--accent-text);
+  box-shadow: inset 0 0 0 1px var(--accent-line);
+}
+.mode-tab.active svg { color: var(--accent-text); }
+.mode-soon-badge {
+  font-style: normal; font-size: 9px; font-weight: 700; letter-spacing: .04em;
+  text-transform: uppercase; padding: 1px 4px; border-radius: 5px;
+  color: var(--muted); background: var(--info-bg); border: 1px solid var(--line);
+}
+.mode-tab.active .mode-soon-badge { color: var(--accent-ink); background: var(--accent); border-color: var(--accent); }
+@media (max-width: 1240px) { .mode-tab span:not(.mode-soon-badge) { display: none; } .mode-tab { padding: 5px 8px; } }
+
+/* загрузка режима, который подгружается отдельным чанком */
+.mode-loading {
+  flex: 1; display: flex; align-items: center; justify-content: center;
+  background: var(--page); padding: 30px;
+}
+.mode-loading > * { width: min(420px, 90vw); }
+
+/* ---------- экран «3D моделирование» (скоро в разработке) ---------- */
+.modeling-3d-main {
+  flex: 1; min-height: 0; overflow-y: auto;
+  display: flex; align-items: flex-start; justify-content: center;
+  padding: 26px 20px 34px;
+  background:
+    radial-gradient(1100px 520px at 18% -8%, var(--accent-soft), transparent 62%),
+    radial-gradient(820px 460px at 92% 8%, rgba(34, 197, 94, .07), transparent 60%),
+    var(--page);
+}
+.modeling-3d-card {
+  width: min(1060px, 100%);
+  background: var(--surface); border: 1px solid var(--line); border-radius: 16px;
+  box-shadow: var(--shadow); padding: 26px 28px 24px;
+}
+.modeling-3d-hero { display: flex; gap: 26px; align-items: center; }
+.modeling-3d-graphic {
+  flex: none; display: grid; place-items: center;
+  width: 210px; height: 190px; border-radius: 14px;
+  background: var(--surface-2); border: 1px solid var(--line);
+}
+.modeling-3d-copy { flex: 1; min-width: 0; }
+.modeling-3d-badge {
+  display: inline-flex; align-items: center; gap: 8px;
+  padding: 4px 11px; border-radius: 999px;
+  background: var(--accent-soft); border: 1px solid var(--accent-line);
+  color: var(--accent-text); font-size: 10.5px; font-weight: 800; letter-spacing: .12em;
+}
+.modeling-3d-copy h1 { margin: 12px 0 8px; font-size: 25px; line-height: 1.2; letter-spacing: -.02em; }
+.modeling-3d-lead { margin: 0 0 16px; color: var(--text-2); font-size: 13.5px; line-height: 1.7; max-width: 62ch; }
+.modeling-3d-actions { display: flex; flex-wrap: wrap; gap: 8px; }
+.modeling-3d-actions .btn { display: inline-flex; align-items: center; gap: 7px; }
+.modeling-3d-grid {
+  display: grid; grid-template-columns: repeat(auto-fit, minmax(230px, 1fr));
+  gap: 12px; margin-top: 24px; padding-top: 20px; border-top: 1px solid var(--line);
+}
+.modeling-3d-feature {
+  background: var(--surface-2); border: 1px solid var(--line); border-radius: 12px;
+  padding: 13px 14px;
+}
+.modeling-3d-feature:hover { border-color: var(--accent-line); }
+.modeling-3d-feat-head { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+.modeling-3d-feat-head svg { color: var(--accent-text); flex: none; }
+.modeling-3d-feat-head b { font-size: 12.5px; }
+.feat-tag {
+  margin-left: auto; font-size: 9.5px; font-weight: 700; letter-spacing: .05em;
+  text-transform: uppercase; color: var(--muted);
+  background: var(--info-bg); border: 1px solid var(--line);
+  padding: 1px 6px; border-radius: 5px;
+}
+.modeling-3d-feature p { margin: 8px 0 0; color: var(--muted); font-size: 12px; line-height: 1.65; }
+@media (max-width: 860px) {
+  .modeling-3d-hero { flex-direction: column; align-items: flex-start; }
+  .modeling-3d-graphic { width: 100%; height: 150px; }
+}
+
+/* ============================================================
+   Лазерный редактор: развёртки, слои станка, CAM-экспорт
+   ============================================================ */
+
+/* подсказка активного инструмента у холста (под доком) */
+.laser-tool-hint {
+  position: absolute; left: 8px; bottom: 8px; z-index: 5;
+  display: flex; align-items: center; gap: 7px;
+  max-width: min(560px, calc(100% - 24px));
+  padding: 5px 10px; border-radius: 9px;
+  background: color-mix(in srgb, var(--surface) 90%, transparent);
+  border: 1px solid var(--line); box-shadow: 0 6px 16px rgba(0, 0, 0, .22);
+  backdrop-filter: blur(3px);
+  font-size: 11.5px; color: var(--muted);
+}
+.laser-tool-hint svg { color: var(--accent-text); flex: none; }
+.laser-tool-hint b { color: var(--text); font-weight: 600; flex: none; }
+.laser-tool-hint span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+@media (max-width: 900px) { .laser-tool-hint span { display: none; } }
+
+/* ---------- слои станка ---------- */
+.laser-layers { display: flex; flex-direction: column; gap: 2px; padding: 2px 8px 6px; }
+.laser-layer {
+  display: flex; align-items: center; gap: 2px;
+  border: 1px solid transparent; border-radius: 8px;
+  background: var(--surface-2);
+}
+.laser-layer:hover { border-color: var(--line); }
+.laser-layer.active { border-color: var(--accent-line); background: var(--accent-soft); }
+.laser-layer.locked { opacity: .62; }
+.laser-layer-main {
+  flex: 1; min-width: 0; display: flex; align-items: center; gap: 8px;
+  padding: 6px 8px; cursor: pointer; text-align: left; color: var(--text-2);
+}
+.laser-layer.active .laser-layer-main { color: var(--text); }
+.laser-layer-swatch {
+  width: 12px; height: 12px; border-radius: 4px; flex: none;
+  box-shadow: 0 0 0 1px var(--sw-line) inset;
+}
+.laser-layer-name { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 12px; }
+.laser-layer-n { color: var(--muted); font-size: 10.5px; font-variant-numeric: tabular-nums; flex: none; }
+.laser-layer-props { border-top: 1px solid var(--line); }
+.laser-check {
+  display: flex; align-items: center; gap: 7px; margin-top: 9px;
+  color: var(--text-2); font-size: 12px; cursor: pointer;
+}
+.laser-check input { accent-color: var(--accent); }
+
+/* ---------- панель свойств ---------- */
+.laser-grid2 { display: grid; grid-template-columns: 1fr 1fr; gap: 0 10px; }
+.laser-grid2 .field label { flex-basis: 74px; font-size: 11.5px; }
+.laser-btnrow { display: flex; flex-wrap: wrap; gap: 5px; margin-top: 9px; }
+.laser-btnrow .btn { display: inline-flex; align-items: center; gap: 5px; }
+.laser-align { display: flex; flex-wrap: wrap; gap: 5px; margin-top: 8px; }
+.laser-msg {
+  margin-top: 10px; padding: 6px 9px; border-radius: 8px; font-size: 11.5px; line-height: 1.5;
+  background: var(--ok-bg); color: var(--ok-ink); border: 1px solid rgba(125, 220, 82, .25);
+}
+.laser-msg.bad { background: var(--danger-bg); color: var(--danger-ink); border-color: rgba(224, 85, 72, .3); }
+.laser-bb-hint { margin: 8px 0 0; font-size: 11.5px; color: var(--muted); font-variant-numeric: tabular-nums; }
+.status .status-note {
+  color: var(--accent-text); background: var(--accent-soft);
+  padding: 1px 8px; border-radius: 8px; max-width: 40vw;
+  overflow: hidden; text-overflow: ellipsis;
+}
+.status b.off { color: var(--muted); text-decoration: line-through; }
+
+/* ---------- генератор развёрток ---------- */
+.laser-unfold .laser-tpl-list { display: flex; flex-direction: column; gap: 4px; margin: 8px 0 4px; }
+.laser-tpl {
+  display: flex; align-items: center; gap: 8px; width: 100%;
+  padding: 7px 9px; border-radius: 9px; cursor: pointer; text-align: left;
+  background: var(--surface-2); border: 1px solid var(--line); color: var(--text-2);
+}
+.laser-tpl:hover { border-color: var(--accent-line); color: var(--text); }
+.laser-tpl.active { background: var(--accent-soft); border-color: var(--accent); color: var(--text); }
+.laser-tpl-name { flex: 1; min-width: 0; font-size: 12px; font-weight: 600; }
+.laser-tpl-badge {
+  flex: none; font-size: 9.5px; font-weight: 700; letter-spacing: .04em; text-transform: uppercase;
+  color: var(--muted); background: var(--info-bg); border: 1px solid var(--line);
+  padding: 1px 5px; border-radius: 5px;
+}
+.laser-tpl.active .laser-tpl-badge { color: var(--accent-ink); background: var(--accent); border-color: var(--accent); }
+.laser-unfold-go { display: flex; align-items: center; justify-content: center; gap: 7px; width: 100%; margin-top: 12px; }
+
+/* ---------- материал ---------- */
+.laser-material-table { margin-top: 8px; overflow-x: auto; }
+.laser-material-table table { width: 100%; border-collapse: collapse; font-size: 11px; }
+.laser-material-table th {
+  text-align: left; color: var(--muted); font-weight: 600;
+  padding: 3px 6px; border-bottom: 1px solid var(--line); white-space: nowrap;
+}
+.laser-material-table td { padding: 4px 6px; border-bottom: 1px solid var(--line-soft); color: var(--text-2); }
+.laser-material-table tr.on td { color: var(--text); background: var(--accent-soft); }
+
+/* ---------- задание на станок ---------- */
+.laser-job-grid {
+  display: grid; grid-template-columns: 1fr 1fr; gap: 4px 10px; margin: 6px 0 8px;
+}
+.laser-job-grid > div { display: flex; justify-content: space-between; gap: 8px; font-size: 11.5px; }
+.laser-job-grid span { color: var(--muted); }
+.laser-job-grid b {
+  color: var(--text); font-weight: 600; font-variant-numeric: tabular-nums;
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.laser-job-layers { display: flex; flex-direction: column; gap: 2px; margin-bottom: 8px; }
+.laser-job-layer {
+  display: flex; align-items: center; gap: 7px;
+  padding: 4px 6px; border-radius: 7px; background: var(--surface-2);
+  font-size: 11px; color: var(--muted); font-variant-numeric: tabular-nums;
+}
+.laser-job-layer-name { flex: 1; min-width: 0; color: var(--text-2); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+
+/* ---------- дерево объектов: редактируемое имя ---------- */
+.obj-name-input {
+  flex: 1; min-width: 0; background: none; border: 1px solid transparent;
+  border-radius: 5px; padding: 1px 4px; height: 22px; font-size: 12px; color: inherit;
+}
+.obj-name-input:hover { border-color: var(--line); }
+.obj-name-input:focus { outline: none; border-color: var(--accent); background: var(--surface); }
+.obj-eye.off { opacity: .35; }
+.obj-lock.on { color: var(--accent-text); }
+
+/* ---------- диалог экспорта ---------- */
+.laser-export-dialog, .laser-sim-dialog, .laser-trace-dialog { width: min(760px, 94vw); }
+.laser-sheet-dialog { width: min(520px, 94vw); }
+.laser-export-formats { display: grid; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); gap: 7px; }
+.laser-format {
+  display: flex; align-items: center; gap: 9px; text-align: left; cursor: pointer;
+  padding: 9px 11px; border-radius: 10px;
+  background: var(--surface-2); border: 1px solid var(--line); color: var(--text-2);
+}
+.laser-format:hover { border-color: var(--accent-line); color: var(--text); }
+.laser-format.active { background: var(--accent-soft); border-color: var(--accent); color: var(--text); }
+.laser-format svg { color: var(--accent-text); flex: none; }
+.laser-format-name { flex: 1; min-width: 0; font-size: 12px; font-weight: 600; }
+.laser-format-ext { flex: none; font-size: 10.5px; color: var(--muted); font-variant-numeric: tabular-nums; }
+.laser-export-summary {
+  display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: 4px 12px;
+  margin: 12px 0; padding: 10px 12px; border-radius: 10px;
+  background: var(--surface-2); border: 1px solid var(--line);
+}
+.laser-export-summary > div { display: flex; justify-content: space-between; gap: 8px; font-size: 11.5px; }
+.laser-export-summary span { color: var(--muted); }
+.laser-export-summary b { color: var(--text); font-variant-numeric: tabular-nums; }
+.laser-export-layers { display: flex; flex-direction: column; gap: 3px; }
+.laser-gcode-opts { margin-top: 12px; padding: 10px 12px; background: var(--surface-2); border-radius: 10px; }
+.laser-gcode-opts h3 { margin-top: 0; }
+
+/* ---------- симуляция ---------- */
+.laser-sim-toolbar { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; margin-bottom: 8px; font-size: 12px; color: var(--muted); }
+.laser-sim-time { margin-left: auto; color: var(--text); font-weight: 600; font-variant-numeric: tabular-nums; }
+.laser-sim-canvas-wrap {
+  margin-top: 10px; border-radius: 12px; overflow: hidden;
+  background: #0b0e13; border: 1px solid var(--line);
+  display: flex; align-items: center; justify-content: center;
+}
+.laser-sim-canvas { display: block; width: 100%; max-width: 720px; }
+.laser-sim-legend { display: flex; flex-wrap: wrap; gap: 6px 14px; margin-top: 10px; font-size: 11.5px; color: var(--muted); }
+.laser-sim-legend-item { display: inline-flex; align-items: center; gap: 6px; font-variant-numeric: tabular-nums; }
+
+/* ---------- векторизация изображения ---------- */
+.laser-trace-top { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; margin-bottom: 10px; }
+.laser-trace-top .btn { display: inline-flex; align-items: center; gap: 7px; }
+.laser-trace-file { color: var(--muted); font-size: 12px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.laser-trace-body { display: flex; gap: 16px; align-items: flex-start; flex-wrap: wrap; }
+.laser-trace-body > .props { flex: 1 1 260px; min-width: 240px; padding: 0; }
+.laser-trace-preview { flex: 1 1 320px; min-width: 280px; }
+.laser-trace-canvas {
+  display: block; width: 100%; border-radius: 10px;
+  background: #0b0e13; border: 1px solid var(--line);
+}
