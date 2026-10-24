@@ -13,11 +13,11 @@ import {
 } from '../src/laser/unfold';
 import {
   DEFAULT_GCODE_OPTIONS, buildLaserSimulation, dashPolyline, exportLaserDxf, exportLaserGCode,
-  exportLaserSvg, importVectorFile,
+  exportLaserSvg, importVectorFile, parseSvgPathData, svgHeightMm,
 } from '../src/laser/export';
 import {
   constrainAngle, deleteNode, insertNode, moveHandle, moveNode, nearestHandle, nearestNodeIndex,
-  nearestOnCurve, nearestSnapPoint, toggleSmooth,
+  nearestOnCurve, nearestSnapPoint, objectSnapPoints, toggleSmooth,
 } from '../src/laser/nodes';
 import {
   laserDraftKey, normalizeLaserDoc, parseLaserProject, safeFileName, serializeLaserProject,
@@ -450,6 +450,73 @@ const pathArea = (s: PathShape) => {
   const snaps = [{ x: 1, y: 1 }, { x: 9, y: 9 }];
   assert.deepEqual(nearestSnapPoint(snaps, { x: 1.2, y: 0.9 }, 0.5), { x: 1, y: 1 }, 'привязка к узлу');
   assert.equal(nearestSnapPoint(snaps, { x: 5, y: 5 }, 0.5), null, 'вне допуска привязки нет');
+
+  // угловой узел: перетаскивание одного рычага не создаёт второй из ничего
+  const cuspCurve: PathShape = {
+    ...curve,
+    nodes: [{ x: 0, y: 0 }, { x: 20, y: 0, cp2x: 30, cp2y: 5 }],
+  };
+  const movedCp = moveHandle(cuspCurve, 1, 'cp2', { x: 25, y: 10 });
+  assert.equal(movedCp.nodes[1].cp2x, 25, 'рычаг перемещён');
+  assert.equal(movedCp.nodes[1].cp1x, undefined, 'у углового узла второй рычаг не появляется');
+
+  // удаление крайнего узла открытой кривой снимает рычаги, которые больше не работают
+  const openCurve: PathShape = {
+    id: 'o', kind: 'path', layer: 'cut', name: 'Открытая',
+    nodes: [
+      { x: 0, y: 0, cp1x: -5, cp1y: 0 },
+      { x: 10, y: 0, cp1x: 5, cp1y: 5, cp2x: 15, cp2y: 5 },
+      { x: 20, y: 0, cp2x: 25, cp2y: 0 },
+    ],
+    closed: false, filled: false,
+  };
+  const noFirst = deleteNode(openCurve, 0)!;
+  assert.equal(noFirst.nodes.length, 2, 'узел удалён');
+  assert.equal(noFirst.nodes[0].cp1x, undefined, 'висячий входящий рычаг снят');
+  assert.equal(noFirst.nodes[0].cp2x, 15, 'рабочий исходящий рычаг остался');
+  const noLast = deleteNode(openCurve, 2)!;
+  assert.equal(noLast.nodes[1].cp2x, undefined, 'висячий исходящий рычаг снят');
+  assert.equal(noLast.nodes[1].cp1x, 5, 'рабочий входящий рычаг остался');
+  const mid = deleteNode(openCurve, 1)!;
+  assert.equal(mid.nodes.length, 2, 'средний узел удалён');
+  assert.equal(mid.nodes[0].cp1x, undefined, 'новая первая точка потеряла висячий рычаг');
+  assert.equal(mid.nodes[1].cp2x, undefined, 'новая последняя точка потеряла висячий рычаг');
+  // у замкнутой кривой «крайних» узлов нет: рычаги работают все, снимать их нельзя
+  const closedCurve: PathShape = {
+    id: 'cl', kind: 'path', layer: 'cut', name: 'Замкнутая',
+    nodes: [...openCurve.nodes, { x: 20, y: 10 }],
+    closed: true, filled: false,
+  };
+  const closedDel = deleteNode(closedCurve, 3)!;
+  assert.equal(closedDel.nodes.length, 3, 'у замкнутой кривой минимум три узла');
+  assert.equal(closedDel.nodes[0].cp1x, -5, 'входящий рычаг замыкания остался');
+  assert.equal(closedDel.nodes[2].cp2x, 25, 'исходящий рычаг замыкания остался');
+  assert.equal(deleteNode({ ...closedCurve, nodes: closedCurve.nodes.slice(0, 3) }, 0), null,
+    'замкнутый треугольник уменьшить нельзя');
+
+  // привязка к объектам видит примитивы, а не только кривые с полем nodes
+  const snapRect: LaserShape = {
+    id: 'sr', kind: 'rect', layer: 'cut', name: 'Прямоугольник',
+    x: 0, y: 0, w: 40, h: 20, rx: 0, rot: 0, filled: false,
+  };
+  const snapCircle: LaserShape = {
+    id: 'sc', kind: 'ellipse', layer: 'cut', name: 'Окружность',
+    cx: 100, cy: 100, rx: 25, ry: 25, rot: 0, startAngle: 0, endAngle: 360, filled: false,
+  };
+  const snapDim: LaserShape = {
+    id: 'sd', kind: 'dim', layer: 'dim', name: 'Размер',
+    x1: 0, y1: -10, x2: 40, y2: -10, offset: 5,
+  };
+  const pts = objectSnapPoints([snapRect, snapCircle, snapDim]);
+  const has = (x: number, y: number) => pts.some((p) => near(p.x, x, 1e-9) && near(p.y, y, 1e-9));
+  assert(has(0, 0) && has(40, 20), 'углы прямоугольника доступны для привязки');
+  assert(has(20, 0) && has(0, 10), 'середины прямых рёбер');
+  assert(has(20, 10), 'центр габарита');
+  assert(has(75, 100) && has(100, 125) && has(125, 100), 'четверти окружности');
+  assert(has(100, 100), 'центр окружности');
+  assert(has(0, -10) && has(40, -10), 'концы размерной линии');
+  assert(pts.every((p) => Number.isFinite(p.x) && Number.isFinite(p.y)), 'привязки без NaN');
+  assert.deepEqual(objectSnapPoints([], [{ x: 3, y: 4 }]), [{ x: 3, y: 4 }], 'свои точки не теряются');
 }
 
 // ---------------- генератор развёрток ----------------
@@ -803,6 +870,106 @@ const pathArea = (s: PathShape) => {
   assert.equal(poly.nodes.length, 4);
 
   assert.deepEqual(importVectorFile('<svg></svg>', 'empty.svg'), [], 'пустой SVG не даёт объектов');
+}
+
+// ---------------- импорт SVG: дуги, кривые, трансформации ----------------
+{
+  // высота области SVG берётся из viewBox/height, а не из размера нашего листа
+  assert(near(svgHeightMm('<svg viewBox="0 0 300 150"></svg>', 200), 150, 1e-9), 'viewBox важнее листа');
+  assert(near(svgHeightMm('<svg height="50mm"></svg>', 200), 50, 1e-9), 'height в миллиметрах');
+  assert(near(svgHeightMm('<svg height="2in"></svg>', 200), 50.8, 1e-9), 'дюймы переводятся в мм');
+  assert(near(svgHeightMm('<svg height="96px"></svg>', 200), 25.4, 1e-9), 'пиксели — 96 на дюйм');
+  assert(near(svgHeightMm('<svg height="10cm"></svg>', 200), 100, 1e-9), 'сантиметры переводятся в мм');
+  assert(near(svgHeightMm('<svg></svg>', 200), 200, 1e-9), 'без размеров — высота листа');
+
+  const bb = (shapes: LaserShape[]) => selectionBBox(shapes)!;
+  const ptsOf = (s: LaserShape) => shapeToPolylines(s).flat();
+
+  // дуга (A): половина окружности становится кусками Безье точно на радиусе
+  const arc = importVectorFile(
+    '<svg viewBox="0 0 200 100"><path d="M50 50 A25 25 0 0 1 100 50"/></svg>', 'arc.svg', 200);
+  assert.equal(arc.length, 1, 'дуга прочитана');
+  const arcPath = arc[0] as PathShape;
+  assert.equal(arcPath.kind, 'path');
+  assert.ok(arcPath.nodes.some((n) => n.cp1x !== undefined), 'дуга осталась кривой Безье');
+  for (const p of ptsOf(arcPath)) {
+    assert.ok(Math.abs(Math.hypot(p.x - 75, p.y - 50) - 25) < 0.05,
+      `точка дуги на окружности r=25: ${p.x.toFixed(3)},${p.y.toFixed(3)}`);
+  }
+  assert.ok(near(bb(arc)[3], 75, 0.05), `дуга выгнута вверх по миру: ${bb(arc)}`);
+
+  // квадратичная кривая (Q) переводится в кубическую точно: вершина на месте
+  const quad = importVectorFile(
+    '<svg viewBox="0 0 100 100"><path d="M0 0 Q50 100 100 0"/></svg>', 'q.svg', 100);
+  const quadPts = ptsOf(quad[0]);
+  assert.ok(near(Math.min(...quadPts.map((p) => p.y)), 50, 0.5),
+    `вершина квадратичной кривой: ${Math.min(...quadPts.map((p) => p.y))}`);
+
+  // гладкое продолжение (T): управляющая точка отражается от предыдущей
+  const smoothQ = importVectorFile(
+    '<svg viewBox="0 0 100 100"><path d="M0 0 Q25 50 50 0 T100 0"/></svg>', 't.svg', 100);
+  const tq = ptsOf(smoothQ[0]);
+  assert.ok(near(Math.max(...tq.map((p) => p.y)), 125, 0.5),
+    `вторая ветвь T отражена: ${Math.max(...tq.map((p) => p.y))}`);
+  assert.equal((smoothQ[0] as PathShape).nodes.length, 3, 'две кривые — три узла');
+
+  // гладкая кубика (S) тоже отражает рычаг
+  const smoothC = parseSvgPathData('M0 0 C10 30 20 30 30 0 S50 -30 60 0');
+  assert.equal(smoothC.length, 1, 'один контур');
+  assert.equal(smoothC[0].nodes.length, 3, 'три узла');
+  assert.ok(near(smoothC[0].nodes[1].cp2x!, 40, 1e-9), `рычаг S отражён: ${smoothC[0].nodes[1].cp2x}`);
+  assert.ok(near(smoothC[0].nodes[1].cp2y!, -30, 1e-9), 'рычаг S по Y');
+
+  // относительные команды и повторяющиеся наборы координат
+  const rel = parseSvgPathData('m10 10 l10 0 0 10 -10 0 z');
+  assert.equal(rel.length, 1, 'один замкнутый контур');
+  assert.equal(rel[0].closed, true);
+  assert.deepEqual(rel[0].nodes.map((n) => [n.x, n.y]), [[10, 10], [20, 10], [20, 20], [10, 20]],
+    'относительные координаты считаются от предыдущей точки');
+
+  // группа со сдвигом: прямоугольник остаётся прямоугольником, но уезжает куда надо
+  const moved = importVectorFile(
+    '<svg viewBox="0 0 100 100"><g transform="translate(10,20)">'
+    + '<rect x="0" y="0" width="50" height="30"/></g></svg>', 'g.svg', 100);
+  assert.equal(moved.length, 1, 'фигура в группе прочитана');
+  assert.equal(moved[0].kind, 'rect', 'перенос не превращает прямоугольник в кривую');
+  assert.deepEqual(bb(moved), [10, 50, 60, 80], `габарит после translate: ${bb(moved)}`);
+
+  // поворот группы: примитив становится кривой с правильным габаритом
+  const rotated = importVectorFile(
+    '<svg viewBox="0 0 100 100"><g transform="rotate(90 50 50)">'
+    + '<rect x="40" y="40" width="20" height="10"/></g></svg>', 'r.svg', 100);
+  assert.equal(rotated.length, 1, 'повёрнутый прямоугольник прочитан');
+  assert.equal(rotated[0].kind, 'path', 'поворот требует кривой');
+  const rbb = bb(rotated);
+  assert(near(rbb[0], 50, 0.01) && near(rbb[1], 40, 0.01) && near(rbb[2], 60, 0.01) && near(rbb[3], 60, 0.01),
+    `габарит после rotate(90): ${rbb}`);
+
+  // масштаб группы: окружность становится больше, переворот Y не ломает центр
+  const scaled = importVectorFile(
+    '<svg viewBox="0 0 100 100"><g transform="scale(2)"><circle cx="10" cy="10" r="5"/></g></svg>',
+    's.svg', 100);
+  const sbb = bb(scaled);
+  assert(near(sbb[0], 10, 0.2) && near(sbb[2], 30, 0.2), `масштаб по X: ${sbb}`);
+  assert(near(sbb[3] - sbb[1], 20, 0.2), `диаметр после scale(2): ${sbb[3] - sbb[1]}`);
+
+  // вложенные группы: слой и матрица наследуются
+  const nested = importVectorFile(
+    '<svg viewBox="0 0 100 100"><g id="layer-fold"><g transform="translate(5,5)">'
+    + '<path d="M0 0 L10 0"/></g></g></svg>', 'n.svg', 100);
+  assert.equal(nested[0].layer, 'fold', 'слой группы унаследован');
+  assert.deepEqual(bb(nested), [5, 95, 15, 95], `матрица вложенной группы: ${bb(nested)}`);
+
+  // координаты вне листа больше не обрезаются нулём
+  const outside = importVectorFile(
+    '<svg viewBox="0 0 100 100"><path d="M-10 -5 L20 -5"/></svg>', 'neg.svg', 100);
+  const obb = bb(outside);
+  assert(near(obb[1], 105, 1e-9), `отрицательные Y не прижаты к нулю: ${obb}`);
+  assert(near(obb[0], -10, 1e-9), `отрицательные X сохранены: ${obb}`);
+
+  // stroke-width не подменяет геометрию, а DXF не путается с SVG
+  assert.deepEqual(importVectorFile('<svg><path d="M0 0"/></svg>', 'one.svg', 100), [],
+    'контур из одной точки не импортируется');
 }
 
 // ---------------- файл проекта и черновик ----------------

@@ -427,7 +427,8 @@ export function nodesToPts(nodes: PathNode[], closed: boolean, steps = 20): Pt[]
   for (let i = 0; i < nodes.length - 1; i++) {
     pts.push(...sampleBezierSegment(nodes[i], nodes[i + 1], steps));
   }
-  if (closed && nodes.length > 2) {
+  // замыкающий сегмент нужен и для кривой из двух узлов (линза, две дуги)
+  if (closed && nodes.length > 1) {
     pts.push(...sampleBezierSegment(nodes[nodes.length - 1], nodes[0], steps));
   }
   return pts;
@@ -689,7 +690,15 @@ export function hitShape(shape: LaserShape, pt: Pt, tolMm = 1.5): boolean {
     }
   }
   if ('filled' in shape && shape.filled && pls.length > 0 && pls[0].length >= 3) {
-    if (pointInPolygon(pt, pls[0])) return true;
+    if (pointInPolygon(pt, pls[0])) {
+      // у кривой полилинии после первой — это отверстия: клик в отверстие не попадает
+      if (shape.kind === 'path') {
+        for (let i = 1; i < pls.length; i++) {
+          if (pls[i].length >= 3 && pointInPolygon(pt, pls[i])) return false;
+        }
+      }
+      return true;
+    }
   }
   return false;
 }
@@ -756,14 +765,36 @@ export function scaleShape(shape: LaserShape, ox: number, oy: number, sx: number
         rx: shape.rx * avgS,
       };
     }
-    case 'ellipse':
+    case 'ellipse': {
+      const span = Math.abs((shape.endAngle ?? 360) - (shape.startAngle ?? 0));
+      const isFull = span >= 359.99;
+      const ax = Math.abs(sx), ay = Math.abs(sy);
+      const uniform = Math.abs(ax - ay) < 1e-9;
+      const mirrored = sx < 0 || sy < 0;
+      const rotated = Math.abs(shape.rot % 180) > 1e-6;
+      if (!uniform && (rotated || !isFull)) {
+        // повёрнутый эллипс или дугу нельзя масштабировать неоднородно,
+        // не раскрыв их в кривую — иначе геометрия уезжает
+        const asPath = shapeToPath(shape)[0];
+        return asPath ? scaleShape(asPath, ox, oy, sx, sy) : shape;
+      }
+      if (mirrored && !isFull) {
+        const asPath = shapeToPath(shape)[0];
+        return asPath ? scaleShape(asPath, ox, oy, sx, sy) : shape;
+      }
+      let rot = shape.rot;
+      if (sx < 0 && sy < 0) rot += 180;
+      else if (sx < 0) rot = 180 - rot;
+      else if (sy < 0) rot = -rot;
       return {
         ...shape,
         cx: scX(shape.cx),
         cy: scY(shape.cy),
-        rx: Math.max(0.2, shape.rx * Math.abs(sx)),
-        ry: Math.max(0.2, shape.ry * Math.abs(sy)),
+        rx: Math.max(0.2, shape.rx * ax),
+        ry: Math.max(0.2, shape.ry * ay),
+        rot: ((rot % 360) + 360) % 360,
       };
+    }
     case 'polygon':
       return {
         ...shape,
@@ -878,7 +909,9 @@ function shapeToClipperPaths(shape: LaserShape): Clipper.Paths {
       Y: Math.round(p.y * CLIP_SCALE),
     }));
     if (Math.abs(Clipper.Clipper.Area(path)) < 10) continue;
-    const isHole = idx > 0;
+    // отверстия бывают только у кривой (path): у текста и размеров каждая
+    // полилиния — самостоятельный контур, иначе булевы операции их дырявят
+    const isHole = shape.kind === 'path' && idx > 0;
     const orient = Clipper.Clipper.Orientation(path);
     if (!isHole && !orient) path.reverse();
     if (isHole && orient) path.reverse();
@@ -990,14 +1023,154 @@ export function offsetShape(shape: LaserShape, deltaMm: number, targetLayer?: La
   }));
 }
 
+// ---------------- пунктир, перемычки и компенсация керфа ----------------
+// Один и тот же код используют рендер, DXF, SVG и G-Code: маркеры перемычек на
+// экране обязаны совпадать с тем, где станок реально оставит недорез.
+
+/** Длина полилинии, мм. */
+export function polylineLength(pts: Pt[]): number {
+  let total = 0;
+  for (let i = 0; i < pts.length - 1; i++) total += Math.hypot(pts[i + 1].x - pts[i].x, pts[i + 1].y - pts[i].y);
+  return total;
+}
+
+/**
+ * Разбиение полилинии на штрихи: dashLen режем, gapLen пропускаем.
+ * offset — фаза (сколько миллиметров первого штриха уже «пройдено»).
+ */
+export function dashPolyline(pts: Pt[], dashLen: number, gapLen: number, offset = 0): Pt[][] {
+  if (pts.length < 2 || dashLen <= 0 || gapLen <= 0) return [pts];
+  const out: Pt[][] = [];
+  let cur: Pt[] = [{ ...pts[0] }];
+  let drawing = true;
+  let rem = Math.max(1e-9, dashLen - Math.max(0, Math.min(dashLen - 1e-9, offset)));
+  let guard = 0;
+
+  for (let i = 0; i < pts.length - 1; i++) {
+    let a = pts[i];
+    const b = pts[i + 1];
+    let segLen = Math.hypot(b.x - a.x, b.y - a.y);
+    if (segLen < 1e-9) continue;
+    const ux = (b.x - a.x) / segLen;
+    const uy = (b.y - a.y) / segLen;
+    while (segLen > 1e-9 && guard++ < 200000) {
+      if (segLen <= rem) {
+        if (drawing) cur.push({ ...b });
+        rem -= segLen;
+        segLen = 0;
+        if (rem <= 1e-9) {
+          if (drawing && cur.length >= 2) out.push(cur);
+          drawing = !drawing;
+          rem = drawing ? dashLen : gapLen;
+          if (drawing) cur = [{ ...b }];
+        }
+      } else {
+        const mid = { x: a.x + ux * rem, y: a.y + uy * rem };
+        if (drawing) {
+          cur.push(mid);
+          if (cur.length >= 2) out.push(cur);
+        }
+        segLen -= rem;
+        a = mid;
+        drawing = !drawing;
+        rem = drawing ? dashLen : gapLen;
+        if (drawing) cur = [{ ...a }];
+      }
+    }
+  }
+  if (drawing && cur.length >= 2) out.push(cur);
+  return out;
+}
+
+/**
+ * Интервалы перемычек (участки, где рез прерывается) вдоль замкнутого контура.
+ * Перемычки расставлены по центрам шагов — так же их рисует холст и режет станок.
+ */
+export function tabGaps(totalLen: number, count: number, width: number): { start: number; end: number }[] {
+  if (!count || count <= 0 || totalLen <= 0) return [];
+  const pitch = totalLen / count;
+  if (pitch <= width * 1.5) return []; // перемычки не помещаются в шаг
+  const half = width / 2;
+  const gaps: { start: number; end: number }[] = [];
+  for (let i = 0; i < count; i++) {
+    const c = pitch * (i + 0.5);
+    gaps.push({ start: c - half, end: c + half });
+  }
+  return gaps;
+}
+
+/** Замкнута ли полилиния (первая точка совпадает с последней). */
+export function isClosedRing(pts: Pt[]): boolean {
+  if (pts.length < 3) return false;
+  const a = pts[0], b = pts[pts.length - 1];
+  return Math.hypot(a.x - b.x, a.y - b.y) <= 1e-9;
+}
+
+/** Замкнуть полилинию, если концы не совпадают. */
+export function ensureClosedRing(pts: Pt[]): Pt[] {
+  if (pts.length < 2) return pts;
+  const a = pts[0], b = pts[pts.length - 1];
+  return Math.hypot(a.x - b.x, a.y - b.y) > 1e-9 ? [...pts, { ...a }] : pts;
+}
+
+/**
+ * Перемычки (holding tabs) на контуре: возвращает участки реза.
+ * Общая реализация для DXF, G-Code, симуляции и маркеров на холсте.
+ */
+export function applyTabs(pts: Pt[], count: number, width = 1.8, closed = true): Pt[][] {
+  if (!count || count <= 0 || pts.length < 2) return [pts];
+  const ring = closed ? ensureClosedRing(pts) : pts;
+  const total = polylineLength(ring);
+  const pitch = total / count;
+  if (pitch <= width * 1.5) return [pts];
+  return dashPolyline(ring, pitch - width, width, pitch / 2 - width / 2);
+}
+
+/** Замкнутый ли контур у фигуры (важно для компенсации керфа). */
+export function isClosedShape(shape: LaserShape): boolean {
+  switch (shape.kind) {
+    case 'rect':
+    case 'polygon':
+      return true;
+    case 'ellipse':
+      return Math.abs((shape.endAngle ?? 360) - (shape.startAngle ?? 0)) >= 359.99;
+    case 'path':
+      return !!shape.closed;
+    default:
+      return false; // текст и размеры — открытые штрихи
+  }
+}
+
+/**
+ * Компенсация толщины луча (kerf). Открытые контуры смещать нельзя: эквидистанта
+ * превращает отрезок в замкнутую «таблетку» (или вовсе его теряет), поэтому
+ * линии режутся как есть, а замкнутые контуры — со сдвигом на половину керфа.
+ */
+export function kerfShapes(shape: LaserShape, deltaMm: number): LaserShape[] {
+  if (Math.abs(deltaMm) < 1e-4 || !isClosedShape(shape)) return [shape];
+  const out = offsetShape(shape, deltaMm);
+  return out.length ? out : [shape];
+}
+
 /** Скругление углов контура (Fillet) заданным радиусом radiusMm */
 export function filletShapeCorners(shape: LaserShape, radiusMm: number): LaserShape {
   const r = Math.max(0, radiusMm);
   if (shape.kind === 'rect') {
     return { ...shape, rx: r };
   }
-  const pathShape = shapeToPath(shape)[0];
+  let pathShape = shapeToPath(shape)[0];
   if (!pathShape || pathShape.nodes.length < 3) return shape;
+  // у кривой с рычагами Безье узлы не совпадают с контуром: сначала раскрываем
+  // её в ломаную, иначе старые рычаги искривят скруглённый контур
+  const curved = pathShape.nodes.some(
+    (n) => n.cp1x !== undefined || n.cp1y !== undefined || n.cp2x !== undefined || n.cp2y !== undefined
+  );
+  if (curved) {
+    const flat = nodesToPts(pathShape.nodes, pathShape.closed, 24);
+    if (pathShape.closed && flat.length > 1) flat.pop();
+    pathShape = { ...pathShape, nodes: flat.map((q) => ({ x: q.x, y: q.y })) };
+  }
+  if (pathShape.nodes.length < 3) return shape;
   const pts = pathShape.nodes;
   const n = pts.length;
   const out: PathNode[] = [];
@@ -1140,14 +1313,24 @@ export function arrayShapes(
  * Группирует связанные элементы (или сгруппированные детали) и раскладывает
  * их на листе с отступом marginMm от края и зазором gapMm между деталями.
  */
-export function autoNestShapes(
+export interface NestResult {
+  shapes: LaserShape[];
+  /** Все ли детали поместились на лист */
+  fits: boolean;
+  /** Насколько раскладка вышла за лист по X и Y, мм */
+  overflowMm: [number, number];
+  /** Сколько полок (рядов) заняла раскладка */
+  rows: number;
+}
+
+export function autoNestShapesEx(
   shapes: LaserShape[],
   sheetW: number,
   sheetH: number,
   marginMm = 5,
   gapMm = 3
-): LaserShape[] {
-  if (!shapes.length) return shapes;
+): NestResult {
+  if (!shapes.length) return { shapes, fits: true, overflowMm: [0, 0], rows: 0 };
   // Объединяем фигуры по groupId (или с вложенными отверстиями внутри внешнего контура)
   const clusters: { ids: Set<string>; shapes: LaserShape[]; bb: [number, number, number, number] }[] = [];
   const assigned = new Set<string>();
@@ -1201,7 +1384,10 @@ export function autoNestShapes(
   let curX = marginMm;
   let curY = marginMm;
   let shelfH = 0;
-  const maxW = Math.max(50, sheetW - marginMm);
+  let rows = 1;
+  let usedX = 0;
+  let usedY = 0;
+  const maxW = Math.max(marginMm * 2, sheetW - marginMm);
 
   const deltaById = new Map<string, Pt>();
   for (const cl of clusters) {
@@ -1211,16 +1397,32 @@ export function autoNestShapes(
       curX = marginMm;
       curY += shelfH + gapMm;
       shelfH = 0;
+      rows += 1;
     }
     const dx = curX - cl.bb[0];
     const dy = curY - cl.bb[1];
     for (const id of cl.ids) deltaById.set(id, { x: dx, y: dy });
     curX += w + gapMm;
     if (h > shelfH) shelfH = h;
+    if (curX - gapMm > usedX) usedX = curX - gapMm;
+    if (curY + shelfH > usedY) usedY = curY + shelfH;
   }
 
-  return shapes.map((s) => {
+  const placed = shapes.map((s) => {
     const d = deltaById.get(s.id);
     return d ? translateShape(s, d.x, d.y) : s;
   });
+  const overflowX = Math.max(0, usedX - (sheetW - marginMm));
+  const overflowY = Math.max(0, usedY - (sheetH - marginMm));
+  return { shapes: placed, fits: overflowX < 1e-6 && overflowY < 1e-6, overflowMm: [overflowX, overflowY], rows };
+}
+
+export function autoNestShapes(
+  shapes: LaserShape[],
+  sheetW: number,
+  sheetH: number,
+  marginMm = 5,
+  gapMm = 3
+): LaserShape[] {
+  return autoNestShapesEx(shapes, sheetW, sheetH, marginMm, gapMm).shapes;
 }

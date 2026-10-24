@@ -236,7 +236,8 @@ export function BoxStudio({
   const onMove = (e: React.PointerEvent) => {
     if (!drag.current) return;
     setYaw((y) => y + (e.clientX - drag.current!.x) * 0.55);
-    setPitch((p) => Math.max(-85, Math.min(85, p - (e.clientY - drag.current!.y) * 0.45)));
+    // тянем вниз — поднимаемся над деталью (как в орбитальной камере Blender/three.js)
+    setPitch((p) => Math.max(-85, Math.min(85, p + (e.clientY - drag.current!.y) * 0.45)));
     drag.current = { x: e.clientX, y: e.clientY };
   };
   const onUp = () => { drag.current = null; };
@@ -350,9 +351,7 @@ export function BoxStudio({
                 viewBox={`${proj.bbox[0] - 8} ${proj.bbox[1] - 8} ${Math.max(4, proj.bbox[2] - proj.bbox[0] + 16)} ${Math.max(4, proj.bbox[3] - proj.bbox[1] + 16)}`}
                 preserveAspectRatio="xMidYMid meet"
               >
-                {[...proj.polys]
-                  .sort((a, b) => a.depth - b.depth)
-                  .map((p, i) => (
+                {proj.polys.map((p, i) => (
                     <polygon
                       key={i}
                       points={p.pts.map((q) => `${q.x.toFixed(2)},${q.y.toFixed(2)}`).join(' ')}

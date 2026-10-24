@@ -30,7 +30,7 @@ import {
   loadLaserDraft, parseLaserProject, safeFileName, saveLaserDraft, serializeLaserProject,
 } from '../laser/project';
 import {
-  LASER_LAYER_ORDER, MATERIAL_PRESETS, alignShapes, arrayShapes, autoNestShapes,
+  LASER_LAYER_ORDER, MATERIAL_PRESETS, alignShapes, arrayShapes, autoNestShapesEx,
   booleanShapes, filletShapeCorners, hitShape, luid, mirrorShape, newLaserDoc, offsetShape, rotateShape,
   scaleShape, selectionBBox, shapeBBox, shapeToPath, translateShape,
   type AlignMode, type BooleanOp, type LaserDoc, type LaserLayerConfig, type LaserLayerId,
@@ -38,8 +38,12 @@ import {
 } from '../laser/model';
 import {
   constrainAngle, deleteNode, insertNode, moveHandle, moveNode, nearestHandle, nearestNodeIndex,
-  nearestSnapPoint, toggleSmooth,
+  nearestSnapPoint, objectSnapPoints, toggleSmooth,
 } from '../laser/nodes';
+import {
+  breakApartAtIntersections, breakCurve, extendCurve, trimCurve, trimPreview, trimmable,
+  type TrimEdit, type TrimMode, type TrimOptions, type TrimPreview,
+} from '../laser/trim';
 import {
   drawLaserGrid, drawLaserShape, drawLaserSheet, drawMarquee, drawPathNodes, drawSelectionBox,
   drawSelectionLabel, laserTheme, selectionHandlePoints, toScreen, toWorld,
@@ -52,11 +56,20 @@ import type { ThemeId } from '../pcb/render';
 // ---------------- инструменты ----------------
 
 export type LaserToolId =
-  | 'select' | 'shape' | 'pan' | 'pen' | 'line' | 'rect' | 'ellipse' | 'polygon' | 'text' | 'dim';
+  | 'select' | 'shape' | 'trim' | 'pan' | 'pen' | 'line' | 'rect' | 'ellipse' | 'polygon' | 'text' | 'dim';
+
+export type { TrimMode };
+
+export const TRIM_MODES: { id: TrimMode; name: string; key: string; hint: string }[] = [
+  { id: 'trim', name: 'Усечь', key: '1', hint: 'кривая режется по пересечениям, кусок под курсором удаляется' },
+  { id: 'extend', name: 'Продлить', key: '2', hint: 'ближайший конец кривой дотягивается до границы по касательной' },
+  { id: 'break', name: 'Разрезать', key: '3', hint: 'кривая делится в точке клика (замкнутый контур становится открытым)' },
+];
 
 const LASER_TOOLS: { id: LaserToolId; name: string; icon: string; key: string; hint: string }[] = [
   { id: 'select', name: 'Выбор', icon: 'select', key: 'V', hint: 'выделение, перенос, масштаб маркерами, Shift — добавить к выделению' },
   { id: 'shape', name: 'Форма (узлы кривой)', icon: 'node', key: 'F10', hint: 'правка узлов и рычагов Безье; двойной клик по кривой — новый узел, по узлу — удалить; S — гладкий/угловой' },
+  { id: 'trim', name: 'Усечь кривую', icon: 'cut-curve', key: 'X', hint: 'клик по кривой отрезает кусок до пересечения; 1 — усечь, 2 — продлить, 3 — разрезать; Ctrl+Shift+X — разбить всё по пересечениям' },
   { id: 'pan', name: 'Панорама листа', icon: 'fit', key: 'H', hint: 'перемещение вида (то же — средняя кнопка мыши или пробел)' },
   { id: 'pen', name: 'Перо (кривая Безье)', icon: 'bezier', key: 'P', hint: 'клик — угловой узел, клик с протяжкой — гладкий узел с рычагами; Enter — закончить, клик по первому узлу — замкнуть' },
   { id: 'line', name: 'Отрезок', icon: 'line', key: 'L', hint: 'два клика; Shift — угол кратный 15°' },
@@ -68,7 +81,7 @@ const LASER_TOOLS: { id: LaserToolId; name: string; icon: string; key: string; h
 ];
 
 const TOOL_GROUPS: LaserToolId[][] = [
-  ['select', 'shape', 'pan'],
+  ['select', 'shape', 'trim', 'pan'],
   ['pen', 'line'],
   ['rect', 'ellipse', 'polygon'],
   ['text', 'dim'],
@@ -101,6 +114,7 @@ type Drag =
   | { mode: 'move'; start: Pt; orig: LaserShape[]; moved: boolean }
   | { mode: 'resize'; handle: SelectionHandleId; bb: [number, number, number, number]; orig: LaserShape[]; moved: boolean; uniform: boolean }
   | { mode: 'marquee'; a: Pt; shift: boolean; base: Set<string>; moved: boolean }
+  | { mode: 'draw'; t: 'rect' | 'ellipse' | 'polygon'; layer: LaserLayerId; a: Pt; shift: boolean }
   | { mode: 'node'; id: string; idx: number; orig: PathShape; moved: boolean }
   | { mode: 'handle'; id: string; idx: number; which: 'cp1' | 'cp2'; orig: PathShape; moved: boolean };
 
@@ -233,6 +247,10 @@ export function LaserEditor({
   const [draft, setDraft] = useState<Draft | null>(null);
   const [marquee, setMarquee] = useState<{ a: Pt; b: Pt } | null>(null);
   const [nodeEdit, setNodeEdit] = useState<{ id: string; node: number | null } | null>(null);
+  const [trimMode, setTrimMode] = useState<TrimMode>('trim');
+  const [trimOnlySel, setTrimOnlySel] = useState(false);
+  const [trimHover, setTrimHover] = useState<{ id: string; preview: TrimPreview } | null>(null);
+  const trimHoverAt = useRef<{ id: string | null; x: number; y: number }>({ id: null, x: 0, y: 0 });
   const [mouse, setMouse] = useState({ px: -100, py: -100, wx: 0, wy: 0 });
   const [snapMark, setSnapMark] = useState<Pt | null>(null);
   const [arrayState, setArrayState] = useState({ rows: 2, cols: 2, gapX: 5, gapY: 5 });
@@ -356,29 +374,13 @@ export function LaserEditor({
     return !!cfg && cfg.visible !== false && cfg.locked !== true;
   }, [doc.layers]);
 
-  /** Точки привязки к объектам: узлы кривых, углы и центры примитивов. */
-  const snapPoints = useMemo(() => {
-    const out: Pt[] = [];
-    const MAX = 20000;
-    for (const s of doc.shapes) {
-      if (!pickable(s)) continue;
-      if (s.kind === 'path') {
-        for (const n of s.nodes) {
-          out.push({ x: n.x, y: n.y });
-          if (out.length > MAX) return out;
-        }
-      } else {
-        const bb = shapeBBox(s);
-        out.push(
-          { x: bb[0], y: bb[1] }, { x: bb[2], y: bb[1] },
-          { x: bb[2], y: bb[3] }, { x: bb[0], y: bb[3] },
-          { x: (bb[0] + bb[2]) / 2, y: (bb[1] + bb[3]) / 2 }
-        );
-        if (out.length > MAX) return out;
-      }
-    }
-    return out;
-  }, [doc.shapes, pickable]);
+  // Точки привязки к объектам: узлы кривых, вершины и середины рёбер примитивов,
+  // четверти окружностей и центры. Считаются в nodes.ts — там же учитываются
+  // примитивы, у которых нет поля nodes.
+  const snapPoints = useMemo(
+    () => objectSnapPoints(doc.shapes.filter(pickable)),
+    [doc.shapes, pickable],
+  );
 
   /** Привязка курсора: сначала к объектам, затем к сетке. */
   const snapWorld = useCallback((p: Pt, alt: boolean): Pt => {
@@ -616,6 +618,86 @@ export function LaserEditor({
     }
   }, [commit, setSel]);
 
+  // ---------------- усечь / продлить / разрезать кривую ----------------
+
+  /** Границы реза: все видимые объекты или только выделенные. */
+  const trimOptions = useCallback((): TrimOptions => ({
+    boundaryIds: trimOnlySel ? new Set(selRef.current) : undefined,
+    self: true,
+    tol: Math.max(0.8, 8 / Math.max(view.s, 0.001)),
+    sheet: { w: docRef.current.w, h: docRef.current.h },
+  }), [trimOnlySel, view.s]);
+
+  /** Правка документа после инструмента: старые объекты уходят, новые встают на их место. */
+  const applyTrimEdit = useCallback((edit: TrimEdit) => {
+    if (!edit.ok) {
+      setMsg({ text: edit.message, ok: false });
+      return;
+    }
+    const list = docRef.current.shapes;
+    const removeSet = new Set(edit.remove);
+    const at = list.findIndex((s) => removeSet.has(s.id));
+    const next = list.filter((s) => !removeSet.has(s.id));
+    next.splice(Math.max(0, at), 0, ...edit.add);
+    commit({ ...docRef.current, shapes: next }, edit.message);
+    if (trimOnlySel) {
+      // границы остаются выделенными: следующим кликом можно резать снова
+      const keep = new Set(selRef.current);
+      edit.remove.forEach((id) => keep.delete(id));
+      edit.add.forEach((sh) => keep.add(sh.id));
+      setSel(keep);
+    } else {
+      setSel(new Set(edit.add.map((sh) => sh.id)));
+    }
+    trimHoverAt.current = { id: null, x: 0, y: 0 };
+    setTrimHover(null);
+  }, [commit, setSel, trimOnlySel]);
+
+  const runTrim = useCallback((id: string, at: Pt) => {
+    const shapes = docRef.current.shapes;
+    const opts = trimOptions();
+    const edit = trimMode === 'trim'
+      ? trimCurve(shapes, id, at, opts)
+      : trimMode === 'extend'
+        ? extendCurve(shapes, id, at, opts)
+        : breakCurve(shapes, id, at, opts);
+    applyTrimEdit(edit);
+  }, [trimMode, trimOptions, applyTrimEdit]);
+
+  /** Разбить кривые по всем взаимным пересечениям (выделение или весь лист). */
+  const breakApartSel = useCallback(() => {
+    const ids = new Set(docRef.current.shapes.filter((s) => selRef.current.has(s.id)).map((s) => s.id));
+    const res = breakApartAtIntersections(docRef.current.shapes, ids);
+    if (!res.split) {
+      setMsg({ text: 'Пересечений не найдено: разбивать нечего.', ok: false });
+      return;
+    }
+    commit({ ...docRef.current, shapes: res.shapes },
+      `Разбито по пересечениям: ${res.split} кривых → ${res.shapes.length} объектов`);
+    setSel(new Set());
+  }, [commit, setSel]);
+
+  /** Что подсветить под курсором инструмента «Усечь кривую». */
+  const updateTrimHover = useCallback((raw: Pt) => {
+    const hit = pickShape(raw);
+    const id = hit && trimmable(hit) ? hit.id : null;
+    const prev = trimHoverAt.current;
+    const moved = Math.hypot(prev.x - raw.x, prev.y - raw.y) > 0.05;
+    if (prev.id === id && (!moved || !id)) {
+      // цель та же и курсор на месте: превью оставляем, гасим только пустое
+      // (setTrimHover(null) при уже пустом состоянии перерисовку не вызывает)
+      if (!id) setTrimHover(null);
+      return;
+    }
+    trimHoverAt.current = { id, x: raw.x, y: raw.y };
+    if (!id) { setTrimHover(null); return; }
+    let preview: TrimPreview | null = null;
+    try {
+      preview = trimPreview(docRef.current.shapes, id, raw, trimMode, trimOptions());
+    } catch { preview = null; }
+    setTrimHover(preview ? { id, preview } : null);
+  }, [pickShape, trimMode, trimOptions]);
+
   const toCurves = useCallback(() => {
     const picked = docRef.current.shapes.filter((s) => selRef.current.has(s.id));
     if (!picked.length) return;
@@ -672,8 +754,16 @@ export function LaserEditor({
   const autoNest = useCallback(() => {
     if (!docRef.current.shapes.length) return;
     try {
-      const shapes = autoNestShapes(docRef.current.shapes, docRef.current.w, docRef.current.h, 5, 3);
-      commit({ ...docRef.current, shapes }, 'Автораскладка деталей на листе');
+      const res = autoNestShapesEx(docRef.current.shapes, docRef.current.w, docRef.current.h, 5, 3);
+      commit({ ...docRef.current, shapes: res.shapes },
+        `Автораскладка: ${res.rows} ряд(ов), ${res.shapes.length} объектов`);
+      if (!res.fits) {
+        setMsg({
+          text: `Раскладка вышла за лист на ${res.overflowMm[0].toFixed(0)} мм по X и ${res.overflowMm[1].toFixed(0)} мм по Y — `
+            + 'увеличьте стол (F2) или уменьшите детали.',
+          ok: false,
+        });
+      }
       setTimeout(() => fit(), 30);
     } catch (e) {
       setMsg({ text: e instanceof Error ? e.message : 'Автораскладка не удалась.', ok: false });
@@ -932,10 +1022,30 @@ export function LaserEditor({
       return;
     }
 
+    // --- инструмент «Усечь кривую»: режем по клику ---
+    if (tool === 'trim') {
+      const hit = pickShape(p);
+      if (!hit) {
+        setTrimHover(null);
+        setMsg({ text: 'Кликните по кривой, которую нужно усекать (границы — другие объекты листа).', ok: false });
+        return;
+      }
+      if (!trimmable(hit)) {
+        setMsg({ text: 'Текст, размерные линии, скрытые и заблокированные объекты не усекаются.', ok: false });
+        return;
+      }
+      // в режиме «границы — выделенные» текущее выделение и есть набор границ
+      if (!trimOnlySel) setSel(new Set([hit.id]));
+      runTrim(hit.id, p);
+      return;
+    }
+
     // --- инструменты рисования ---
     if (tool === 'rect' || tool === 'ellipse' || tool === 'polygon') {
       setDraft({ t: tool, layer: activeLayer, a: p, b: p, shift: e.shiftKey });
-      drag.current = { mode: 'marquee', a: p, shift: false, base: new Set(), moved: false };
+      // свой режим протяжки: маркиз здесь ни при чём, иначе первый же move
+      // до обновления draft успевает выделить объекты рамкой
+      drag.current = { mode: 'draw', t: tool, layer: activeLayer, a: p, shift: e.shiftKey };
       return;
     }
     if (tool === 'line') {
@@ -1025,7 +1135,8 @@ export function LaserEditor({
     drag.current = { mode: 'marquee', a: p, shift: e.shiftKey, base: new Set(selRef.current), moved: false };
     setMarquee({ a: p, b: p });
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [view, tool, activeLayer, draft, selBBox, selShapes, snapWorld, pickShape, commit, setSel, spaceDown, cloneSelected]);
+  }, [view, tool, activeLayer, draft, selBBox, selShapes, snapWorld, pickShape, commit, setSel, spaceDown,
+    cloneSelected, runTrim, trimOnlySel]);
 
   /** Завершение рисования отрезка. */
   const finishLine = useCallback((d: Extract<Draft, { t: 'line' }>) => {
@@ -1124,6 +1235,11 @@ export function LaserEditor({
 
     const d = drag.current;
     if (!d) {
+      // предпросмотр инструмента «Усечь кривую»: какой кусок уйдёт
+      if (tool === 'trim') {
+        updateTrimHover(raw);
+        return;
+      }
       // предпросмотр незавершённого рисунка
       if (draft) {
         if (draft.t === 'line') {
@@ -1155,11 +1271,14 @@ export function LaserEditor({
       return;
     }
 
+    if (d.mode === 'draw') {
+      setDraft({
+        t: d.t, layer: d.layer, a: d.a, shift: d.shift,
+        b: constrainBox(d.a, p, e.shiftKey || d.shift),
+      });
+      return;
+    }
     if (d.mode === 'marquee') {
-      if (draft && (draft.t === 'rect' || draft.t === 'ellipse' || draft.t === 'polygon')) {
-        setDraft({ ...draft, b: constrainBox(draft.a, p, e.shiftKey || draft.shift) });
-        return;
-      }
       d.moved = true;
       setMarquee({ a: d.a, b: p });
       const x0 = Math.min(d.a.x, p.x);
@@ -1233,7 +1352,7 @@ export function LaserEditor({
       return;
     }
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [view, draft, grid.snap, snapPoints, snapWorld, pickable, setDoc, setSel]);
+  }, [view, draft, grid.snap, snapPoints, snapWorld, pickable, setDoc, setSel, tool, updateTrimHover]);
 
   const onPointerUp = useCallback((e: RPointerEvent<HTMLCanvasElement>) => {
     const cv = overRef.current;
@@ -1244,13 +1363,21 @@ export function LaserEditor({
     drag.current = null;
     if (!d) return;
 
+    if (d.mode === 'draw') {
+      const cv2 = overRef.current;
+      const rect = cv2?.getBoundingClientRect();
+      const p = rect
+        ? snapWorld(toWorld(view, e.clientX - rect.left, e.clientY - rect.top), e.altKey)
+        : d.a;
+      finishDragDraw({
+        t: d.t, layer: d.layer, a: d.a, shift: d.shift,
+        b: constrainBox(d.a, p, e.shiftKey || d.shift),
+      });
+      histStart.current = null;
+      return;
+    }
     if (d.mode === 'marquee') {
       setMarquee(null);
-      if (draft && (draft.t === 'rect' || draft.t === 'ellipse' || draft.t === 'polygon')) {
-        finishDragDraw(draft);
-        histStart.current = null;
-        return;
-      }
       if (!d.moved) histStart.current = null;
       return;
     }
@@ -1267,7 +1394,8 @@ export function LaserEditor({
       return;
     }
     histStart.current = null;
-  }, [commitDrag, draft, finishDragDraw]);
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [commitDrag, draft, finishDragDraw, snapWorld, view]);
 
   const onDoubleClick = useCallback((e: RPointerEvent<HTMLCanvasElement>) => {
     const cv = overRef.current;
@@ -1344,9 +1472,11 @@ export function LaserEditor({
     if (!cur.length) return;
     const map = new Map<string, LaserShape>();
     for (const s of cur) map.set(s.id, translateShape(s, dx, dy));
-    replaceShapes(map, 'Сдвиг стрелками', false);
-    nudgeTimer.current = window.setTimeout(() => commitDrag('Сдвиг стрелками'), 400);
+    // снимок «до» — обязательно до правки, иначе отмена вернёт уже сдвинутый объект
     if (!histStart.current) histStart.current = docRef.current;
+    replaceShapes(map, 'Сдвиг стрелками', false);
+    window.clearTimeout(nudgeTimer.current);
+    nudgeTimer.current = window.setTimeout(() => commitDrag('Сдвиг стрелками'), 400);
   }, [cloneSelected, replaceShapes, commitDrag]);
 
   // ---------------- клавиатура ----------------
@@ -1381,6 +1511,7 @@ export function LaserEditor({
       if (k === 'o') { e.preventDefault(); fileRef.current?.click(); return; }
       if (k === 'e') { e.preventDefault(); setDialog('export'); return; }
       if (k === 'b') { e.preventDefault(); setDialog('boxes'); return; }
+      if (k === 'x' && e.shiftKey) { e.preventDefault(); breakApartSel(); return; }
       if (k === 'n') { e.preventDefault(); setDialog('new'); return; }
       if (k === '=' || k === '+') { e.preventDefault(); zoomAt(size.w / 2, size.h / 2, 1.25); return; }
       if (k === '-') { e.preventDefault(); zoomAt(size.w / 2, size.h / 2, 1 / 1.25); return; }
@@ -1422,6 +1553,7 @@ export function LaserEditor({
         if (dialog) { setDialog(null); return; }
         setSel(new Set());
         setNodeEdit(null);
+        setTrimHover(null);
         return;
       case 'Enter':
         if (draft?.t === 'pen') { e.preventDefault(); finishPen(draft); return; }
@@ -1460,6 +1592,17 @@ export function LaserEditor({
         nudge(0, -(st || 1));
         return;
       }
+      case '1': case '2': case '3':
+        if (tool === 'trim') {
+          const mode = TRIM_MODES[Number(key) - 1];
+          if (mode) {
+            setTrimMode(mode.id);
+            setTrimHover(null);
+            setMsg({ text: `Режим «${mode.name}»: ${mode.hint}`, ok: null });
+          }
+          return;
+        }
+        break;
       case 'f': case 'F': case 'а': case 'А': fit(); return;
       case 's': case 'S': case 'ы': case 'Ы':
         if (tool === 'shape' && nodeEdit?.node !== null && nodeEdit?.node !== undefined) {
@@ -1485,7 +1628,7 @@ export function LaserEditor({
   }, [
     mode, spaceDown, undo, redo, duplicateSel, deleteSel, groupSel, ungroupSel, toCurves, booleanSel,
     runExport, zoomAt, fit, size.w, size.h, draft, dialog, tool, nodeEdit, grid.step, nudge, commit,
-    pickable, setSel, finishPen, finishLine, finishDim,
+    pickable, setSel, finishPen, finishLine, finishDim, breakApartSel,
   ]);
 
   const keyRef = useRef(keyHandler);
@@ -1500,6 +1643,13 @@ export function LaserEditor({
       window.removeEventListener('keyup', up);
     };
   }, []);
+
+  // Подсветка инструмента «усечь» живёт только пока не поменялись инструмент,
+  // режим или состав листа — иначе курсор «помнит» старый кусок.
+  useEffect(() => {
+    trimHoverAt.current = { id: null, x: 0, y: 0 };
+    setTrimHover(null);
+  }, [tool, trimMode, trimOnlySel, doc.shapes]);
 
   // ---------------- отрисовка: базовый слой ----------------
 
@@ -1525,7 +1675,7 @@ export function LaserEditor({
         if (s.hidden) continue;
         const cfg = doc.layers[s.layer];
         if (!cfg?.visible) continue;
-        drawLaserShape(ctx, s, view, cfg.color, { selected: sel.has(s.id) });
+        drawLaserShape(ctx, s, view, cfg.color, { selected: sel.has(s.id), sheetBg: th.sheet });
       }
 
       if (selBBox) {
@@ -1610,10 +1760,83 @@ export function LaserEditor({
         }
       }
 
+      // предпросмотр «усечь кривую»: кусок под курсором, точки реза и добор
+      if (tool === 'trim' && trimHover) {
+        const pv = trimHover.preview;
+        ctx.save();
+        ctx.lineJoin = 'round';
+        ctx.lineCap = 'round';
+        // контур-подсветка куска
+        if (pv.pts.length >= 2) {
+          ctx.beginPath();
+          pv.pts.forEach((q, i) => {
+            const sp = toScreen(view, q.x, q.y);
+            if (i === 0) ctx.moveTo(sp.px, sp.py);
+            else ctx.lineTo(sp.px, sp.py);
+          });
+          ctx.strokeStyle = pv.mode === 'trim' ? '#ff6b57' : th.sel;
+          ctx.globalAlpha = 0.28;
+          ctx.lineWidth = 8;
+          ctx.stroke();
+          ctx.globalAlpha = 1;
+          ctx.lineWidth = 2.2;
+          ctx.setLineDash(pv.mode === 'break' ? [6, 4] : []);
+          ctx.stroke();
+          ctx.setLineDash([]);
+        }
+        // добор для режима «продлить»
+        if (pv.extra) {
+          const a = toScreen(view, pv.extra[0].x, pv.extra[0].y);
+          const b = toScreen(view, pv.extra[1].x, pv.extra[1].y);
+          ctx.strokeStyle = th.sel;
+          ctx.lineWidth = 1.8;
+          ctx.setLineDash([5, 4]);
+          ctx.beginPath();
+          ctx.moveTo(a.px, a.py);
+          ctx.lineTo(b.px, b.py);
+          ctx.stroke();
+          ctx.setLineDash([]);
+          ctx.beginPath();
+          ctx.arc(b.px, b.py, 3.6, 0, Math.PI * 2);
+          ctx.stroke();
+        }
+        // точки пересечения — там кривая будет разрезана
+        for (const c of pv.cuts) {
+          const sp = toScreen(view, c.x, c.y);
+          ctx.beginPath();
+          ctx.arc(sp.px, sp.py, 3.4, 0, Math.PI * 2);
+          ctx.fillStyle = pv.mode === 'trim' ? '#ff6b57' : th.sel;
+          ctx.fill();
+          ctx.lineWidth = 1.2;
+          ctx.strokeStyle = th.handleEdge;
+          ctx.stroke();
+        }
+        // подпись режима
+        const anchorPt = pv.cuts[0] ?? pv.pts[0];
+        if (anchorPt) {
+          const sp = toScreen(view, anchorPt.x, anchorPt.y);
+          const label = pv.hint;
+          ctx.font = '11px Inter, system-ui, sans-serif';
+          const tw = ctx.measureText(label).width + 12;
+          ctx.fillStyle = th.selFill;
+          ctx.strokeStyle = th.sel;
+          ctx.lineWidth = 1;
+          ctx.beginPath();
+          ctx.roundRect(sp.px + 10, sp.py - 26, tw, 17, 4);
+          ctx.fill();
+          ctx.stroke();
+          ctx.fillStyle = th.sel;
+          ctx.textAlign = 'left';
+          ctx.textBaseline = 'middle';
+          ctx.fillText(label, sp.px + 16, sp.py - 17);
+        }
+        ctx.restore();
+      }
+
       // маркиз
       if (marquee) drawMarquee(ctx, marquee.a, marquee.b, view, th);
     });
-  }, [draft, marquee, mouse.px, mouse.py, snapMark, view, size, th, tool, doc.layers]);
+  }, [draft, marquee, mouse.px, mouse.py, snapMark, view, size, th, tool, doc.layers, trimHover]);
 
   // ---------------- очистка при размонтировании ----------------
   useEffect(() => () => {
@@ -1634,6 +1857,12 @@ export function LaserEditor({
     onContour: (delta, layer) => contourSel(delta, layer),
     onToCurves: () => toCurves(),
     onFillet: (r) => filletSel(r),
+    onTrimTool: (mode) => {
+      if (mode) setTrimMode(mode);
+      setTool('trim');
+      setNodeEdit(null);
+    },
+    onBreakApart: () => breakApartSel(),
     onArray: (rows, cols, gx, gy) => arraySel(rows, cols, gx, gy),
     onDuplicate: () => duplicateSel(),
     onDelete: () => deleteSel(),
@@ -1646,6 +1875,7 @@ export function LaserEditor({
   }), [
     patchSelected, applyGeometry, rotateSel, mirrorSel, alignSel, booleanSel, contourSel, toCurves,
     filletSel, arraySel, duplicateSel, deleteSel, groupSel, ungroupSel, orderSel, doc.layers,
+    breakApartSel,
   ]);
 
   const toggleLayerVisible = useCallback((id: LaserLayerId) => {
@@ -1975,10 +2205,44 @@ export function LaserEditor({
             ))}
           </div>
 
+          {tool === 'trim' && (
+            <div className="laser-trimbar" role="group" aria-label="Режим инструмента «Усечь кривую»">
+              {TRIM_MODES.map((m) => (
+                <button
+                  key={m.id}
+                  type="button"
+                  data-trim-mode={m.id}
+                  className={trimMode === m.id ? 'on' : ''}
+                  title={`${m.name} (${m.key}) — ${m.hint}`}
+                  onClick={() => setTrimMode(m.id)}
+                >
+                  <Ic n={m.id === 'extend' ? 'extend' : 'cut-curve'} size={13} />
+                  {m.name}
+                </button>
+              ))}
+              <label className="laser-check" title="Границами реза считать только выделенные объекты">
+                <input
+                  type="checkbox"
+                  checked={trimOnlySel}
+                  onChange={(e) => setTrimOnlySel(e.target.checked)}
+                />
+                границы — выделенные
+              </label>
+              <button
+                type="button"
+                className="btn tiny"
+                onClick={breakApartSel}
+                title="Разбить кривые по всем точкам пересечений (Ctrl+Shift+X)"
+              >
+                <Ic n="detach" size={13} /> Разбить по пересечениям
+              </button>
+            </div>
+          )}
+
           <div className="laser-tool-hint" title={toolMeta.hint}>
             <Ic n={toolMeta.icon} size={14} />
             <b>{toolMeta.name}</b>
-            <span>{toolMeta.hint}</span>
+            <span>{tool === 'trim' ? TRIM_MODES.find((m) => m.id === trimMode)!.hint : toolMeta.hint}</span>
           </div>
 
           <input

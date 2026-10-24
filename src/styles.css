@@ -2463,6 +2463,40 @@ html[data-compact='1'] .set-head { padding: 5px 8px 5px 10px; }
   backdrop-filter: blur(3px);
   font-size: 11.5px; color: var(--muted);
 }
+/* панель режимов инструмента «Усечь кривую» (над подсказкой инструмента) */
+.laser-trimbar {
+  position: absolute; left: 8px; bottom: 40px; z-index: 6;
+  display: flex; align-items: center; gap: 4px; flex-wrap: wrap;
+  max-width: min(560px, calc(100% - 24px));
+  padding: 4px; border-radius: 10px;
+  background: var(--surface);
+  background: color-mix(in srgb, var(--surface) 90%, transparent);
+  border: 1px solid var(--line); box-shadow: 0 6px 16px rgba(0, 0, 0, .22);
+  backdrop-filter: blur(3px);
+  font-size: 11.5px;
+}
+.laser-trimbar button[data-trim-mode] {
+  display: flex; align-items: center; gap: 5px;
+  height: 26px; padding: 0 9px; border-radius: 7px;
+  border: 1px solid transparent; background: transparent;
+  color: var(--muted); font-size: 11.5px; font-weight: 500; cursor: pointer;
+}
+.laser-trimbar button[data-trim-mode]:hover { background: var(--surface-2); color: var(--text); }
+.laser-trimbar button[data-trim-mode].on {
+  background: var(--accent-soft); border-color: var(--accent-line);
+  color: var(--accent-text); font-weight: 600;
+}
+.laser-trimbar .laser-check {
+  display: flex; align-items: center; gap: 4px; padding: 0 8px 0 6px;
+  height: 26px; color: var(--muted); cursor: pointer; white-space: nowrap;
+  border-left: 1px solid var(--line); margin-left: 2px;
+}
+.laser-trimbar .laser-check:hover { color: var(--text); }
+.laser-trimbar .laser-check input { accent-color: var(--accent); margin: 0; }
+@media (max-width: 900px) {
+  .laser-trimbar .laser-check span, .laser-trimbar .laser-check { font-size: 0; gap: 0; }
+  .laser-trimbar button[data-trim-mode] { padding: 0 7px; }
+}
 .laser-tool-hint svg { color: var(--accent-text); flex: none; }
 .laser-tool-hint b { color: var(--text); font-weight: 600; flex: none; }
 .laser-tool-hint span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }

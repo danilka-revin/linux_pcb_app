@@ -18,6 +18,7 @@ import {
   type MaterialPreset,
 } from '../laser/model';
 import { UNFOLD_TEMPLATES, type UnfoldParams } from '../laser/unfold';
+import type { TrimMode } from '../laser/trim';
 import type { LaserSimulation } from '../laser/export';
 
 /** Названия слоёв для выпадающих списков (берём короткие имена из документа). */
@@ -331,6 +332,10 @@ export interface PropsActions {
   onContour: (delta: number, layer?: LaserLayerId) => void;
   onToCurves: () => void;
   onFillet: (r: number) => void;
+  /** Включить инструмент «Усечь кривую» (X), сразу в нужном режиме */
+  onTrimTool: (mode?: TrimMode) => void;
+  /** Разбить кривые по точкам пересечений (Ctrl+Shift+X) */
+  onBreakApart: () => void;
   onArray: (rows: number, cols: number, gapX: number, gapY: number) => void;
   onDuplicate: () => void;
   onDelete: () => void;
@@ -628,6 +633,27 @@ export function LaserPropsPanel({
         <button type="button" className="btn tiny" onClick={actions.onToCurves}
           title="Преобразовать в кривые (Ctrl+Q) — объект станет редактируемой кривой Безье">
           <Ic n="bezier" size={13} /> В кривые
+        </button>
+      </div>
+
+      <h3>Усечь кривую (Trim)</h3>
+      <div className="laser-btnrow">
+        <button type="button" className="btn tiny" onClick={() => actions.onTrimTool('trim')}
+          title="Инструмент «Усечь кривую» (X): клик по кривой отрезает кусок до пересечения с другими объектами. 1 — усечь, 2 — продлить, 3 — разрезать">
+          <Ic n="cut-curve" size={13} /> Усечь (X)
+        </button>
+        <button type="button" className="btn tiny" onClick={() => actions.onTrimTool('extend')}
+          title="Продлить ближайший конец кривой до границы по касательной (включает инструмент в режиме «Продлить»)">
+          <Ic n="extend" size={13} /> Продлить
+        </button>
+        <button type="button" className="btn tiny" onClick={() => actions.onTrimTool('break')}
+          title="Разрезать кривую в точке клика: замкнутый контур станет открытым">
+          <Ic n="cut-curve" size={13} /> Разрезать
+        </button>
+        <button type="button" className="btn tiny" onClick={actions.onBreakApart}
+          disabled={!shapes.length}
+          title="Разбить выделенные кривые по всем точкам пересечений (Ctrl+Shift+X). Без выделения разбивается весь лист">
+          <Ic n="detach" size={13} /> Разбить по пересечениям
         </button>
       </div>
 

@@ -778,13 +778,20 @@ export function projectAssembly(
   const cy = Math.cos((yaw * Math.PI) / 180), sy = Math.sin((yaw * Math.PI) / 180);
   const cp = Math.cos((pitch * Math.PI) / 180), sp = Math.sin((pitch * Math.PI) / 180);
   const light = norm([0.4, -0.65, 0.65]);
+  // Направление на зрителя в мировых координатах: yaw — азимут, pitch — высота.
+  // Положительный pitch — смотрим сверху (как в орбитальной камере).
+  const cam: Vec3 = [-cp * sy, -cp * cy, sp];
 
+  // Экранная Y направлена вниз (SVG и canvas), поэтому «вверх» детали идёт со
+  // знаком минус: раньше сборка рисовалась перевёрнутой.
+  // depth — расстояние от камеры (больше = дальше): сортировка «дальние первые»
+  // рисует грани в правильном порядке, и коробка не вывернута наизнанку.
   const project = (v: Vec3): { p: Pt; depth: number } => {
     const xr = v[0] * cy - v[1] * sy;
     const yr = v[0] * sy + v[1] * cy;
     return {
-      p: { x: xr, y: -yr * sp + v[2] * cp },
-      depth: yr * cp + v[2] * sp,
+      p: { x: xr, y: -(yr * sp + v[2] * cp) },
+      depth: yr * cp - v[2] * sp,
     };
   };
 
@@ -795,7 +802,9 @@ export function projectAssembly(
     const front = part.outline.map((p) => partPoint(part.place!, p));
     const back = front.map((v) => [v[0] + n[0] * thickness, v[1] + n[1] * thickness, v[2] + n[2] * thickness] as Vec3);
 
-    const faceShade = 0.45 + 0.55 * Math.max(0, Math.abs(dot(n, light)));
+    // тыльные грани чуть темнее — сквозь полупрозрачную сборку видно глубину
+    const facing = dot(n, cam) > 0 ? 1 : 0.62;
+    const faceShade = Math.min(1, (0.45 + 0.55 * Math.max(0, Math.abs(dot(n, light)))) * facing);
     const pf = front.map(project);
     polys.push({
       pts: pf.map((q) => q.p),
@@ -804,12 +813,13 @@ export function projectAssembly(
       name: part.name,
     });
 
-    // Боковые стенки: только те, что смотрят от зрителя наружу
+    // Боковые стенки (торцы материала): только обращённые к зрителю.
+    // Отсечка по свету оставляла дыры там, где грань смотрит в камеру, но не на свет.
     for (let i = 0; i < front.length; i++) {
       const j = (i + 1) % front.length;
       const edge = sub(front[j], front[i]);
       const sideN = norm(cross(edge, n));
-      if (dot(sideN, light) < -0.15) continue;
+      if (dot(sideN, cam) < -0.02) continue;
       const quad = [front[i], front[j], back[j], back[i]].map(project);
       polys.push({
         pts: quad.map((q) => q.p),

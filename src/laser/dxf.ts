@@ -16,7 +16,9 @@
 
 import {
   LASER_LAYER_ORDER,
-  offsetShape,
+  applyTabs as applyTabsCore,
+  dashPolyline,
+  kerfShapes,
   rotPt,
   shapeToPolylines,
   type LaserDoc,
@@ -590,61 +592,18 @@ export function primToPolylines(prim: DxfPrim, tol: number): { pts: Pt[]; closed
 }
 
 // ---------------- пунктир и перемычки ----------------
+// Реализация общая с рендером, G-Code и симуляцией (model.ts): маркеры перемычек
+// на холсте стоят ровно там, где станок оставит недорез.
 
 /** Разбиение ломаной на штрихи (перфорация сгиба / удерживающие перемычки). */
 export function dashPolylines(pts: Pt[], dashLen: number, gapLen: number): Pt[][] {
-  if (pts.length < 2 || dashLen <= 0 || gapLen <= 0) return [pts];
-  const out: Pt[][] = [];
-  let cur: Pt[] = [{ ...pts[0] }];
-  let drawing = true;
-  let rem = dashLen;
-  for (let i = 0; i < pts.length - 1; i++) {
-    let a = pts[i];
-    const b = pts[i + 1];
-    let segLen = Math.hypot(b.x - a.x, b.y - a.y);
-    if (segLen < 1e-9) continue;
-    const ux = (b.x - a.x) / segLen, uy = (b.y - a.y) / segLen;
-    let guard = 0;
-    while (segLen > 1e-9 && guard++ < 200000) {
-      if (segLen <= rem) {
-        if (drawing) cur.push({ ...b });
-        rem -= segLen;
-        segLen = 0;
-        if (rem <= 1e-9) {
-          if (drawing && cur.length >= 2) out.push(cur);
-          drawing = !drawing;
-          rem = drawing ? dashLen : gapLen;
-          if (drawing) cur = [{ ...b }];
-        }
-      } else {
-        const mid = { x: a.x + ux * rem, y: a.y + uy * rem };
-        if (drawing) {
-          cur.push(mid);
-          if (cur.length >= 2) out.push(cur);
-        }
-        segLen -= rem;
-        a = mid;
-        drawing = !drawing;
-        rem = drawing ? dashLen : gapLen;
-        if (drawing) cur = [{ ...a }];
-      }
-    }
-  }
-  if (drawing && cur.length >= 2) out.push(cur);
-  return out;
+  return dashPolyline(pts, dashLen, gapLen);
 }
 
 /** Перемычки: замкнутый контур режется участками, между ними материал остаётся. */
 export function applyTabs(pts: Pt[], count: number, width: number): Pt[][] {
-  if (!count || count <= 0 || pts.length < 3) return [pts];
-  const ring = pts.slice();
-  const first = ring[0], last = ring[ring.length - 1];
-  if (Math.hypot(first.x - last.x, first.y - last.y) > 1e-9) ring.push({ ...first });
-  let total = 0;
-  for (let i = 0; i < ring.length - 1; i++) total += Math.hypot(ring[i + 1].x - ring[i].x, ring[i + 1].y - ring[i].y);
-  const pitch = total / count;
-  if (pitch <= width * 1.5) return [pts];
-  return dashPolylines(ring, pitch - width, width);
+  if (pts.length < 3) return [pts];
+  return applyTabsCore(pts, count, width, true);
 }
 
 // ---------------- сборка геометрии документа ----------------
@@ -830,9 +789,10 @@ export function collectDxfGeometry(doc: LaserDoc, o: Partial<DxfOptions> = {}): 
         ? (s.layer === 'inner' ? -cfg.kerf / 2 : cfg.kerf / 2)
         : 0;
     if (Math.abs(kerfDelta) > 1e-4) {
-      // Компенсация керфа — полигональным смещением (точные дуги при этом раскрываются)
+      // Компенсация керфа — полигональным смещением замкнутых контуров
+      // (точные дуги при этом раскрываются, открытые линии режутся как есть)
       prims = [];
-      for (const off of offsetShape(s, kerfDelta)) prims.push(...shapePrims(off, opts));
+      for (const off of kerfShapes(s, kerfDelta)) prims.push(...shapePrims(off, opts));
     } else {
       prims = shapePrims(s, opts);
     }
