@@ -659,10 +659,63 @@ await settle();
   assert(text().includes('M4 — динамическая мощность'), 'режим лазера M4/M3');
   assert(text().includes('Возврат в начало координат'), 'опция возврата в ноль');
 
+  // DXF — основной формат вывода: настройки, план файла и контроль точности
   await click(formats.find((f) => f.textContent?.includes('DXF'))!);
-  await click(byText('Скачать .dxf'));
+  await settle();
+  assert(text().includes('Параметры DXF'), 'панель настроек DXF в диалоге экспорта');
+  const splits = [...win.document.querySelectorAll('[data-dxf-split]')] as HTMLButtonElement[];
+  assert.equal(splits.length, 2, 'режимы вывода DXF: один файл и архив по слоям');
+  assert(splits[0].className.includes('active'), 'по умолчанию DXF одним файлом');
+  const planRows = () => [...win.document.querySelectorAll('.laser-dxf-row')]
+    .map((r) => (r.querySelector('b')?.textContent ?? '').trim());
+  assert.ok(planRows().length >= 1, `план слоёв DXF: ${planRows().length}`);
+  assert.ok(
+    planRows().some((t) => ['CUT', 'INNER', 'FOLD', 'SCORE', 'ENGRAVE'].includes(t)),
+    `в плане слои станка: ${planRows().join(', ')}`
+  );
+  const dxfField = (label: string) => {
+    const f = [...win.document.querySelectorAll('.laser-dxf-opts .field')]
+      .find((x) => x.querySelector('label')?.textContent === label);
+    assert(f, `поле «${label}» в параметрах DXF`);
+    return f!.querySelector('select') as HTMLSelectElement;
+  };
+  await changeSelect(dxfField('Версия'), 'R12');
+  await changeSelect(dxfField('Сущности'), 'lines');
+  await changeSelect(dxfField('Ноль координат'), 'bbox');
+  await settle(420);
+  assert(text().includes('Контроль точности'), 'живой контроль точности DXF');
+  assert(/отклонение до \d/.test(text()), 'в контроле показано отклонение в мм');
+  const footBtn = () => win.document.querySelector('.laser-export-dialog .foot .btn.primary') as HTMLButtonElement;
+  assert.equal(footBtn().textContent?.trim(), 'Скачать .dxf', `кнопка скачивания: ${footBtn().textContent}`);
+  await click(footBtn());
   await settle();
   assert(downloads.some((d) => d.endsWith('.dxf')), `DXF скачан: ${downloads.join(', ')}`);
+
+  // тот же чертёж отдельными файлами по слоям станка — архивом ZIP
+  await clickTitle('Экспорт на станок');
+  await settle();
+  await click([...win.document.querySelectorAll('.laser-format')].find((f) => f.textContent?.includes('DXF'))!);
+  await settle();
+  assert.equal(dxfField('Версия').value, 'R12', 'настройки DXF сохранены между открытиями');
+  await click(win.document.querySelector('[data-dxf-split="layers"]')!);
+  await settle();
+  const fileRows = [...win.document.querySelectorAll('.laser-dxf-row')]
+    .map((r) => (r.querySelector('b')?.textContent ?? '').trim());
+  assert.ok(fileRows.every((t) => t.endsWith('.dxf')) && fileRows.length >= 1,
+    `список файлов архива: ${fileRows.join(', ')}`);
+  assert(/^Скачать \.zip \(\d+ × \.dxf\)$/.test((footBtn().textContent ?? '').trim()),
+    `кнопка архива: ${footBtn().textContent}`);
+  await click(footBtn());
+  await settle();
+  assert(downloads.some((d) => d.endsWith('.zip')), `архив DXF по слоям скачан: ${downloads.join(', ')}`);
+  assert(status().includes('DXF по слоям'), `сообщение о разбивке: ${status()}`);
+  // возвращаем режим «один файл», чтобы следующие проверки скачивали именно .dxf
+  await clickTitle('Экспорт на станок');
+  await settle();
+  await click([...win.document.querySelectorAll('.laser-format')].find((f) => f.textContent?.includes('DXF'))!);
+  await click(win.document.querySelector('[data-dxf-split="single"]')!);
+  await settle();
+  assert.equal(footBtn().textContent?.trim(), 'Скачать .dxf', 'режим одного файла возвращён');
 
   await clickTitle('Экспорт на станок');
   await settle();
@@ -959,7 +1012,9 @@ process.stdout.write(
   'LASER DOM OK: режимы, генератор развёрток, слои станка, материал, рисование мышью, '
   + 'перенос и масштаб маркером, узлы кривой (F10), усечение кривых (X: усечь/продлить/разрезать, '
   + 'границы по выделению, разбивка по пересечениям), отмена, булевы операции, контур, '
-  + 'экспорт DXF/G-Code/проекта, симуляция, черновик, размер стола, очистка листа, '
+  + 'экспорт: настройки DXF в диалоге (версия, сущности, ноль координат), план слоёв файла, '
+  + 'контроль точности, разбивка по слоям в ZIP, G-Code/проект, симуляция, черновик, '
+  + 'размер стола, очистка листа, '
   + 'студия коробок (каталог 28 типов, поиск, 3D-сборка, раскладка, DXF, помещение на лист), '
   + 'экран 3D и переключение режимов из редактора плат\n',
   () => process.exit(0),

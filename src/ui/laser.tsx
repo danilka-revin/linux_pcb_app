@@ -17,13 +17,16 @@ import {
 } from './laser-panels';
 import {
   LaserExportDialog, LaserSheetDialog, LaserSimDialog, LaserTraceDialog,
-  type LaserExportFormat,
+  type LaserDxfSplit, type LaserExportFormat,
 } from './laser-dialogs';
 import {
   DEFAULT_GCODE_OPTIONS, buildLaserSimulation, exportLaserDxf, exportLaserGCode, exportLaserSvg,
   importVectorFile,
   type GCodeExportOptions, type LaserSimulation,
 } from '../laser/export';
+import {
+  DEFAULT_DXF_OPTIONS, exportDxfPerLayer, type DxfOptions,
+} from '../laser/dxf';
 import { DEFAULT_UNFOLD_PARAMS, UNFOLD_TEMPLATES, generateUnfolding, type UnfoldParams } from '../laser/unfold';
 import { BoxStudio, type BoxApplyPayload } from './box-studio';
 import {
@@ -49,7 +52,7 @@ import {
   drawSelectionLabel, laserTheme, selectionHandlePoints, toScreen, toWorld,
   type LaserGridConf, type LaserView, type SelectionHandleId,
 } from '../laser/render';
-import { download } from '../pcb/zip';
+import { download, makeZip } from '../pcb/zip';
 import { perfDpr } from '../perf';
 import type { ThemeId } from '../pcb/render';
 
@@ -244,6 +247,8 @@ export function LaserEditor({
   const [sim, setSim] = useState<LaserSimulation | null>(null);
   const [simBusy, setSimBusy] = useState(false);
   const [gcode, setGcode] = useState<GCodeExportOptions>({ ...DEFAULT_GCODE_OPTIONS });
+  const [dxfOpts, setDxfOpts] = useState<DxfOptions>({ ...DEFAULT_DXF_OPTIONS });
+  const [dxfSplit, setDxfSplit] = useState<LaserDxfSplit>('single');
   const [draft, setDraft] = useState<Draft | null>(null);
   const [marquee, setMarquee] = useState<{ a: Pt; b: Pt } | null>(null);
   const [nodeEdit, setNodeEdit] = useState<{ id: string; node: number | null } | null>(null);
@@ -870,8 +875,20 @@ export function LaserEditor({
         download(fileName('svg'), new Blob([exportLaserSvg(docRef.current)], { type: 'image/svg+xml;charset=utf-8' }));
         setMsg({ text: `SVG сохранён: ${fileName('svg')}`, ok: true });
       } else if (format === 'dxf') {
-        download(fileName('dxf'), new Blob([exportLaserDxf(docRef.current)], { type: 'application/dxf' }));
-        setMsg({ text: `DXF сохранён: ${fileName('dxf')}`, ok: true });
+        if (dxfSplit === 'layers') {
+          const files = exportDxfPerLayer(docRef.current, dxfOpts);
+          if (!files.length) throw new Error('Нет видимых объектов: слои для экспорта не найдены.');
+          const name = fileName('zip');
+          download(name, makeZip(files.map((f) => ({ name: f.name, data: f.text }))));
+          setMsg({
+            text: `DXF по слоям: ${files.length} файл(ов) в ${name} (${files.map((f) => f.name.replace('.dxf', '')).join(', ')})`,
+            ok: true,
+          });
+        } else {
+          const text = exportLaserDxf(docRef.current, dxfOpts);
+          download(fileName('dxf'), new Blob([text], { type: 'application/dxf' }));
+          setMsg({ text: `DXF сохранён: ${fileName('dxf')} (${(text.length / 1024).toFixed(1)} КБ)`, ok: true });
+        }
       } else if (format === 'project') {
         download(fileName('pslaser'), new Blob([serializeLaserProject(docRef.current)], { type: 'application/json' }));
         setMsg({ text: `Проект сохранён: ${fileName('pslaser')}`, ok: true });
@@ -902,7 +919,7 @@ export function LaserEditor({
     } catch (e) {
       setMsg({ text: e instanceof Error ? e.message : 'Ошибка экспорта.', ok: false });
     }
-  }, [fileName, gcode, theme]);
+  }, [fileName, gcode, dxfOpts, dxfSplit, theme]);
 
   const openProjectFile = useCallback((file: File) => {
     file.text().then((text) => {
@@ -2371,6 +2388,10 @@ export function LaserEditor({
           sim={sim}
           gcode={gcode}
           onGcodeChange={(patch) => setGcode((g) => ({ ...g, ...patch }))}
+          dxf={dxfOpts}
+          onDxfChange={(patch) => setDxfOpts((o) => ({ ...o, ...patch }))}
+          dxfSplit={dxfSplit}
+          onDxfSplitChange={setDxfSplit}
           onExport={(format) => void runExport(format)}
           onClose={() => setDialog(null)}
         />

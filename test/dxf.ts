@@ -2,7 +2,9 @@
 // сущности (CIRCLE/ARC/ELLIPSE/SPLINE/бульджи), слои, цвета, блоки, контроль
 // отклонений геометрии и круговой обмен с внешними CAD-файлами.
 import assert from 'node:assert/strict';
-import { newLaserDoc, selectionBBox, shapeBBox, type LaserDoc, type LaserShape } from '../src/laser/model';
+import {
+  newLaserDoc, selectionBBox, shapeBBox, type LaserDoc, type LaserLayerId, type LaserShape,
+} from '../src/laser/model';
 import { exportLaserDxf, importVectorFile } from '../src/laser/export';
 import {
   BULGE_90, DEFAULT_DXF_OPTIONS, DXF_LAYER_NAMES, LAYER_ACI, analyzeDxf, bulgeToArc, collectDxfGeometry,
@@ -12,6 +14,7 @@ import {
   type DxfOptions, type PolyPt,
 } from '../src/laser/dxf';
 import { DEFAULT_UNFOLD_PARAMS, generateUnfolding } from '../src/laser/unfold';
+import { makeZip, unzip } from '../src/pcb/zip';
 
 const near = (a: number, b: number, eps = 1e-6) => Math.abs(a - b) <= eps;
 /** Число сущностей данного типа во всём файле (по парам «код/значение»). */
@@ -468,7 +471,31 @@ function sampleDoc(): LaserDoc {
     assert(f.text.trimEnd().endsWith('EOF'), `файл ${f.name} завершён`);
     const r = analyzeDxf(f.text);
     assert.equal(r.layers.length, 1, `в ${f.name} один слой: ${r.layers.map((l) => l.name)}`);
+    // каждый файл разбивки остаётся точным сам по себе
+    const layerId = (Object.keys(DXF_LAYER_NAMES) as LaserLayerId[])
+      .find((k) => DXF_LAYER_NAMES[k] === f.name.replace('.dxf', ''))!;
+    const sub: LaserDoc = { ...doc, shapes: doc.shapes.filter((s) => s.layer === layerId) };
+    assert.ok(sub.shapes.length > 0, `в ${f.name} есть объекты исходного слоя`);
+    assert.ok(measureDxfAccuracy(sub, f.text).ok, `файл ${f.name} точен по геометрии`);
   }
+
+  // разбивка наследует настройки экспорта: версия, сущности, служебный слой
+  const r12 = exportDxfPerLayer(doc, { version: 'R12', entities: 'lines' });
+  for (const f of r12) {
+    assert.equal(pairValue(f.text, 1, '$ACADVER'), 'AC1009', `${f.name}: версия R12`);
+    assert.equal(entityCount(f.text, 'SPLINE'), 0, `${f.name}: без сплайнов в режиме отрезков`);
+    assert.ok(measureDxfAccuracy(doc, f.text, { version: 'R12', entities: 'lines' }).samples >= 0, `${f.name}: контроль выполнен`);
+  }
+  const withGuide = exportDxfPerLayer(doc, { includeGuide: true });
+  assert.ok(withGuide.map((f) => f.name).includes('GUIDE.dxf'), 'со слоем «Размеры» добавляется GUIDE.dxf');
+  const emptyFiles = exportDxfPerLayer({ ...doc, shapes: [] });
+  assert.equal(emptyFiles.length, 0, 'на пустом листе файлов нет');
+
+  // архив разбивки: имена и содержимое переживают ZIP round-trip
+  const zipBack = await unzip(await makeZip(files.map((f) => ({ name: f.name, data: f.text }))).arrayBuffer());
+  assert.deepEqual([...zipBack.keys()].sort(), [...fileNames].sort(), 'в архиве те же файлы');
+  const dec = new TextDecoder();
+  for (const f of files) assert.equal(dec.decode(zipBack.get(f.name)!), f.text, `${f.name}: текст без искажений`);
 
   // текст объектом TEXT (кириллица) и штриховыми контурами по умолчанию
   const textEntity = exportDxf(doc, { textAsEntity: true });
