@@ -13,6 +13,7 @@ import {
   type PathNode,
   type Pt,
 } from './model';
+import { dxfToShapes, exportDxf, type DxfOptions } from './dxf';
 
 export interface SimSegment {
   from: Pt;
@@ -402,98 +403,15 @@ export function exportLaserSvg(doc: LaserDoc): string {
   return out.join('\n') + '\n';
 }
 
-/** Экспорт в AutoCAD DXF (R12/R14 ASCII — стандарт для RDWorks, CypCut, CorelDRAW, AutoCAD) */
-export function exportLaserDxf(doc: LaserDoc): string {
-  const lines: string[] = [];
-  const push = (code: number, val: string | number) => {
-    lines.push(String(code), String(val));
-  };
-
-  // Номера цветов AutoCAD Color Index (ACI): 1=Red, 2=Yellow, 3=Green, 5=Blue, 6=Magenta
-  const aciByLayer: Record<LaserLayerId, number> = {
-    cut: 1,
-    inner: 6,
-    fold: 3,
-    score: 5,
-    engrave: 2,
-    guide: 8,
-  };
-
-  // HEADER (единицы измерения — миллиметры)
-  push(0, 'SECTION');
-  push(2, 'HEADER');
-  push(9, '$ACADVER');
-  push(1, 'AC1009');
-  push(9, '$INSUNITS');
-  push(70, 4);
-  push(0, 'ENDSEC');
-
-  // TABLES (слои станка)
-  push(0, 'SECTION');
-  push(2, 'TABLES');
-  push(0, 'TABLE');
-  push(2, 'LAYER');
-  push(70, 6);
-  for (const layerId of LASER_LAYER_ORDER) {
-    if (layerId === 'guide') continue;
-    push(0, 'LAYER');
-    push(2, layerId.toUpperCase());
-    push(70, 0);
-    push(62, aciByLayer[layerId]);
-    push(6, 'CONTINUOUS');
-  }
-  push(0, 'ENDTAB');
-  push(0, 'ENDSEC');
-
-  // ENTITIES
-  push(0, 'SECTION');
-  push(2, 'ENTITIES');
-
-  const f = (n: number) => Number(n.toFixed(4));
-
-  for (const layerId of LASER_LAYER_ORDER) {
-    if (layerId === 'guide') continue;
-    const cfg = doc.layers[layerId];
-    if (!cfg || !cfg.visible) continue;
-    const layerName = layerId.toUpperCase();
-    const shapes = doc.shapes.filter((s) => s.layer === layerId && !s.hidden);
-
-    for (const s of shapes) {
-      const rawPls = shapeToPolylines(s);
-      const pls: Pt[][] = [];
-      for (const pl of rawPls) {
-        if (layerId === 'fold' && cfg.dashLen > 0 && cfg.gapLen > 0) {
-          pls.push(...dashPolyline(pl, cfg.dashLen, cfg.gapLen));
-        } else {
-          pls.push(pl);
-        }
-      }
-
-      for (const pl of pls) {
-        if (pl.length < 2) continue;
-        // Выводим совместимые со всеми станками отрезки LINE в рамках полилинии
-        for (let i = 0; i < pl.length - 1; i++) {
-          const a = pl[i];
-          const b = pl[i + 1];
-          if (Math.hypot(b.x - a.x, b.y - a.y) < 1e-5) continue;
-          push(0, 'LINE');
-          push(8, layerName);
-          push(62, aciByLayer[layerId]);
-          push(10, f(a.x));
-          push(20, f(a.y));
-          push(30, 0);
-          push(11, f(b.x));
-          push(21, f(b.y));
-          push(31, 0);
-        }
-      }
-    }
-  }
-
-  push(0, 'ENDSEC');
-  push(0, 'EOF');
-  return lines.join('\r\n') + '\r\n';
+/**
+ * Экспорт в AutoCAD DXF — основной формат вывода для лазерных станков.
+ * Полноценная реализация (R12/R2000, точные CIRCLE/ARC/ELLIPSE/SPLINE, блоки,
+ * слои, единицы, контроль отклонений) находится в `./dxf`.
+ */
+export function exportLaserDxf(doc: LaserDoc, opts?: Partial<DxfOptions>): string {
+  return exportDxf(doc, opts);
 }
+
 
 // ---------------- Импорт векторных файлов SVG и DXF ----------------
 
@@ -712,105 +630,7 @@ function parseSvgContent(svg: string, docH: number): LaserShape[] {
   return shapes;
 }
 
+/** Импорт DXF: сущности LINE/CIRCLE/ARC/ELLIPSE/LWPOLYLINE/POLYLINE/SPLINE/TEXT/INSERT */
 function parseDxfContent(dxf: string): LaserShape[] {
-  const lines = dxf.split(/\r?\n/).map((s) => s.trim());
-  const shapes: LaserShape[] = [];
-  let i = 0;
-  let inEntities = false;
-
-  while (i + 1 < lines.length) {
-    const code = Number(lines[i]);
-    const val = lines[i + 1];
-    i += 2;
-    if (code === 2 && val === 'ENTITIES') {
-      inEntities = true;
-      continue;
-    }
-    if (code === 0 && val === 'ENDSEC' && inEntities) {
-      break;
-    }
-    if (!inEntities) continue;
-
-    if (code === 0 && val === 'LINE') {
-      let x1 = 0, y1 = 0, x2 = 0, y2 = 0;
-      let layer: LaserLayerId = 'cut';
-      while (i + 1 < lines.length && Number(lines[i]) !== 0) {
-        const c = Number(lines[i]);
-        const v = lines[i + 1];
-        i += 2;
-        if (c === 8) {
-          const lv = v.toLowerCase();
-          if (lv.includes('fold')) layer = 'fold';
-          else if (lv.includes('score')) layer = 'score';
-          else if (lv.includes('inner')) layer = 'inner';
-          else if (lv.includes('engrave')) layer = 'engrave';
-        } else if (c === 10) x1 = parseFloat(v);
-        else if (c === 20) y1 = parseFloat(v);
-        else if (c === 11) x2 = parseFloat(v);
-        else if (c === 21) y2 = parseFloat(v);
-      }
-      shapes.push({
-        id: luid('dxf'),
-        kind: 'path',
-        layer,
-        name: 'DXF Отрезок',
-        nodes: [{ x: x1, y: y1 }, { x: x2, y: y2 }],
-        closed: false,
-        filled: false,
-      });
-    } else if (code === 0 && val === 'CIRCLE') {
-      let cx = 0, cy = 0, r = 5;
-      let layer: LaserLayerId = 'cut';
-      while (i + 1 < lines.length && Number(lines[i]) !== 0) {
-        const c = Number(lines[i]);
-        const v = lines[i + 1];
-        i += 2;
-        if (c === 8 && v.toLowerCase().includes('inner')) layer = 'inner';
-        else if (c === 10) cx = parseFloat(v);
-        else if (c === 20) cy = parseFloat(v);
-        else if (c === 40) r = parseFloat(v);
-      }
-      shapes.push({
-        id: luid('dxf'),
-        kind: 'ellipse',
-        layer,
-        name: 'DXF Окружность',
-        cx,
-        cy,
-        rx: r,
-        ry: r,
-        rot: 0,
-        startAngle: 0,
-        endAngle: 360,
-        filled: false,
-      });
-    } else if (code === 0 && val === 'LWPOLYLINE') {
-      const nodes: PathNode[] = [];
-      let closed = false;
-      let curX: number | null = null;
-      while (i + 1 < lines.length && Number(lines[i]) !== 0) {
-        const c = Number(lines[i]);
-        const v = lines[i + 1];
-        i += 2;
-        if (c === 70) closed = (parseInt(v, 10) & 1) !== 0;
-        else if (c === 10) curX = parseFloat(v);
-        else if (c === 20 && curX !== null) {
-          nodes.push({ x: curX, y: parseFloat(v) });
-          curX = null;
-        }
-      }
-      if (nodes.length >= 2) {
-        shapes.push({
-          id: luid('dxf'),
-          kind: 'path',
-          layer: 'cut',
-          name: 'DXF Полилиния',
-          nodes,
-          closed,
-          filled: false,
-        });
-      }
-    }
-  }
-  return shapes;
+  return dxfToShapes(dxf);
 }

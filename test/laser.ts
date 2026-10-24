@@ -696,14 +696,20 @@ const pathArea = (s: PathShape) => {
   assert(!svg.includes('id="layer-guide"'), 'слой размеров не экспортируется');
   assert(svg.includes('data-name="Панель"'), 'имена объектов сохраняются');
 
-  // DXF
+  // DXF — основной формат вывода: точные сущности, миллиметры, R2000 по умолчанию
   const dxf = exportLaserDxf(doc);
-  for (const must of ['$ACADVER', 'AC1009', '$INSUNITS', 'TABLES', 'LAYER', 'ENTITIES', 'LINE', 'CUT', 'INNER', 'FOLD', 'EOF']) {
+  for (const must of ['$ACADVER', 'AC1015', '$INSUNITS', '$EXTMIN', '$EXTMAX', 'TABLES', 'LAYER', 'ENTITIES', 'LINE', 'CIRCLE', 'CUT', 'INNER', 'FOLD', 'EOF']) {
     assert(dxf.includes(must), `в DXF нет ${must}`);
   }
   assert(!dxf.includes('GUIDE'), 'служебный слой не попадает в DXF');
   const lineCount = (dxf.match(/\r\nLINE\r\n/g) ?? []).length;
   assert(lineCount > 20, `отрезков в DXF: ${lineCount}`);
+  assert(dxf.includes('$DWGCODEPAGE'), 'кодовая страница для кириллицы в именах слоёв');
+  // R12 для старых CAM-программ остаётся доступен
+  const dxf12 = exportLaserDxf(doc, { version: 'R12' });
+  assert(dxf12.includes('AC1009'), 'R12 = AC1009');
+  assert(dxf12.includes('POLYLINE'), 'в R12 полилинии классические POLYLINE/VERTEX');
+  assert(!dxf12.includes('LWPOLYLINE'), 'в R12 нет LWPOLYLINE');
 
   // керф меняет геометрию программы
   const kerfDoc: LaserDoc = {
