@@ -2,10 +2,14 @@
 // импорт SVG/DXF и расчёт симуляции траектории лазерной головки.
 
 import {
+  applyTabs,
+  dashPolyline,
   fmtMm,
+  isClosedRing,
+  kerfShapes,
   LASER_LAYER_ORDER,
   luid,
-  offsetShape,
+  shapeToPath,
   shapeToPolylines,
   type LaserDoc,
   type LaserLayerId,
@@ -14,6 +18,10 @@ import {
   type Pt,
 } from './model';
 import { dxfToShapes, exportDxf, type DxfOptions } from './dxf';
+
+// Пунктир и перемычки теперь считаются в model.ts — одном месте для экрана, DXF, SVG
+// и G-Code. Ре-экспорт оставлен ради совместимости со старыми импортами.
+export { dashPolyline } from './model';
 
 export interface SimSegment {
   from: Pt;
@@ -32,63 +40,6 @@ export interface LaserSimulation {
   rapidLengthMm: number;
   totalTimeSec: number;
   byLayer: Record<LaserLayerId, { count: number; lengthMm: number; timeSec: number }>;
-}
-
-/** Разбиение полилинии на пунктирные штрихи (для перфорации по линии сгиба и перемычек) */
-export function dashPolyline(pts: Pt[], dashLen: number, gapLen: number): Pt[][] {
-  if (pts.length < 2 || dashLen <= 0 || gapLen <= 0) return [pts];
-  const out: Pt[][] = [];
-  let cur: Pt[] = [{ ...pts[0] }];
-  let drawing = true;
-  let rem = dashLen;
-
-  for (let i = 0; i < pts.length - 1; i++) {
-    let a = pts[i];
-    const b = pts[i + 1];
-    let segLen = Math.hypot(b.x - a.x, b.y - a.y);
-    if (segLen < 1e-6) continue;
-    const ux = (b.x - a.x) / segLen;
-    const uy = (b.y - a.y) / segLen;
-
-    while (segLen > 1e-5) {
-      if (segLen <= rem) {
-        if (drawing) cur.push({ ...b });
-        rem -= segLen;
-        segLen = 0;
-        if (rem <= 1e-5) {
-          if (drawing && cur.length >= 2) out.push(cur);
-          drawing = !drawing;
-          rem = drawing ? dashLen : gapLen;
-          if (drawing) cur = [{ ...b }];
-        }
-      } else {
-        const mid = { x: a.x + ux * rem, y: a.y + uy * rem };
-        if (drawing) {
-          cur.push(mid);
-          if (cur.length >= 2) out.push(cur);
-        }
-        segLen -= rem;
-        a = mid;
-        drawing = !drawing;
-        rem = drawing ? dashLen : gapLen;
-        if (drawing) cur = [{ ...a }];
-      }
-    }
-  }
-  if (drawing && cur.length >= 2) out.push(cur);
-  return out;
-}
-
-/** Добавление удерживающих перемычек (holding tabs) на замкнутом контуре резки */
-function applyHoldingTabs(pts: Pt[], tabsCount: number, tabWidth = 1.8): Pt[][] {
-  if (!tabsCount || tabsCount <= 0 || pts.length < 2) return [pts];
-  let totalLen = 0;
-  for (let i = 0; i < pts.length - 1; i++) {
-    totalLen += Math.hypot(pts[i + 1].x - pts[i].x, pts[i + 1].y - pts[i].y);
-  }
-  const pitch = totalLen / tabsCount;
-  if (pitch <= tabWidth * 1.5) return [pts];
-  return dashPolyline(pts, pitch - tabWidth, tabWidth);
 }
 
 /** Упорядочивание полилиний методом ближайшего соседа (минимизация холостых переездов G0) */
@@ -162,7 +113,7 @@ export function buildLaserSimulation(doc: LaserDoc, rapidSpeedMmSec = 180): Lase
       // Компенсация толщины реза (kerf) для слоёв резки
       const targetShapes =
         cfg.kerf > 0 && (layerId === 'cut' || layerId === 'inner')
-          ? offsetShape(s, layerId === 'inner' ? -cfg.kerf / 2 : cfg.kerf / 2)
+          ? kerfShapes(s, layerId === 'inner' ? -cfg.kerf / 2 : cfg.kerf / 2)
           : [s];
 
       for (const ts of targetShapes) {
@@ -171,7 +122,7 @@ export function buildLaserSimulation(doc: LaserDoc, rapidSpeedMmSec = 180): Lase
           if (layerId === 'fold' && cfg.dashLen > 0 && cfg.gapLen > 0) {
             rawPolylines.push(...dashPolyline(pl, cfg.dashLen, cfg.gapLen));
           } else if (s.tabs && s.tabs > 0) {
-            rawPolylines.push(...applyHoldingTabs(pl, s.tabs, s.tabWidth ?? 1.8));
+            rawPolylines.push(...applyTabs(pl, s.tabs, s.tabWidth ?? 1.8, isClosedRing(pl)));
           } else {
             rawPolylines.push(pl);
           }
@@ -293,7 +244,7 @@ export function exportLaserGCode(doc: LaserDoc, opts: GCodeExportOptions = DEFAU
     for (const s of layerShapes) {
       const targetShapes =
         cfg.kerf > 0 && (layerId === 'cut' || layerId === 'inner')
-          ? offsetShape(s, layerId === 'inner' ? -cfg.kerf / 2 : cfg.kerf / 2)
+          ? kerfShapes(s, layerId === 'inner' ? -cfg.kerf / 2 : cfg.kerf / 2)
           : [s];
       for (const ts of targetShapes) {
         const pls = shapeToPolylines(ts);
@@ -301,7 +252,7 @@ export function exportLaserGCode(doc: LaserDoc, opts: GCodeExportOptions = DEFAU
           if (layerId === 'fold' && cfg.dashLen > 0 && cfg.gapLen > 0) {
             rawPolylines.push(...dashPolyline(pl, cfg.dashLen, cfg.gapLen));
           } else if (s.tabs && s.tabs > 0) {
-            rawPolylines.push(...applyHoldingTabs(pl, s.tabs, s.tabWidth ?? 1.8));
+            rawPolylines.push(...applyTabs(pl, s.tabs, s.tabWidth ?? 1.8, isClosedRing(pl)));
           } else {
             rawPolylines.push(pl);
           }
@@ -415,17 +366,191 @@ export function exportLaserDxf(doc: LaserDoc, opts?: Partial<DxfOptions>): strin
 
 // ---------------- Импорт векторных файлов SVG и DXF ----------------
 
-function parseSvgPathData(d: string, docH: number): { nodes: PathNode[]; closed: boolean }[] {
+/** Матрица SVG: [a b c d e f], x' = a·x + c·y + e, y' = b·x + d·y + f. */
+type SvgMat = [number, number, number, number, number, number];
+const SVG_IDENTITY: SvgMat = [1, 0, 0, 1, 0, 0];
+const DEG = Math.PI / 180;
+
+/** Композиция матриц: сначала применяется n, потом m. */
+const mulMat = (m: SvgMat, n: SvgMat): SvgMat => [
+  m[0] * n[0] + m[2] * n[1],
+  m[1] * n[0] + m[3] * n[1],
+  m[0] * n[2] + m[2] * n[3],
+  m[1] * n[2] + m[3] * n[3],
+  m[0] * n[4] + m[2] * n[5] + m[4],
+  m[1] * n[4] + m[3] * n[5] + m[5],
+];
+
+const applyMat = (m: SvgMat, x: number, y: number): Pt => ({
+  x: m[0] * x + m[2] * y + m[4],
+  y: m[1] * x + m[3] * y + m[5],
+});
+
+/** Чистый перенос: примитив можно оставить «прямоугольником» или «окружностью». */
+const isTranslate = (m: SvgMat): boolean =>
+  Math.abs(m[0] - 1) < 1e-9 && Math.abs(m[3] - 1) < 1e-9
+  && Math.abs(m[1]) < 1e-9 && Math.abs(m[2]) < 1e-9;
+
+/**
+ * Разбор transform="…": matrix/translate/scale/rotate/skewX/skewY,
+ * несколько функций подряд. Без этого импорт из Inkscape/CorelDRAW приезжает
+ * не туда: группы там почти всегда сдвинуты или повёрнуты.
+ */
+export function parseSvgTransform(value: string): SvgMat {
+  let out: SvgMat = SVG_IDENTITY;
+  if (!value) return out;
+  const re = /(matrix|translate|scale|rotate|skewX|skewY)\s*\(([^)]*)\)/gi;
+  let m: RegExpExecArray | null;
+  while ((m = re.exec(value)) !== null) {
+    const fn = m[1].toLowerCase();
+    const n = (m[2].match(/[-+]?(?:\d+\.?\d*|\.\d+)(?:e[-+]?\d+)?/gi) ?? []).map(Number);
+    let t: SvgMat = SVG_IDENTITY;
+    if (fn === 'matrix' && n.length >= 6) {
+      t = [n[0], n[1], n[2], n[3], n[4], n[5]];
+    } else if (fn === 'translate') {
+      t = [1, 0, 0, 1, n[0] || 0, n[1] || 0];
+    } else if (fn === 'scale') {
+      const sx = n.length ? n[0] : 1;
+      t = [sx, 0, 0, n.length > 1 ? n[1] : sx, 0, 0];
+    } else if (fn === 'rotate') {
+      const a = (n[0] || 0) * DEG;
+      const c = Math.cos(a);
+      const s = Math.sin(a);
+      t = [c, s, -s, c, 0, 0];
+      if (n.length >= 3) {
+        // rotate(a, cx, cy) = T(cx,cy) · R(a) · T(-cx,-cy)
+        t = mulMat(mulMat([1, 0, 0, 1, n[1], n[2]], t), [1, 0, 0, 1, -n[1], -n[2]]);
+      }
+    } else if (fn === 'skewx') {
+      t = [1, 0, Math.tan((n[0] || 0) * DEG), 1, 0, 0];
+    } else if (fn === 'skewy') {
+      t = [1, Math.tan((n[0] || 0) * DEG), 0, 1, 0, 0];
+    }
+    out = mulMat(out, t);
+  }
+  return out;
+}
+
+/**
+ * Эллиптическая дуга SVG (команда A) → кубические Безье по алгоритму из
+ * спецификации SVG (F.6). Дуга делится на сегменты не больше 90°, каждый
+ * аппроксимируется кубикой с коэффициентом 4/3·tan(Δθ/4).
+ */
+export function arcToCubics(
+  x1: number, y1: number, rxIn: number, ryIn: number, rotDeg: number,
+  largeArc: boolean, sweep: boolean, x2: number, y2: number
+): [Pt, Pt, Pt, Pt][] {
+  const out: [Pt, Pt, Pt, Pt][] = [];
+  if ((Math.abs(x1 - x2) < 1e-12 && Math.abs(y1 - y2) < 1e-12) || !rxIn || !ryIn) return out;
+  let rx = Math.abs(rxIn);
+  let ry = Math.abs(ryIn);
+  const phi = rotDeg * DEG;
+  const cosPhi = Math.cos(phi);
+  const sinPhi = Math.sin(phi);
+  const dx2 = (x1 - x2) / 2;
+  const dy2 = (y1 - y2) / 2;
+  const x1p = cosPhi * dx2 + sinPhi * dy2;
+  const y1p = -sinPhi * dx2 + cosPhi * dy2;
+
+  // радиусов может не хватить — масштабируем их (SVG F.6.6)
+  const lambda = (x1p * x1p) / (rx * rx) + (y1p * y1p) / (ry * ry);
+  if (lambda > 1) {
+    const k = Math.sqrt(lambda);
+    rx *= k;
+    ry *= k;
+  }
+  const sign = largeArc === sweep ? -1 : 1;
+  const num = rx * rx * ry * ry - rx * rx * y1p * y1p - ry * ry * x1p * x1p;
+  const den = rx * rx * y1p * y1p + ry * ry * x1p * x1p;
+  const co = den > 1e-12 ? sign * Math.sqrt(Math.max(0, num / den)) : 0;
+  const cxp = co * (rx * y1p) / ry;
+  const cyp = co * (-ry * x1p) / rx;
+  const cx = cosPhi * cxp - sinPhi * cyp + (x1 + x2) / 2;
+  const cy = sinPhi * cxp + cosPhi * cyp + (y1 + y2) / 2;
+
+  const angle = (ux: number, uy: number, vx: number, vy: number): number => {
+    const d = Math.hypot(ux, uy) * Math.hypot(vx, vy) || 1;
+    let a = Math.acos(Math.max(-1, Math.min(1, (ux * vx + uy * vy) / d)));
+    if (ux * vy - uy * vx < 0) a = -a;
+    return a;
+  };
+  const ux = (x1p - cxp) / rx;
+  const uy = (y1p - cyp) / ry;
+  const vx = (-x1p - cxp) / rx;
+  const vy = (-y1p - cyp) / ry;
+  const theta1 = angle(1, 0, ux, uy);
+  let dtheta = angle(ux, uy, vx, vy);
+  if (!sweep && dtheta > 0) dtheta -= 2 * Math.PI;
+  else if (sweep && dtheta < 0) dtheta += 2 * Math.PI;
+
+  const segs = Math.max(1, Math.ceil(Math.abs(dtheta) / (Math.PI / 2)));
+  const delta = dtheta / segs;
+  const k = (4 / 3) * Math.tan(delta / 4);
+  const point = (t: number): Pt => {
+    const xr = rx * Math.cos(t);
+    const yr = ry * Math.sin(t);
+    return { x: cosPhi * xr - sinPhi * yr + cx, y: sinPhi * xr + cosPhi * yr + cy };
+  };
+  const tangent = (t: number): Pt => {
+    const dxr = -rx * Math.sin(t);
+    const dyr = ry * Math.cos(t);
+    return { x: cosPhi * dxr - sinPhi * dyr, y: sinPhi * dxr + cosPhi * dyr };
+  };
+  for (let n = 0; n < segs; n++) {
+    const t0 = theta1 + n * delta;
+    const t1 = t0 + delta;
+    const p0 = point(t0);
+    const p3 = point(t1);
+    const d0 = tangent(t0);
+    const d1 = tangent(t1);
+    out.push([
+      p0,
+      { x: p0.x + k * d0.x, y: p0.y + k * d0.y },
+      { x: p3.x - k * d1.x, y: p3.y - k * d1.y },
+      p3,
+    ]);
+  }
+  return out;
+}
+
+/**
+ * Разбор атрибута d="…" в пространстве SVG (Y вниз, без переворота).
+ * Поддержаны все команды контура: M L H V C S Q T A Z, строчные — относительные.
+ * Квадратичные (Q/T) переводятся в кубические точно, дуги (A) — кусками Безье.
+ */
+export function parseSvgPathData(d: string): { nodes: PathNode[]; closed: boolean }[] {
   const tokens = d.match(/[a-zA-Z]|[-+]?(?:\d+\.?\d*|\.\d+)(?:e[-+]?\d+)?/g) ?? [];
   const subpaths: { nodes: PathNode[]; closed: boolean }[] = [];
   let cur: PathNode[] = [];
-  let cx = 0, cy = 0;
-  let startX = 0, startY = 0;
+  let cx = 0;
+  let cy = 0;
+  let startX = 0;
+  let startY = 0;
   let i = 0;
   let cmd = 'M';
+  let prev = '';
+  // последние управляющие точки для гладких команд S и T
+  let lastC2: Pt | null = null;
+  let lastQ: Pt | null = null;
 
-  const nextNum = () => Number(tokens[i++]);
-  const toY = (svgY: number) => Math.max(0, docH - svgY);
+  const nextNum = (): number => {
+    const v = Number(tokens[i++]);
+    return Number.isFinite(v) ? v : 0;
+  };
+  /** Кубический сегмент: рычаг предыдущего узла наружу, у нового узла — входящий. */
+  const pushCubic = (c1: Pt, c2: Pt, end: Pt) => {
+    if (cur.length > 0) {
+      cur[cur.length - 1].cp2x = c1.x;
+      cur[cur.length - 1].cp2y = c1.y;
+    }
+    cur.push({ x: end.x, y: end.y, cp1x: c2.x, cp1y: c2.y, smooth: true });
+    cx = end.x;
+    cy = end.y;
+  };
+  const flush = (closed: boolean) => {
+    if (cur.length >= 2) subpaths.push({ nodes: cur, closed });
+    cur = [];
+  };
 
   while (i < tokens.length) {
     const tok = tokens[i];
@@ -433,64 +558,169 @@ function parseSvgPathData(d: string, docH: number): { nodes: PathNode[]; closed:
       cmd = tok;
       i++;
     }
+    const rel = cmd === cmd.toLowerCase();
+    const abs = (x: number, y: number): Pt => (rel ? { x: cx + x, y: cy + y } : { x, y });
+
     if (cmd === 'M' || cmd === 'm') {
-      if (cur.length >= 2) subpaths.push({ nodes: cur, closed: false });
-      cur = [];
-      const x = nextNum();
-      const y = nextNum();
-      cx = cmd === 'm' ? cx + x : x;
-      cy = cmd === 'm' ? cy + y : y;
+      flush(false);
+      const p = abs(nextNum(), nextNum());
+      cx = p.x;
+      cy = p.y;
       startX = cx;
       startY = cy;
-      cur.push({ x: cx, y: toY(cy) });
-      cmd = cmd === 'm' ? 'l' : 'L';
+      cur.push({ x: cx, y: cy });
+      cmd = rel ? 'l' : 'L';
     } else if (cmd === 'L' || cmd === 'l') {
-      const x = nextNum();
-      const y = nextNum();
-      cx = cmd === 'l' ? cx + x : x;
-      cy = cmd === 'l' ? cy + y : y;
-      cur.push({ x: cx, y: toY(cy) });
+      const p = abs(nextNum(), nextNum());
+      cx = p.x;
+      cy = p.y;
+      if (!cur.length) cur.push({ x: startX, y: startY });
+      cur.push({ x: cx, y: cy });
     } else if (cmd === 'H' || cmd === 'h') {
-      const x = nextNum();
-      cx = cmd === 'h' ? cx + x : x;
-      cur.push({ x: cx, y: toY(cy) });
+      cx = rel ? cx + nextNum() : nextNum();
+      cur.push({ x: cx, y: cy });
     } else if (cmd === 'V' || cmd === 'v') {
-      const y = nextNum();
-      cy = cmd === 'v' ? cy + y : y;
-      cur.push({ x: cx, y: toY(cy) });
+      cy = rel ? cy + nextNum() : nextNum();
+      cur.push({ x: cx, y: cy });
     } else if (cmd === 'C' || cmd === 'c') {
-      const x1 = nextNum(), y1 = nextNum();
-      const x2 = nextNum(), y2 = nextNum();
-      const x = nextNum(), y = nextNum();
-      const cp1x = cmd === 'c' ? cx + x1 : x1;
-      const cp1y = cmd === 'c' ? cy + y1 : y1;
-      const cp2x = cmd === 'c' ? cx + x2 : x2;
-      const cp2y = cmd === 'c' ? cy + y2 : y2;
-      cx = cmd === 'c' ? cx + x : x;
-      cy = cmd === 'c' ? cy + y : y;
-      if (cur.length > 0) {
-        cur[cur.length - 1].cp2x = cp1x;
-        cur[cur.length - 1].cp2y = toY(cp1y);
+      const c1 = abs(nextNum(), nextNum());
+      const c2 = abs(nextNum(), nextNum());
+      const p = abs(nextNum(), nextNum());
+      pushCubic(c1, c2, p);
+      lastC2 = c2;
+    } else if (cmd === 'S' || cmd === 's') {
+      // гладкая кубика: первый рычаг — отражение последнего второго рычага
+      const c1: Pt = (lastC2 && /[CcSs]/.test(prev))
+        ? { x: 2 * cx - lastC2.x, y: 2 * cy - lastC2.y }
+        : { x: cx, y: cy };
+      const c2 = abs(nextNum(), nextNum());
+      const p = abs(nextNum(), nextNum());
+      pushCubic(c1, c2, p);
+      lastC2 = c2;
+    } else if (cmd === 'Q' || cmd === 'q') {
+      const q = abs(nextNum(), nextNum());
+      const p = abs(nextNum(), nextNum());
+      // квадратичная → кубическая: управляющая точка на 2/3 пути к вершине
+      pushCubic(
+        { x: cx + (q.x - cx) * 2 / 3, y: cy + (q.y - cy) * 2 / 3 },
+        { x: p.x + (q.x - p.x) * 2 / 3, y: p.y + (q.y - p.y) * 2 / 3 },
+        p,
+      );
+      lastQ = q;
+    } else if (cmd === 'T' || cmd === 't') {
+      const q: Pt = (lastQ && /[QqTt]/.test(prev))
+        ? { x: 2 * cx - lastQ.x, y: 2 * cy - lastQ.y }
+        : { x: cx, y: cy };
+      const p = abs(nextNum(), nextNum());
+      pushCubic(
+        { x: cx + (q.x - cx) * 2 / 3, y: cy + (q.y - cy) * 2 / 3 },
+        { x: p.x + (q.x - p.x) * 2 / 3, y: p.y + (q.y - p.y) * 2 / 3 },
+        p,
+      );
+      lastQ = q;
+    } else if (cmd === 'A' || cmd === 'a') {
+      const rx = nextNum();
+      const ry = nextNum();
+      const rot = nextNum();
+      const large = nextNum() !== 0;
+      const sweep = nextNum() !== 0;
+      const p = abs(nextNum(), nextNum());
+      const cubics = arcToCubics(cx, cy, rx, ry, rot, large, sweep, p.x, p.y);
+      if (!cubics.length) {
+        cur.push({ x: p.x, y: p.y });
+        cx = p.x;
+        cy = p.y;
+      } else {
+        for (const [p0, c1, c2, p3] of cubics) {
+          if (!cur.length) cur.push({ x: p0.x, y: p0.y });
+          pushCubic(c1, c2, p3);
+        }
       }
-      cur.push({ x: cx, y: toY(cy), cp1x: cp2x, cp1y: toY(cp2y), smooth: true });
     } else if (cmd === 'Z' || cmd === 'z') {
-      if (cur.length >= 2) {
-        subpaths.push({ nodes: cur, closed: true });
-        cur = [];
-      }
+      flush(true);
       cx = startX;
       cy = startY;
+      cur = [];
     } else {
       i++;
+      continue;
+    }
+    if (!/[Zz]/.test(cmd)) {
+      if (!/[CcSs]/.test(cmd)) lastC2 = null;
+      if (!/[QqTt]/.test(cmd)) lastQ = null;
+    }
+    prev = cmd;
+  }
+  flush(false);
+  return subpaths;
+}
+
+/** Узлы и рычаги из пространства SVG в мир: матрица группы, затем переворот Y. */
+function xformNodes(nodes: PathNode[], m: SvgMat, flipH: number): PathNode[] {
+  const pt = (x: number, y: number): Pt => {
+    const q = applyMat(m, x, y);
+    return { x: q.x, y: flipH - q.y };
+  };
+  return nodes.map((n) => {
+    const p = pt(n.x, n.y);
+    const out: PathNode = { x: p.x, y: p.y };
+    if (n.cp1x !== undefined && n.cp1y !== undefined) {
+      const c = pt(n.cp1x, n.cp1y);
+      out.cp1x = c.x;
+      out.cp1y = c.y;
+    }
+    if (n.cp2x !== undefined && n.cp2y !== undefined) {
+      const c = pt(n.cp2x, n.cp2y);
+      out.cp2x = c.x;
+      out.cp2y = c.y;
+    }
+    if (n.smooth) out.smooth = true;
+    return out;
+  });
+}
+
+/**
+ * Высота области SVG в миллиметрах: по viewBox, затем по height="…мм/см/дюйм/pt".
+ * Переворот Y делается относительно неё, а не относительно высоты нашего листа —
+ * иначе чужой файл приезжает смещённым или обрезанным по низу.
+ */
+export function svgHeightMm(svg: string, fallback: number): number {
+  const head = /<svg\b[^>]*>/i.exec(svg)?.[0] ?? '';
+  const vb = /viewBox\s*=\s*["']\s*([-+.\d\seE,]+)["']/i.exec(head);
+  if (vb) {
+    const n = (vb[1].match(/[-+]?(?:\d+\.?\d*|\.\d+)(?:e[-+]?\d+)?/gi) ?? []).map(Number);
+    if (n.length >= 4 && Number.isFinite(n[3]) && n[3] > 0) return n[3];
+  }
+  const h = /\bheight\s*=\s*["']\s*([-+.\d]+)\s*(mm|cm|in|pt|px|pc)?\s*["']/i.exec(head);
+  if (h) {
+    const v = parseFloat(h[1]);
+    if (Number.isFinite(v) && v > 0) {
+      const unit = (h[2] ?? '').toLowerCase();
+      if (unit === 'cm') return v * 10;
+      if (unit === 'in') return v * 25.4;
+      if (unit === 'pt') return v * 25.4 / 72;
+      if (unit === 'pc') return v * 25.4 / 6;
+      if (unit === 'px') return v * 25.4 / 96;
+      return v; // мм или единицы пользователя — считаем миллиметрами
     }
   }
-  if (cur.length >= 2) subpaths.push({ nodes: cur, closed: false });
-  return subpaths;
+  return fallback;
+}
+
+/** Окружность/эллипс/дуга SVG → узлы Безье (та же аппроксимация, что и в редакторе). */
+function ellipseNodes(cx: number, cy: number, rx: number, ry: number): PathNode[] {
+  const tmp: LaserShape = {
+    id: 'svg-ellipse', kind: 'ellipse', layer: 'cut', name: 'tmp',
+    cx, cy, rx, ry, rot: 0, startAngle: 0, endAngle: 360, filled: false,
+  };
+  return shapeToPath(tmp)[0]?.nodes ?? [];
 }
 
 export function importVectorFile(content: string, filename: string, docH = 200): LaserShape[] {
   const lower = filename.toLowerCase();
-  if (lower.endsWith('.dxf') || content.includes('ENTITIES')) {
+  // DXF узнаём по имени или по разделу ENTITIES на отдельной строке —
+  // слово в комментарии SVG не должно переключать парсер
+  if (lower.endsWith('.dxf') || /^\s*ENTITIES\s*$/mi.test(content)) {
     return parseDxfContent(content);
   }
   return parseSvgContent(content, docH);
@@ -498,8 +728,8 @@ export function importVectorFile(content: string, filename: string, docH = 200):
 
 /**
  * Чтение SVG без DOM-парсера: теги сканируются по порядку, атрибуты группы <g>
- * наследуются вложенными фигурами. Слой определяется по id группы
- * (id="layer-fold"), по data-layer или по пунктиру stroke-dasharray (биговка).
+ * (слой и transform) наследуются вложенными фигурами. Слой определяется по id
+ * группы (id="layer-fold"), по data-layer или по пунктиру stroke-dasharray (биговка).
  */
 function parseSvgContent(svg: string, docH: number): LaserShape[] {
   const shapes: LaserShape[] = [];
@@ -511,119 +741,122 @@ function parseSvgContent(svg: string, docH: number): LaserShape[] {
     const v = parseFloat(attr(attrs, name));
     return Number.isFinite(v) ? v : def;
   };
-  const layerOf = (attrs: string): LaserLayerId => {
+  /**
+   * Слой, заданный явно: id="layer-fold", data-layer="fold" или пунктир
+   * stroke-dasharray (биговка). null — слой не указан, берём у группы выше.
+   */
+  const layerOf = (attrs: string): LaserLayerId | null => {
     const id = attr(attrs, 'id').toLowerCase();
     const known = id.match(/layer-(cut|inner|fold|score|engrave|guide)/);
     if (known) return known[1] as LaserLayerId;
     const dataLayer = attr(attrs, 'data-layer').toLowerCase();
     if (/^(cut|inner|fold|score|engrave|guide)$/.test(dataLayer)) return dataLayer as LaserLayerId;
     if (attr(attrs, 'stroke-dasharray')) return 'fold';
-    return 'cut';
+    return null;
   };
+  const flipH = svgHeightMm(svg, docH);
 
-  // Стек групп: каждая фигура берёт слой ближайшей группы, где он задан
-  const stack: (LaserLayerId | null)[] = [];
+  // Стек групп: фигура берёт слой и матрицу ближайших групп, где они заданы
+  const layerStack: (LaserLayerId | null)[] = [];
+  const matStack: SvgMat[] = [];
   const tagRe = /<(\/?)(g|rect|circle|ellipse|line|polyline|polygon|path)\b([^>]*?)(\/?)>/gi;
   let m: RegExpExecArray | null;
+
+  /** Кривая из узлов SVG-пространства: матрица, переворот Y, слой и имя. */
+  const emit = (nodes: PathNode[], closed: boolean, mat: SvgMat, layer: LaserLayerId, name: string, dataName: string) => {
+    if (nodes.length < 2) return;
+    shapes.push({
+      id: luid('svg'),
+      kind: 'path',
+      layer,
+      name: dataName || name,
+      nodes: xformNodes(nodes, mat, flipH),
+      closed,
+      filled: false,
+    });
+  };
+
   while ((m = tagRe.exec(svg)) !== null) {
     const closing = m[1] === '/';
     const tag = m[2].toLowerCase();
     const attrs = m[3];
 
     if (tag === 'g') {
-      if (closing) stack.pop();
-      else stack.push(layerOf(attrs));
+      if (closing) {
+        layerStack.pop();
+        matStack.pop();
+      } else {
+        layerStack.push(layerOf(attrs));
+        const parent = matStack[matStack.length - 1] ?? SVG_IDENTITY;
+        matStack.push(mulMat(parent, parseSvgTransform(attr(attrs, 'transform'))));
+      }
       continue;
     }
     if (closing) continue;
 
     const own = layerOf(attrs);
-    const inherited = [...stack].reverse().find((x) => x !== null && x !== undefined) ?? null;
-    const layer: LaserLayerId = own !== 'cut' ? own : (inherited ?? 'cut');
+    const inherited = [...layerStack].reverse().find((x) => x !== null && x !== undefined) ?? null;
+    const layer: LaserLayerId = own ?? inherited ?? 'cut';
+    const parentMat = matStack[matStack.length - 1] ?? SVG_IDENTITY;
+    const mat = mulMat(parentMat, parseSvgTransform(attr(attrs, 'transform')));
+    const dataName = attr(attrs, 'data-name');
 
     if (tag === 'rect') {
       const w = numAttr(attrs, 'width');
       const h = numAttr(attrs, 'height');
-      if (w > 0 && h > 0) {
-        const ySvg = numAttr(attrs, 'y');
+      if (w <= 0 || h <= 0) continue;
+      const x = numAttr(attrs, 'x');
+      const y = numAttr(attrs, 'y');
+      if (isTranslate(mat)) {
+        // простой перенос: оставляем редактируемый прямоугольник
         shapes.push({
-          id: luid('svg'),
-          kind: 'rect',
-          layer,
-          name: attr(attrs, 'data-name') || 'Импорт прямоугольник',
-          x: numAttr(attrs, 'x'),
-          y: Math.max(0, docH - ySvg - h),
-          w,
-          h,
-          rx: numAttr(attrs, 'rx'),
-          rot: 0,
-          filled: false,
+          id: luid('svg'), kind: 'rect', layer,
+          name: dataName || 'Импорт прямоугольник',
+          x: x + mat[4], y: flipH - (y + mat[5]) - h, w, h,
+          rx: numAttr(attrs, 'rx'), rot: 0, filled: false,
         });
+      } else {
+        const rx = Math.min(numAttr(attrs, 'rx'), w / 2, h / 2);
+        const corners: PathNode[] = rx > 0
+          ? shapeToPath({
+            id: 'svg-rect', kind: 'rect', layer: 'cut', name: 'tmp', x, y, w, h, rx, rot: 0, filled: false,
+          } as LaserShape)[0]?.nodes ?? []
+          : [{ x, y }, { x: x + w, y }, { x: x + w, y: y + h }, { x, y: y + h }];
+        emit(corners, true, mat, layer, 'Импорт прямоугольник', dataName);
       }
     } else if (tag === 'circle' || tag === 'ellipse') {
       const r = numAttr(attrs, 'r');
       const rx = tag === 'circle' ? r : numAttr(attrs, 'rx');
       const ry = tag === 'circle' ? r : numAttr(attrs, 'ry');
-      if (rx > 0 && ry > 0) {
+      if (rx <= 0 || ry <= 0) continue;
+      const cx = numAttr(attrs, 'cx');
+      const cy = numAttr(attrs, 'cy');
+      if (isTranslate(mat)) {
         shapes.push({
-          id: luid('svg'),
-          kind: 'ellipse',
-          layer,
-          name: 'Импорт окружность',
-          cx: numAttr(attrs, 'cx'),
-          cy: Math.max(0, docH - numAttr(attrs, 'cy')),
-          rx,
-          ry,
-          rot: 0,
-          startAngle: 0,
-          endAngle: 360,
-          filled: false,
+          id: luid('svg'), kind: 'ellipse', layer,
+          name: dataName || 'Импорт окружность',
+          cx: cx + mat[4], cy: flipH - (cy + mat[5]), rx, ry,
+          rot: 0, startAngle: 0, endAngle: 360, filled: false,
         });
+      } else {
+        emit(ellipseNodes(cx, cy, rx, ry), true, mat, layer, 'Импорт окружность', dataName);
       }
     } else if (tag === 'line') {
-      shapes.push({
-        id: luid('svg'),
-        kind: 'path',
-        layer,
-        name: 'Импорт линия',
-        nodes: [
-          { x: numAttr(attrs, 'x1'), y: Math.max(0, docH - numAttr(attrs, 'y1')) },
-          { x: numAttr(attrs, 'x2'), y: Math.max(0, docH - numAttr(attrs, 'y2')) },
-        ],
-        closed: false,
-        filled: false,
-      });
+      emit([
+        { x: numAttr(attrs, 'x1'), y: numAttr(attrs, 'y1') },
+        { x: numAttr(attrs, 'x2'), y: numAttr(attrs, 'y2') },
+      ], false, mat, layer, 'Импорт линия', dataName);
     } else if (tag === 'polyline' || tag === 'polygon') {
       const nums = attr(attrs, 'points').trim().split(/[\s,]+/).map(Number).filter(Number.isFinite);
       const nodes: PathNode[] = [];
-      for (let i = 0; i + 1 < nums.length; i += 2) {
-        nodes.push({ x: nums[i], y: Math.max(0, docH - nums[i + 1]) });
-      }
-      if (nodes.length >= 2) {
-        shapes.push({
-          id: luid('svg'),
-          kind: 'path',
-          layer,
-          name: tag === 'polygon' ? 'Импорт полигон' : 'Импорт ломаная',
-          nodes,
-          closed: tag === 'polygon',
-          filled: false,
-        });
-      }
+      for (let i2 = 0; i2 + 1 < nums.length; i2 += 2) nodes.push({ x: nums[i2], y: nums[i2 + 1] });
+      emit(nodes, tag === 'polygon', mat, layer,
+        tag === 'polygon' ? 'Импорт полигон' : 'Импорт ломаная', dataName);
     } else if (tag === 'path') {
       const d = attr(attrs, 'd');
-      if (d) {
-        for (const sp of parseSvgPathData(d, docH)) {
-          shapes.push({
-            id: luid('svg'),
-            kind: 'path',
-            layer,
-            name: attr(attrs, 'data-name') || 'Импорт контур',
-            nodes: sp.nodes,
-            closed: sp.closed,
-            filled: false,
-          });
-        }
+      if (!d) continue;
+      for (const sp of parseSvgPathData(d)) {
+        emit(sp.nodes, sp.closed, mat, layer, 'Импорт контур', dataName);
       }
     }
   }

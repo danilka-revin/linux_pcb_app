@@ -3,6 +3,8 @@
 // Система координат — миллиметры листа, Y вверх (как у станка); экранная Y вниз.
 
 import {
+  applyTabs,
+  isClosedRing,
   shapeToPolylines,
   type LaserDoc,
   type LaserLayerId,
@@ -117,19 +119,31 @@ export function drawLaserGrid(
   const y0 = Math.floor(toWorld(view, 0, h).y / grid.step) * grid.step;
 
   ctx.lineWidth = 1;
-  let i = 0;
-  for (let x = x0; x <= x1 + 1e-6; x += grid.step, i++) {
+
+  if (grid.style === 'dots') {
+    // Точки вместо линий: узел в каждом пересечении, крупный — больше и ярче.
+    // Мелкие узлы рисуем только когда шаг достаточно велик, иначе холст сплошь в крапинку.
+    const minor = stepPx >= 7;
+    for (let x = x0; x <= x1 + 1e-6; x += grid.step) {
+      const majorX = Math.round(x / grid.step) % majorEvery === 0;
+      if (!majorX && !minor) continue;
+      const sx = Math.round(toScreen(view, x, 0).px) - 0.5;
+      for (let y = y0; y <= y1 + 1e-6; y += grid.step) {
+        const majorY = Math.round(y / grid.step) % majorEvery === 0;
+        if (!majorY && !minor) continue;
+        const big = majorX && majorY;
+        const sy = Math.round(toScreen(view, 0, y).py) - 0.5;
+        ctx.fillStyle = big ? theme.gridMajor : theme.grid;
+        ctx.fillRect(sx, sy, big ? 2 : 1, big ? 2 : 1);
+      }
+    }
+    return;
+  }
+
+  for (let x = x0; x <= x1 + 1e-6; x += grid.step) {
     const { px } = toScreen(view, x, 0);
     const major = Math.round(x / grid.step) % majorEvery === 0;
     ctx.strokeStyle = major ? theme.gridMajor : theme.grid;
-    if (grid.style === 'dots' && !major) {
-      for (let y = y0; y <= y1 + 1e-6; y += grid.step * majorEvery) {
-        const q = toScreen(view, x, y);
-        ctx.fillStyle = theme.grid;
-        ctx.fillRect(q.px - 0.5, q.py - 0.5, 1, 1);
-      }
-      continue;
-    }
     ctx.beginPath();
     ctx.moveTo(Math.round(px) + 0.5, 0);
     ctx.lineTo(Math.round(px) + 0.5, h);
@@ -139,7 +153,6 @@ export function drawLaserGrid(
     const { py } = toScreen(view, 0, y);
     const major = Math.round(y / grid.step) % majorEvery === 0;
     ctx.strokeStyle = major ? theme.gridMajor : theme.grid;
-    if (grid.style === 'dots' && !major) continue;
     ctx.beginPath();
     ctx.moveTo(0, Math.round(py) + 0.5);
     ctx.lineTo(w, Math.round(py) + 0.5);
@@ -190,35 +203,31 @@ export function drawLaserSheet(
   ctx.fillText(`${doc.w} × ${doc.h} мм · ${doc.materialThickness} мм`, tl.px + 8, tl.py + 6);
 }
 
-/** Маркеры перемычек (tabs) на контуре — маленькие квадраты в точках удержания */
+/**
+ * Маркеры перемычек (tabs) на контуре — маленькие квадраты в местах недореза.
+ * Позиции берутся из той же функции, что режет контур в DXF и G-Code, поэтому
+ * маркеры на экране совпадают с реальными перемычками детали.
+ */
 function drawTabs(ctx: CanvasRenderingContext2D, pts: Pt[], count: number, tabWidth: number, view: LaserView, theme: LaserTheme): void {
   if (!count || pts.length < 2) return;
-  let total = 0;
-  for (let i = 0; i < pts.length - 1; i++) total += Math.hypot(pts[i + 1].x - pts[i].x, pts[i + 1].y - pts[i].y);
-  const pitch = total / count;
-  let acc = 0;
-  let placed = 0;
-  for (let i = 0; i < pts.length - 1 && placed < count; i++) {
-    const a = pts[i], b = pts[i + 1];
-    const segLen = Math.hypot(b.x - a.x, b.y - a.y);
-    if (segLen < 1e-6) continue;
-    while (acc + segLen >= pitch * (placed + 0.5) && placed < count) {
-      const target = pitch * (placed + 0.5);
-      const t = (target - acc) / segLen;
-      if (t >= 0 && t <= 1) {
-        const p = toScreen(view, a.x + (b.x - a.x) * t, a.y + (b.y - a.y) * t);
-        const r = Math.max(2, (tabWidth / 2) * view.s);
-        ctx.fillStyle = theme.handleEdge;
-        ctx.strokeStyle = theme.sel;
-        ctx.lineWidth = 1.2;
-        ctx.beginPath();
-        ctx.rect(p.px - r, p.py - r, r * 2, r * 2);
-        ctx.fill();
-        ctx.stroke();
-        placed++;
-      } else break;
-    }
-    acc += segLen;
+  const pieces = applyTabs(pts, count, tabWidth, isClosedRing(pts));
+  if (pieces.length < 2) return;
+  const gaps: [Pt, Pt][] = [];
+  for (let i = 0; i < pieces.length - 1; i++) {
+    const a = pieces[i][pieces[i].length - 1];
+    const b = pieces[i + 1][0];
+    if (a && b) gaps.push([a, b]);
+  }
+  for (const [a, b] of gaps) {
+    const p = toScreen(view, (a.x + b.x) / 2, (a.y + b.y) / 2);
+    const r = Math.max(2, (tabWidth / 2) * view.s);
+    ctx.fillStyle = theme.handleEdge;
+    ctx.strokeStyle = theme.sel;
+    ctx.lineWidth = 1.2;
+    ctx.beginPath();
+    ctx.rect(p.px - r, p.py - r, r * 2, r * 2);
+    ctx.fill();
+    ctx.stroke();
   }
 }
 
@@ -226,6 +235,8 @@ export interface DrawShapeOpts {
   selected?: boolean;
   draft?: boolean;
   ghost?: boolean;
+  /** Цвет листа — подложка подписи размерной линии (иначе в светлой теме она тёмная). */
+  sheetBg?: string;
 }
 
 /** Отрисовка одной фигуры в цвете её слоя */
@@ -309,8 +320,10 @@ export function drawLaserShape(
       const mx = (a.px + b.px) / 2;
       const my = (a.py + b.py) / 2;
       const tw = ctx.measureText(label).width + 8;
-      ctx.fillStyle = opts.ghost ? 'transparent' : '#0b0e13';
-      ctx.globalAlpha = 0.75;
+      // drawLaserShape тему не получает: цвет подложки передаёт вызывающий код
+      const labelBg = opts.sheetBg ?? LASER_THEME.dark.sheet;
+      ctx.fillStyle = opts.ghost ? 'transparent' : labelBg;
+      ctx.globalAlpha = opts.ghost ? 1 : 0.78;
       ctx.fillRect(mx - tw / 2, my - 15, tw, 14);
       ctx.globalAlpha = 1;
       ctx.fillStyle = color;

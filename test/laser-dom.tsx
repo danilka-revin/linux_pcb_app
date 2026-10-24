@@ -1,5 +1,5 @@
 // Лазерный редактор в jsdom: переключение режимов, генератор развёрток,
-// рисование мышью, выделение, автораскладка, экспорт и симуляция.
+// рисование мышью, выделение, автораскладка, усечение кривых, экспорт и симуляция.
 // Настоящие обработчики LaserEditor; отрисовка canvas заменена заглушкой.
 import assert from 'node:assert/strict';
 import { JSDOM } from 'jsdom';
@@ -131,9 +131,14 @@ await settle();
   assert(tabs[2].textContent?.includes('скоро'), 'у 3D-режима метка «скоро»');
 
   const dock = [...win.document.querySelectorAll('.tool-dock .dock-btn')];
-  assert.equal(dock.length, 10, `инструментов в доке: ${dock.length}`);
+  assert.equal(dock.length, 11, `инструментов в доке: ${dock.length}`);
   assert(dock.some((b) => (b.getAttribute('title') ?? '').startsWith('Форма')), 'инструмент «Форма» (F10)');
   assert(dock.some((b) => (b.getAttribute('title') ?? '').startsWith('Перо')), 'инструмент «Перо»');
+  const dockTrim = win.document.querySelector('.tool-dock [data-tool-id="trim"]');
+  assert(dockTrim, 'инструмент «Усечь кривую» в доке');
+  assert((dockTrim!.getAttribute('title') ?? '').startsWith('Усечь кривую'),
+    `подсказка инструмента усечения: ${dockTrim!.getAttribute('title')}`);
+  assert(!win.document.querySelector('.laser-trimbar'), 'панель режимов усечения показывается только с инструментом');
 
   const leftTabs = [...win.document.querySelectorAll('.tabs button')].map((b) => b.textContent?.trim());
   for (const t of ['Развёртка', 'Слои', 'Объекты']) assert(leftTabs.includes(t), `вкладка «${t}»`);
@@ -415,6 +420,173 @@ await settle();
   await settle();
 }
 
+// ---------------- инструмент «Усечь кривую» (X) ----------------
+{
+  // вид не менялся: лист 300×200 в холсте 900×600 → s=2.7, ox=45, oy=570
+  const s = 2.7;
+  const ox = 45;
+  const oy = 570;
+  const px = (x: number) => ox + x * s;
+  const py = (y: number) => oy - y * s;
+  const over = win.document.querySelector('.canvas-over') as HTMLCanvasElement;
+  over.getBoundingClientRect = () => ({ left: 0, top: 0, width: 900, height: 600, right: 900, bottom: 600, x: 0, y: 0, toJSON: () => ({}) }) as DOMRect;
+  const pointer = async (type: string, x: number, y: number, init: Record<string, unknown> = {}) => {
+    await act(async () => {
+      over.dispatchEvent(new win.MouseEvent(type, {
+        bubbles: true, cancelable: true, button: 0, clientX: x, clientY: y, ...init,
+      }));
+    });
+  };
+  // Кнопки ищем по data-tool-id: в подсказке «Отменить» встречается текст последнего
+  // действия («…Отрезок · часть 1»), и поиск по заголовку задел бы его.
+  const dockTool = (id: string) => {
+    const b = win.document.querySelector(`.tool-dock [data-tool-id="${id}"]`) as HTMLButtonElement;
+    assert(b, `инструмент «${id}» в доке`);
+    return b;
+  };
+  const drawLine = async (x1: number, y1: number, x2: number, y2: number) => {
+    await click(dockTool('line'));
+    await pointer('pointerdown', px(x1), py(y1));
+    await pointer('pointermove', px(x2), py(y2));
+    await pointer('pointerdown', px(x2), py(y2));
+    await settle();
+  };
+  const trimModeBtn = (mode: string) =>
+    win.document.querySelector(`.laser-trimbar [data-trim-mode="${mode}"]`) as HTMLButtonElement;
+
+  await clickTab('Объекты');
+  const restored = objRows().length;
+  assert(restored > 0, 'перед проверкой усечения на листе есть объекты');
+
+  // Чистим лист: резать нужно предсказуемую геометрию. Очистка отменяется,
+  // в конце блока всё возвращается назад.
+  await click(byTextLike('Очистить лист'));
+  await settle();
+  await click(win.document.querySelector('.confirm-modal .foot .btn.danger')!);
+  await settle();
+  assert.equal(objRows().length, 0, 'лист очищен');
+
+  // Крест из двух отрезков: горизонталь y=60 от 20 до 280, вертикаль x=150 от 20 до 180.
+  await drawLine(20, 60, 280, 60);
+  await drawLine(150, 20, 150, 180);
+  assert.equal(objRows().length, 2, 'нарисованы два отрезка');
+
+  // включаем инструмент усечения (горячая клавиша X)
+  await key('x');
+  await settle();
+  assert(win.document.querySelector('.tool-dock [data-tool-id="trim"].active'), 'инструмент «Усечь кривую» активен');
+  assert(win.document.querySelector('.laser-trimbar'), 'панель режимов усечения видна');
+  assert.equal(win.document.querySelectorAll('.laser-trimbar [data-trim-mode]').length, 3, 'три режима');
+  assert(trimModeBtn('trim').classList.contains('on'), 'по умолчанию режим «Усечь»');
+  const hint = () => win.document.querySelector('.laser-tool-hint')?.textContent ?? '';
+  assert(hint().includes('Усечь кривую'), `подсказка инструмента: ${hint()}`);
+  assert(hint().includes('режется по пересечениям'), `подсказка режима «Усечь»: ${hint()}`);
+
+  // предпросмотр под курсором: подсвечен кусок и точки пересечений
+  await pointer('pointermove', px(220), py(60));
+  await settle();
+
+  // клик справа от пересечения — правый кусок горизонтали уходит
+  await pointer('pointerdown', px(220), py(60));
+  await pointer('pointerup', px(220), py(60));
+  await settle();
+  assert(status().includes('Усечено'), `усечение выполнено: ${status()}`);
+  assert(status().includes('130.00'), `остался кусок 20…150 мм: ${status()}`);
+  assert.equal(objRows().length, 2, 'один отрезок заменён одним куском');
+  assert((byTitle('Отменить').getAttribute('title') ?? '').includes('Усечено'),
+    `усечение попало в историю: ${byTitle('Отменить').getAttribute('title')}`);
+
+  // режим «Продлить» (клавиша 2): конец кривой дотягивается до края стола
+  await key('2');
+  await settle();
+  assert(trimModeBtn('extend').classList.contains('on'), 'режим «Продлить» включён');
+  assert(hint().includes('дотягивается до границы'), `подсказка режима «Продлить»: ${hint()}`);
+  await pointer('pointerdown', px(20), py(60));
+  await pointer('pointerup', px(20), py(60));
+  await settle();
+  assert(status().includes('продлена на 20.00'), `добор до края листа: ${status()}`);
+  assert(status().includes('150.00'), `кривая теперь 0…150 мм: ${status()}`);
+
+  // режим «Разрезать» (клавиша 3): вертикаль делится в точке клика
+  await click(trimModeBtn('break'));
+  await settle();
+  assert(trimModeBtn('break').classList.contains('on'), 'режим «Разрезать» включён');
+  assert(hint().includes('делится в точке клика'), `подсказка режима «Разрезать»: ${hint()}`);
+  await pointer('pointerdown', px(150), py(120));
+  await pointer('pointerup', px(150), py(120));
+  await settle();
+  assert(status().includes('разрезана на 2'), `кривая разрезана: ${status()}`);
+  assert.equal(objRows().length, 3, 'стало три объекта');
+
+  // «границы — выделенные»: режем только по выделенным объектам
+  await key('1');
+  await settle();
+  assert(trimModeBtn('trim').classList.contains('on'), 'режим «Усечь» вернулся');
+  await key('v');
+  await settle();
+  // после разреза выделены оба куска: снимаем выделение кликом по пустому месту
+  await pointer('pointerdown', px(250), py(150));
+  await pointer('pointerup', px(250), py(150));
+  await settle();
+  assert(!status().includes('Выделено:'), `выделение снято: ${status()}`);
+  // нижний кусок вертикали пересекает горизонталь в середине — им и займёмся
+  await pointer('pointerdown', px(150), py(80));
+  await pointer('pointerup', px(150), py(80));
+  await settle();
+  assert(status().includes('Выделено: 1 · 0.00 × 100.00'), `кусок вертикали выделен: ${status()}`);
+
+  await key('x');
+  await settle();
+  const onlySel = win.document.querySelector('.laser-trimbar .laser-check input') as HTMLInputElement;
+  assert(onlySel, 'переключатель «границы — выделенные»');
+  await click(onlySel);
+  await settle();
+  assert(onlySel.checked, 'ограничение границ включено');
+  await pointer('pointerdown', px(150), py(80));
+  await pointer('pointerup', px(150), py(80));
+  await settle();
+  assert(status().includes('усекать нечем'), `границы ограничены выделением: ${status()}`);
+  assert.equal(objRows().length, 3, 'объекты не изменились');
+
+  // сняли ограничение — тот же клик режет кусок по горизонтали
+  await click(onlySel);
+  await settle();
+  assert(!onlySel.checked, 'ограничение границ снято');
+  await pointer('pointerdown', px(150), py(80));
+  await pointer('pointerup', px(150), py(80));
+  await settle();
+  assert(status().includes('Усечено'), `усечение по всем границам: ${status()}`);
+  assert(status().includes('40.00'), `остался кусок 20…60 мм: ${status()}`);
+
+  // клик мимо кривой ничего не ломает
+  await pointer('pointerdown', px(250), py(150));
+  await pointer('pointerup', px(250), py(150));
+  await settle();
+  assert(status().includes('Кликните по кривой'), `подсказка при промахе: ${status()}`);
+  assert(status().includes('Лист: 300×200 мм'), 'редактор жив');
+
+  // «Разбить по пересечениям» — Ctrl+Shift+X по всему листу
+  await drawLine(60, 20, 60, 180);
+  assert.equal(objRows().length, 4, 'добавлена пересекающая вертикаль');
+  await pointer('pointerdown', px(250), py(150));
+  await pointer('pointerup', px(250), py(150));
+  await settle();
+  assert(!status().includes('Выделено:'), 'выделение снято — разбивается весь лист');
+  await key('X', { ctrlKey: true, shiftKey: true });
+  await settle();
+  assert(status().includes('Разбито по пересечениям: 2'), `разбивка по пересечениям: ${status()}`);
+  assert.equal(objRows().length, 6, 'две пересекающиеся кривые дали четыре');
+
+  // возвращаем лист: отменяем всё, что сделали в этом блоке
+  for (let i = 0; i < 16 && objRows().length !== restored; i++) {
+    await key('z', { ctrlKey: true });
+    await settle(10);
+  }
+  assert.equal(objRows().length, restored, `лист восстановлен отменой: ${objRows().length} из ${restored}`);
+  await click(dockTool('select'));
+  await settle();
+}
+
 // ---------------- свойства и операции CorelDRAW ----------------
 {
   await key('a', { ctrlKey: true });
@@ -449,6 +621,8 @@ await settle();
   assert(text().includes('Булевы операции'), 'блок булевых операций');
   assert(text().includes('Контур и керф'), 'блок контура и керфа');
   assert(text().includes('Скругление углов'), 'блок скругления');
+  assert(text().includes('Усечь кривую (Trim)'), 'блок инструмента усечения');
+  assert(buttons().some((b) => b.textContent?.trim() === 'Разбить по пересечениям'), 'кнопка разбивки по пересечениям');
   assert(text().includes('Размножение массивом'), 'блок массива');
   assert(text().includes('Перемычек, шт'), 'перемычки (holding tabs)');
 
@@ -783,7 +957,8 @@ await act(async () => root.unmount());
 dom.window.close();
 process.stdout.write(
   'LASER DOM OK: режимы, генератор развёрток, слои станка, материал, рисование мышью, '
-  + 'перенос и масштаб маркером, узлы кривой (F10), отмена, булевы операции, контур, '
+  + 'перенос и масштаб маркером, узлы кривой (F10), усечение кривых (X: усечь/продлить/разрезать, '
+  + 'границы по выделению, разбивка по пересечениям), отмена, булевы операции, контур, '
   + 'экспорт DXF/G-Code/проекта, симуляция, черновик, размер стола, очистка листа, '
   + 'студия коробок (каталог 28 типов, поиск, 3D-сборка, раскладка, DXF, помещение на лист), '
   + 'экран 3D и переключение режимов из редактора плат\n',
