@@ -182,9 +182,11 @@ await settle();
   // имя объекта лежит в редактируемом поле — textContent его не содержит
   const rowName = (r: Element) => (r.querySelector('input.obj-name-input') as HTMLInputElement | null)?.value ?? '';
   const names = rows.map((r) => `${rowName(r)}|${r.textContent ?? ''}`).join('|');
-  assert(names.includes('BTM'), 'дно коробки');
-  assert(names.includes('FRONT'), 'передняя стенка');
-  assert(names.includes('TOP'), 'крышка');
+  // Шиповой корпус строит общий движок коробок — детали подписаны по-русски
+  assert(names.includes('Дно'), 'дно коробки');
+  assert(names.includes('Стенка передняя'), 'передняя стенка');
+  assert(names.includes('Крышка'), 'крышка');
+  assert(names.includes('подпись'), 'детали подписаны гравировкой');
   assert(names.includes('Отверстие под плату'), 'отверстия под печатную плату');
 }
 
@@ -563,6 +565,102 @@ await settle();
   assert(objRows().length > 0, 'очистка отменяется');
 }
 
+// ---------------- студия коробок (каталог генераторов) ----------------
+{
+  await clickTab('Объекты');
+  const before = objRows().length;
+
+  await click(byTitle('Генератор коробок'));
+  await settle(250);
+  assert(win.document.querySelector('.box-studio'), 'модальное окно студии коробок');
+  assert(text().includes('Универсальная коробка'), 'первый генератор каталога');
+
+  // каталог: карточки с миниатюрами и фильтр по семействам
+  const cards = [...win.document.querySelectorAll('.bs-card')] as HTMLButtonElement[];
+  assert.equal(cards.length, 28, `карточек каталога: ${cards.length}`);
+  assert(cards.every((c) => c.querySelector('svg polyline')), 'у каждой карточки миниатюра');
+  assert(cards.some((c) => c.classList.contains('active')), 'выбранный тип подсвечен');
+
+  const families = [...win.document.querySelectorAll('.bs-families button')] as HTMLButtonElement[];
+  assert(families.length >= 7, `фильтров семейства: ${families.length}`);
+  await click(families.find((b) => b.textContent?.includes('Лотки'))!);
+  await settle(80);
+  const trays = [...win.document.querySelectorAll('.bs-card')] as HTMLButtonElement[];
+  assert(trays.length >= 3 && trays.length < cards.length, `в семействе «Лотки» ${trays.length} генераторов`);
+
+  // поиск по каталогу
+  const search = win.document.querySelector('.bs-search') as HTMLInputElement;
+  await act(async () => {
+    Object.getOwnPropertyDescriptor(win.HTMLInputElement.prototype, 'value')!.set!.call(search, 'ящик');
+    search.dispatchEvent(new win.Event('input', { bubbles: true }));
+  });
+  await settle(80);
+  const found = [...win.document.querySelectorAll('.bs-card')] as HTMLButtonElement[];
+  assert(found.length >= 1 && found.length < trays.length, `поиск «ящик»: ${found.length}`);
+  await act(async () => {
+    Object.getOwnPropertyDescriptor(win.HTMLInputElement.prototype, 'value')!.set!.call(search, '');
+    search.dispatchEvent(new win.Event('input', { bubbles: true }));
+  });
+  await settle(80);
+
+  // выбираем выдвижной ящик: форма параметров и 3D-сборка пересчитываются
+  const drawer = ([...win.document.querySelectorAll('.bs-card')] as HTMLButtonElement[])
+    .find((c) => c.textContent?.includes('Выдвижной ящик'))!;
+  assert(drawer, 'генератор выдвижного ящика');
+  await click(drawer);
+  await settle(200);
+  assert(win.document.querySelector('.bs-canvas svg polygon'), '3D-сборка отрисована');
+  assert(win.document.querySelectorAll('.bs-group').length >= 2, 'параметры разбиты по разделам');
+  assert(text().includes('Деталей'), 'статистика раскладки');
+  assert(text().includes('Рез'), 'длина реза в статистике');
+
+  // тонкие настройки раскрываются
+  const more = win.document.querySelector('.bs-more') as HTMLButtonElement | null;
+  if (more) {
+    const groupsBefore = win.document.querySelectorAll('.bs-group').length;
+    await click(more);
+    await settle(120);
+    assert(win.document.querySelectorAll('.bs-group').length >= groupsBefore, 'тонкие настройки добавили разделы');
+  }
+
+  // переключение на раскладку 2D
+  await click([...win.document.querySelectorAll('.bs-viewswitch button')].find((b) => b.textContent?.includes('Раскладка'))!);
+  await settle(150);
+  assert(win.document.querySelector('.bs-canvas svg polyline'), '2D-раскладка отрисована');
+  assert(win.document.querySelector('.bs-canvas svg .bs-sheet'), 'контур листа в раскладке');
+
+  // DXF скачивается прямо из студии, без помещения на лист
+  const foot = [...win.document.querySelectorAll('.box-studio .foot .btn')] as HTMLButtonElement[];
+  const dxfBtn = foot.find((b) => b.textContent?.includes('DXF'))!;
+  assert(dxfBtn, 'кнопка DXF в студии');
+  downloads.length = 0;
+  await click(dxfBtn);
+  await settle(250);
+  assert(downloads.some((d) => d.endsWith('.dxf')), `DXF скачан: ${downloads.join(', ')}`);
+  assert(status().includes('DXF сохранён'), `сообщение об экспорте: ${status()}`);
+
+  // помещаем раскладку на лист
+  await click(foot.find((b) => b.textContent?.includes('Поместить на лист'))!);
+  await settle(300);
+  assert(!win.document.querySelector('.box-studio'), 'студия закрылась после применения');
+  await clickTab('Объекты');
+  assert(objRows().length > before, `детали коробки на листе: ${objRows().length} против ${before}`);
+  assert(status().includes('помещены на лист'), `сообщение о применении: ${status()}`);
+
+  // открывается с клавиатуры и закрывается по Esc
+  await key('b', { ctrlKey: true });
+  await settle(200);
+  assert(win.document.querySelector('.box-studio'), 'студия открывается по Ctrl+B');
+  await key('Escape');
+  await settle(150);
+  assert(!win.document.querySelector('.box-studio'), 'Esc закрывает студию');
+
+  await click(byTextLike('Очистить лист'));
+  await settle();
+  await click(win.document.querySelector('.confirm-modal .foot .btn.danger') as HTMLButtonElement);
+  await settle(120);
+}
+
 // ---------------- экран 3D-моделирования ----------------
 {
   await act(async () => root.render(React.createElement(Modeling3DView, {
@@ -687,6 +785,7 @@ process.stdout.write(
   'LASER DOM OK: режимы, генератор развёрток, слои станка, материал, рисование мышью, '
   + 'перенос и масштаб маркером, узлы кривой (F10), отмена, булевы операции, контур, '
   + 'экспорт DXF/G-Code/проекта, симуляция, черновик, размер стола, очистка листа, '
+  + 'студия коробок (каталог 28 типов, поиск, 3D-сборка, раскладка, DXF, помещение на лист), '
   + 'экран 3D и переключение режимов из редактора плат\n',
   () => process.exit(0),
 );
