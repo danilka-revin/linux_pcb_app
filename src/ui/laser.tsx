@@ -41,7 +41,7 @@ import {
   nearestSnapPoint, objectSnapPoints, toggleSmooth,
 } from '../laser/nodes';
 import {
-  breakApartAtIntersections, breakCurve, extendCurve, trimCurve, trimPreview,
+  breakApartAtIntersections, breakCurve, extendCurve, trimCurve, trimPreview, trimmable,
   type TrimEdit, type TrimMode, type TrimOptions, type TrimPreview,
 } from '../laser/trim';
 import {
@@ -117,11 +117,6 @@ type Drag =
   | { mode: 'draw'; t: 'rect' | 'ellipse' | 'polygon'; layer: LaserLayerId; a: Pt; shift: boolean }
   | { mode: 'node'; id: string; idx: number; orig: PathShape; moved: boolean }
   | { mode: 'handle'; id: string; idx: number; which: 'cp1' | 'cp2'; orig: PathShape; moved: boolean };
-
-/** Объект, который можно усекать: не текст, не размер, не скрытый и не заблокированный. */
-export function trimmableShape(s: LaserShape): boolean {
-  return s.kind !== 'text' && s.kind !== 'dim' && !s.hidden && !s.locked;
-}
 
 /** Знаковое расстояние от точки c до прямой ab (для выноса размерной линии). */
 function perpOffset(a: Pt, b: Pt, c: Pt): number {
@@ -685,11 +680,13 @@ export function LaserEditor({
   /** Что подсветить под курсором инструмента «Усечь кривую». */
   const updateTrimHover = useCallback((raw: Pt) => {
     const hit = pickShape(raw);
-    const id = hit && trimmableShape(hit) ? hit.id : null;
+    const id = hit && trimmable(hit) ? hit.id : null;
     const prev = trimHoverAt.current;
     const moved = Math.hypot(prev.x - raw.x, prev.y - raw.y) > 0.05;
     if (prev.id === id && (!moved || !id)) {
-      if (!id && trimHover) setTrimHover(null);
+      // цель та же и курсор на месте: превью оставляем, гасим только пустое
+      // (setTrimHover(null) при уже пустом состоянии перерисовку не вызывает)
+      if (!id) setTrimHover(null);
       return;
     }
     trimHoverAt.current = { id, x: raw.x, y: raw.y };
@@ -699,7 +696,7 @@ export function LaserEditor({
       preview = trimPreview(docRef.current.shapes, id, raw, trimMode, trimOptions());
     } catch { preview = null; }
     setTrimHover(preview ? { id, preview } : null);
-  }, [pickShape, trimMode, trimOptions, trimHover]);
+  }, [pickShape, trimMode, trimOptions]);
 
   const toCurves = useCallback(() => {
     const picked = docRef.current.shapes.filter((s) => selRef.current.has(s.id));
@@ -1033,8 +1030,8 @@ export function LaserEditor({
         setMsg({ text: 'Кликните по кривой, которую нужно усекать (границы — другие объекты листа).', ok: false });
         return;
       }
-      if (!trimmableShape(hit)) {
-        setMsg({ text: 'Текст, размеры, скрытые и заблокированные объекты не усекаются.', ok: false });
+      if (!trimmable(hit)) {
+        setMsg({ text: 'Текст, размерные линии, скрытые и заблокированные объекты не усекаются.', ok: false });
         return;
       }
       // в режиме «границы — выделенные» текущее выделение и есть набор границ
