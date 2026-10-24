@@ -54,6 +54,12 @@ import { download, makeZip } from './pcb/zip';
 const CncDialog = lazy(() => import('./ui/cnc').then((m) => ({ default: m.CncDialog })));
 // Предпросмотр платы (2D и 3D) — тяжёлый (Three.js), грузим лениво.
 const BoardPreviewDialog = lazy(() => import('./ui/board-preview').then((m) => ({ default: m.BoardPreviewDialog })));
+// Лазерный редактор развёрток (векторное ядро + Clipper) открывается не всегда —
+// поэтому тоже подгружается по запросу, отдельным чанком.
+const LaserEditor = lazy(() => import('./ui/laser').then((m) => ({ default: m.LaserEditor })));
+// Переключение режимов рабочего пространства: платы / лазерный станок / 3D.
+import { ModeSwitcher, loadWorkspaceMode, saveWorkspaceMode, type WorkspaceMode } from './ui/mode-switcher';
+import { Modeling3DView } from './ui/modeling-3d';
 import { Ic } from './ui/icons';
 import {
   LayersPanel, PropsPanel, TOOLS,
@@ -523,6 +529,19 @@ export default function App({ cloudUser, onLogout }: { cloudUser?: CloudUser; on
   const [leftTab, setLeftTab] = useState<LeftTabId>('layers');
   // тема оформления: тёмная (по умолчанию) или светлая, переключается в шапке
   const [theme, setTheme] = useState<ThemeId>(loadTheme);
+  // ---------------- режимы рабочего пространства ----------------
+  // «Платы» — этот редактор; «Лазерный» — векторный редактор развёрток для
+  // лазерного станка (в духе CorelDRAW); «3D моделирование» — раздел в разработке.
+  // Плата при переключении не теряется: состояние редактора остаётся в памяти,
+  // а черновик — в хранилище браузера.
+  const [mode, setModeState] = useState<WorkspaceMode>(loadWorkspaceMode);
+  const modeRef = useRef<WorkspaceMode>(mode);
+  modeRef.current = mode;
+  const setMode = useCallback((next: WorkspaceMode) => {
+    setModeState(next);
+    saveWorkspaceMode(next);
+    if (next !== 'pcb') setDialog(null);
+  }, []);
   // кастомные цвета интерфейса (акцент/фон/панели/текст), см. ui/palette
   const [colors, setColorsState] = useState<CustomColors>(loadCustomColors);
   const setColors = useCallback((c: CustomColors) => {
@@ -828,7 +847,9 @@ export default function App({ cloudUser, onLogout }: { cloudUser?: CloudUser; on
     ro.observe(el);
     setSize({ w: el.clientWidth, h: el.clientHeight });
     return () => ro.disconnect();
-  }, []);
+    // mode: после возвращения из «Лазерного»/«3D» холст платы создаётся заново —
+    // наблюдатель нужно перевесить на новый элемент.
+  }, [mode]);
 
   // ---------------- fit ----------------
   const fit = useCallback((d?: M.Doc) => {
@@ -2835,6 +2856,9 @@ export default function App({ cloudUser, onLogout }: { cloudUser?: CloudUser; on
   const hotkeyIndex = useMemo(() => reverseHotkeys(prefs.hotkeys), [prefs.hotkeys]);
 
   const keyHandler = useCallback((e: KeyboardEvent) => {
+    // В режимах «Лазерный» и «3D моделирование» горячие клавиши платы не работают:
+    // там свои сочетания (см. ui/laser.tsx), иначе правки уходили бы в невидимую плату.
+    if (modeRef.current !== 'pcb') return;
     if (routeWorker.current) {
       if (e.code === 'Escape') { routeWorker.current.terminate(); routeWorker.current = null; setRouting(null); setRouteMsg({ msg: 'Трассировка отменена. Плата не изменена.', ok: null }); }
       e.preventDefault(); return;
@@ -4183,6 +4207,8 @@ export default function App({ cloudUser, onLogout }: { cloudUser?: CloudUser; on
           <span className="brandmark"><BeeMark /></span>
           <span className="brandtext"><b>PS<em>Bees</em></b><small>PCB · LINUX · WINDOWS · SPRINT-LAYOUT</small></span>
         </div>
+        {/* режимы рабочего пространства: платы / лазерный станок / 3D */}
+        <ModeSwitcher mode={mode} onChange={setMode} />
         {order.map((id) => (
           <Fragment key={id}>
             {groups[id]}
@@ -4212,6 +4238,8 @@ export default function App({ cloudUser, onLogout }: { cloudUser?: CloudUser; on
     );
   }, [uiConf, uiOrder, defs, view.s, view.mir, activeCu, size, theme, updButton, saveFile, savePrimary,
     cloudUser, activeCloud, cloudStatus, cloudMessage, undo, redo, fit, zoomAt, setDefs, closeApplication,
+    // переключатель режимов рабочего пространства (платы / лазерный / 3D)
+    mode, setMode,
     // подсказка единой кнопки предпросмотра показывает последний режим
     boardPreviewTab,
     // группировка: доступность и подсказки кнопок зависят от выделения
@@ -4608,6 +4636,46 @@ export default function App({ cloudUser, onLogout }: { cloudUser?: CloudUser; on
       },
     });
   }, [cloudUser, prefs.newW, prefs.newH, prefs.newName, fit, resetBoardViewFlags]);
+
+  // ---------------- другие режимы рабочего пространства ----------------
+  // Плата остаётся в памяти (и в черновике браузера), поэтому возврат в режим
+  // «Платы» мгновенный: ни документ, ни история правок не теряются.
+  if (mode === 'laser') {
+    return (
+      <Suspense fallback={<div className="mode-loading">
+        <ProgressBar label="Загружаем лазерный редактор…" indeterminate live
+          meta="векторное ядро, генератор развёрток и CAM-экспорт подгружаются отдельным чанком" />
+      </div>}>
+        <LaserEditor
+          mode={mode}
+          onModeChange={setMode}
+          theme={theme}
+          setTheme={setTheme}
+          onCloseApp={closeApplication}
+          cloudUser={cloudUser ? { id: cloudUser.id, email: cloudUser.email } : null}
+        />
+      </Suspense>
+    );
+  }
+  if (mode === '3d') {
+    return (
+      <Modeling3DView
+        mode={mode}
+        onModeChange={setMode}
+        theme={theme}
+        onToggleTheme={() => setTheme(theme === 'dark' ? 'light' : 'dark')}
+        onOpenPcb3DPreview={() => {
+          setBoardPreviewTab('3d');
+          setMode('pcb');
+          setDialog('board-preview');
+        }}
+        onCloseApp={closeApplication}
+        boardName={doc.name}
+        boardW={doc.w}
+        boardH={doc.h}
+      />
+    );
+  }
 
   // ---------------- разметка ----------------
   return (

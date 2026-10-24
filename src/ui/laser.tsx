@@ -1,0 +1,2162 @@
+// Лазерный редактор PSBees — векторное рисование развёрток в стиле CorelDRAW
+// и подготовка задания на лазерный станок (слои с режимами, керф, биговка,
+// симуляция обработки, экспорт DXF / SVG / G-Code).
+//
+// Координаты — миллиметры листа станка, Y вверх; (0;0) — левый нижний угол стола.
+
+import {
+  Fragment, useCallback, useEffect, useMemo, useRef, useState,
+  type PointerEvent as RPointerEvent, type ReactNode, type WheelEvent as RWheelEvent,
+} from 'react';
+import { Ic } from './icons';
+import { ConfirmDialog, NI, SI } from './widgets';
+import { ModeSwitcher, type WorkspaceMode } from './mode-switcher';
+import {
+  LaserJobPanel, LaserLayersPanel, LaserMaterialPanel, LaserObjectsPanel, LaserPropsPanel,
+  UnfoldPanel, type PropsActions,
+} from './laser-panels';
+import {
+  LaserExportDialog, LaserSheetDialog, LaserSimDialog, LaserTraceDialog,
+  type LaserExportFormat,
+} from './laser-dialogs';
+import {
+  DEFAULT_GCODE_OPTIONS, buildLaserSimulation, exportLaserDxf, exportLaserGCode, exportLaserSvg,
+  importVectorFile,
+  type GCodeExportOptions, type LaserSimulation,
+} from '../laser/export';
+import { DEFAULT_UNFOLD_PARAMS, UNFOLD_TEMPLATES, generateUnfolding, type UnfoldParams } from '../laser/unfold';
+import {
+  loadLaserDraft, parseLaserProject, safeFileName, saveLaserDraft, serializeLaserProject,
+} from '../laser/project';
+import {
+  LASER_LAYER_ORDER, MATERIAL_PRESETS, alignShapes, arrayShapes, autoNestShapes,
+  booleanShapes, filletShapeCorners, hitShape, luid, mirrorShape, newLaserDoc, offsetShape, rotateShape,
+  scaleShape, selectionBBox, shapeBBox, shapeToPath, translateShape,
+  type AlignMode, type BooleanOp, type LaserDoc, type LaserLayerConfig, type LaserLayerId,
+  type LaserShape, type MaterialPreset, type PathNode, type PathShape, type Pt,
+} from '../laser/model';
+import {
+  constrainAngle, deleteNode, insertNode, moveHandle, moveNode, nearestHandle, nearestNodeIndex,
+  nearestSnapPoint, toggleSmooth,
+} from '../laser/nodes';
+import {
+  drawLaserGrid, drawLaserShape, drawLaserSheet, drawMarquee, drawPathNodes, drawSelectionBox,
+  drawSelectionLabel, laserTheme, selectionHandlePoints, toScreen, toWorld,
+  type LaserGridConf, type LaserView, type SelectionHandleId,
+} from '../laser/render';
+import { download } from '../pcb/zip';
+import { perfDpr } from '../perf';
+import type { ThemeId } from '../pcb/render';
+
+// ---------------- инструменты ----------------
+
+export type LaserToolId =
+  | 'select' | 'shape' | 'pan' | 'pen' | 'line' | 'rect' | 'ellipse' | 'polygon' | 'text' | 'dim';
+
+const LASER_TOOLS: { id: LaserToolId; name: string; icon: string; key: string; hint: string }[] = [
+  { id: 'select', name: 'Выбор', icon: 'select', key: 'V', hint: 'выделение, перенос, масштаб маркерами, Shift — добавить к выделению' },
+  { id: 'shape', name: 'Форма (узлы кривой)', icon: 'node', key: 'F10', hint: 'правка узлов и рычагов Безье; двойной клик по кривой — новый узел, по узлу — удалить; S — гладкий/угловой' },
+  { id: 'pan', name: 'Панорама листа', icon: 'fit', key: 'H', hint: 'перемещение вида (то же — средняя кнопка мыши или пробел)' },
+  { id: 'pen', name: 'Перо (кривая Безье)', icon: 'bezier', key: 'P', hint: 'клик — угловой узел, клик с протяжкой — гладкий узел с рычагами; Enter — закончить, клик по первому узлу — замкнуть' },
+  { id: 'line', name: 'Отрезок', icon: 'line', key: 'L', hint: 'два клика; Shift — угол кратный 15°' },
+  { id: 'rect', name: 'Прямоугольник', icon: 'rect', key: 'R', hint: 'протяжка мышью; Shift — квадрат; скругление углов — в свойствах' },
+  { id: 'ellipse', name: 'Эллипс / дуга', icon: 'circle', key: 'E', hint: 'протяжка мышью; Shift — окружность; углы начала и конца дуги — в свойствах' },
+  { id: 'polygon', name: 'Многоугольник / звезда', icon: 'polygon', key: 'Y', hint: 'протяжка задаёт габарит; число углов и звезда — в свойствах' },
+  { id: 'text', name: 'Текст (гравировка)', icon: 'text', key: 'T', hint: 'клик ставит надпись; текст, кегль и толщину линии меняйте в свойствах справа' },
+  { id: 'dim', name: 'Размерная линия', icon: 'ruler', key: 'D', hint: 'две точки + третий клик задаёт вынос; слой «Размеры» не режется лазером' },
+];
+
+const TOOL_GROUPS: LaserToolId[][] = [
+  ['select', 'shape', 'pan'],
+  ['pen', 'line'],
+  ['rect', 'ellipse', 'polygon'],
+  ['text', 'dim'],
+];
+
+const TOOL_KEYS: Record<LaserToolId, string> = LASER_TOOLS.reduce(
+  (acc, t) => ({ ...acc, [t.id]: t.key }),
+  {} as Record<LaserToolId, string>
+);
+
+const HISTORY_LIMIT = 120;
+const MIN_DRAW_MM = 0.2;
+
+// ---------------- черновик в браузере ----------------
+// Файл проекта (.pslaser) и автосохранение черновика — в laser/project.ts
+// (чистая логика, проверяется без DOM).
+
+// ---------------- черновики рисования ----------------
+
+type Draft =
+  | { t: 'line'; layer: LaserLayerId; a: Pt; b: Pt; shift: boolean }
+  | { t: 'rect'; layer: LaserLayerId; a: Pt; b: Pt; shift: boolean }
+  | { t: 'ellipse'; layer: LaserLayerId; a: Pt; b: Pt; shift: boolean }
+  | { t: 'polygon'; layer: LaserLayerId; a: Pt; b: Pt; shift: boolean }
+  | { t: 'pen'; layer: LaserLayerId; nodes: PathNode[]; closed: boolean; dragging: boolean; shift: boolean }
+  | { t: 'dim'; a: Pt; b: Pt | null; c: Pt | null };
+
+type Drag =
+  | { mode: 'pan'; px: number; py: number; view: LaserView }
+  | { mode: 'move'; start: Pt; orig: LaserShape[]; moved: boolean }
+  | { mode: 'resize'; handle: SelectionHandleId; bb: [number, number, number, number]; orig: LaserShape[]; moved: boolean; uniform: boolean }
+  | { mode: 'marquee'; a: Pt; shift: boolean; base: Set<string>; moved: boolean }
+  | { mode: 'node'; id: string; idx: number; orig: PathShape; moved: boolean }
+  | { mode: 'handle'; id: string; idx: number; which: 'cp1' | 'cp2'; orig: PathShape; moved: boolean };
+
+/** Знаковое расстояние от точки c до прямой ab (для выноса размерной линии). */
+function perpOffset(a: Pt, b: Pt, c: Pt): number {
+  const dx = b.x - a.x;
+  const dy = b.y - a.y;
+  const len = Math.hypot(dx, dy) || 1;
+  return ((c.x - a.x) * -dy + (c.y - a.y) * dx) / len;
+}
+
+/** Черновик рисования → временная фигура для предпросмотра. */
+export function draftToShape(d: Draft): LaserShape | null {
+  switch (d.t) {
+    case 'line':
+      if (Math.hypot(d.b.x - d.a.x, d.b.y - d.a.y) < 1e-4) return null;
+      return {
+        id: 'draft', kind: 'path', layer: d.layer, name: 'Отрезок',
+        nodes: [{ x: d.a.x, y: d.a.y }, { x: d.b.x, y: d.b.y }], closed: false, filled: false,
+      };
+    case 'rect': {
+      const x = Math.min(d.a.x, d.b.x);
+      const y = Math.min(d.a.y, d.b.y);
+      const w = Math.abs(d.b.x - d.a.x);
+      const h = Math.abs(d.b.y - d.a.y);
+      if (w < 1e-3 || h < 1e-3) return null;
+      return { id: 'draft', kind: 'rect', layer: d.layer, name: 'Прямоугольник', x, y, w, h, rx: 0, rot: 0, filled: false };
+    }
+    case 'ellipse': {
+      const w = Math.abs(d.b.x - d.a.x);
+      const h = Math.abs(d.b.y - d.a.y);
+      if (w < 1e-3 || h < 1e-3) return null;
+      return {
+        id: 'draft', kind: 'ellipse', layer: d.layer, name: 'Эллипс',
+        cx: (d.a.x + d.b.x) / 2, cy: (d.a.y + d.b.y) / 2,
+        rx: w / 2, ry: h / 2, rot: 0, startAngle: 0, endAngle: 360, filled: false,
+      };
+    }
+    case 'polygon': {
+      const w = Math.abs(d.b.x - d.a.x);
+      const h = Math.abs(d.b.y - d.a.y);
+      const r = Math.min(w, h) / 2;
+      if (r < 1e-3) return null;
+      return {
+        id: 'draft', kind: 'polygon', layer: d.layer, name: 'Многоугольник',
+        cx: (d.a.x + d.b.x) / 2, cy: (d.a.y + d.b.y) / 2, r,
+        sides: 6, star: false, innerRatio: 0.45, rot: 0, filled: false,
+      };
+    }
+    case 'pen':
+      if (d.nodes.length < 2) return null;
+      return {
+        id: 'draft', kind: 'path', layer: d.layer, name: 'Кривая',
+        nodes: d.nodes, closed: d.closed, filled: false,
+      };
+    case 'dim': {
+      if (!d.b) return null;
+      const off = d.c ? perpOffset(d.a, d.b, d.c) : 8;
+      return {
+        id: 'draft', kind: 'dim', layer: 'guide', name: 'Размер',
+        x1: d.a.x, y1: d.a.y, x2: d.b.x, y2: d.b.y,
+        offset: Math.abs(off) < 2 ? (off < 0 ? -2 : 2) : off,
+      };
+    }
+  }
+}
+
+/** Ограничение прямоугольника/эллипса: Shift — квадрат (окружность). */
+function constrainBox(a: Pt, b: Pt, shift: boolean): Pt {
+  if (!shift) return b;
+  const dx = b.x - a.x;
+  const dy = b.y - a.y;
+  const side = Math.max(Math.abs(dx), Math.abs(dy));
+  return { x: a.x + Math.sign(dx || 1) * side, y: a.y + Math.sign(dy || 1) * side };
+}
+
+// ---------------- компонент ----------------
+
+export function LaserEditor({
+  mode,
+  onModeChange,
+  theme,
+  setTheme,
+  onCloseApp,
+  cloudUser,
+}: {
+  mode: WorkspaceMode;
+  onModeChange: (next: WorkspaceMode) => void;
+  theme: ThemeId;
+  setTheme: (next: ThemeId) => void;
+  onCloseApp: () => void;
+  cloudUser?: { id: string; email?: string } | null;
+}) {
+  const [doc, setDocState] = useState<LaserDoc>(() => loadLaserDraft(cloudUser?.id) ?? newLaserDoc());
+  const docRef = useRef(doc);
+  const setDoc = useCallback((next: LaserDoc) => {
+    docRef.current = next;
+    setDocState(next);
+  }, []);
+
+  const past = useRef<{ doc: LaserDoc; label: string }[]>([]);
+  const future = useRef<{ doc: LaserDoc; label: string }[]>([]);
+  const [histTick, setHistTick] = useState(0);
+  const histStart = useRef<LaserDoc | null>(null);
+
+  const [sel, setSelState] = useState<Set<string>>(new Set());
+  const selRef = useRef(sel);
+  const setSel = useCallback((next: Set<string>) => {
+    selRef.current = next;
+    setSelState(next);
+  }, []);
+
+  const [tool, setTool] = useState<LaserToolId>('select');
+  const [activeLayer, setActiveLayer] = useState<LaserLayerId>('cut');
+  const [view, setView] = useState<LaserView>({ s: 3, ox: 80, oy: 80 });
+  const [size, setSize] = useState({ w: 900, h: 600 });
+  const [grid, setGrid] = useState<LaserGridConf & { snap: boolean }>({
+    step: 1, major: 10, on: true, style: 'lines', snap: true,
+  });
+  const [leftTab, setLeftTab] = useState<'unfold' | 'layers' | 'objects'>('unfold');
+  const [objFilter, setObjFilter] = useState('');
+  const [unfoldParams, setUnfoldParams] = useState<UnfoldParams>({ ...DEFAULT_UNFOLD_PARAMS });
+  const [unfoldBusy, setUnfoldBusy] = useState(false);
+  const [msg, setMsg] = useState<{ text: string; ok: boolean | null } | null>(null);
+  const [dialog, setDialog] = useState<'sheet' | 'new' | 'export' | 'sim' | 'trace' | null>(null);
+  const [confirmAsk, setConfirmAsk] = useState<{ title: string; text: string; ok: string; onOk: () => void } | null>(null);
+  const [sim, setSim] = useState<LaserSimulation | null>(null);
+  const [simBusy, setSimBusy] = useState(false);
+  const [gcode, setGcode] = useState<GCodeExportOptions>({ ...DEFAULT_GCODE_OPTIONS });
+  const [draft, setDraft] = useState<Draft | null>(null);
+  const [marquee, setMarquee] = useState<{ a: Pt; b: Pt } | null>(null);
+  const [nodeEdit, setNodeEdit] = useState<{ id: string; node: number | null } | null>(null);
+  const [mouse, setMouse] = useState({ px: -100, py: -100, wx: 0, wy: 0 });
+  const [snapMark, setSnapMark] = useState<Pt | null>(null);
+  const [arrayState, setArrayState] = useState({ rows: 2, cols: 2, gapX: 5, gapY: 5 });
+  const [contourState, setContourState] = useState<{ delta: number; layer: LaserLayerId }>({ delta: 1, layer: 'cut' });
+  const [polygonSides, setPolygonSides] = useState(6);
+  const [polygonStar, setPolygonStar] = useState(false);
+  const [spaceDown, setSpaceDown] = useState(false);
+  const [savedTick, setSavedTick] = useState(0);
+
+  const wrapRef = useRef<HTMLDivElement>(null);
+  const baseRef = useRef<HTMLCanvasElement>(null);
+  const overRef = useRef<HTMLCanvasElement>(null);
+  const baseRaf = useRef(0);
+  const overRaf = useRef(0);
+  const drag = useRef<Drag | null>(null);
+  const fitted = useRef(false);
+  const fileRef = useRef<HTMLInputElement>(null);
+
+  const th = laserTheme(theme);
+
+  // ---------------- история ----------------
+
+  const commit = useCallback((next: LaserDoc, label: string, silent = false) => {
+    past.current = [...past.current, { doc: docRef.current, label }].slice(-HISTORY_LIMIT);
+    future.current = [];
+    setDoc(next);
+    setHistTick((t) => t + 1);
+    setSim(null);
+    if (!silent) setMsg({ text: label, ok: true });
+  }, [setDoc]);
+
+  /** Финал перетаскивания: исходное состояние уходит в историю одним шагом. */
+  const commitDrag = useCallback((label: string) => {
+    const start = histStart.current;
+    histStart.current = null;
+    if (!start || start === docRef.current) return;
+    past.current = [...past.current, { doc: start, label }].slice(-HISTORY_LIMIT);
+    future.current = [];
+    setHistTick((t) => t + 1);
+    setSim(null);
+  }, []);
+
+  const undo = useCallback(() => {
+    const prev = past.current.pop();
+    if (!prev) return;
+    future.current = [...future.current, { doc: docRef.current, label: prev.label }];
+    setDoc(prev.doc);
+    setHistTick((t) => t + 1);
+    setSel(new Set());
+    setDraft(null);
+    setNodeEdit(null);
+    setSim(null);
+    setMsg({ text: `Отменено: ${prev.label}`, ok: null });
+  }, [setDoc, setSel]);
+
+  const redo = useCallback(() => {
+    const next = future.current.pop();
+    if (!next) return;
+    past.current = [...past.current, { doc: docRef.current, label: next.label }].slice(-HISTORY_LIMIT);
+    setDoc(next.doc);
+    setHistTick((t) => t + 1);
+    setSel(new Set());
+    setSim(null);
+    setMsg({ text: `Повторено: ${next.label}`, ok: null });
+  }, [setDoc, setSel]);
+
+  // ---------------- черновик в браузере ----------------
+
+  useEffect(() => {
+    const t = window.setTimeout(() => {
+      if (saveLaserDraft(doc, cloudUser?.id)) setSavedTick(Date.now());
+    }, 600);
+    return () => window.clearTimeout(t);
+  }, [doc, cloudUser]);
+
+  // ---------------- размер холста ----------------
+
+  useEffect(() => {
+    const el = wrapRef.current;
+    if (!el) return;
+    const ro = new ResizeObserver(() => setSize({ w: el.clientWidth, h: el.clientHeight }));
+    ro.observe(el);
+    setSize({ w: el.clientWidth, h: el.clientHeight });
+    return () => ro.disconnect();
+  }, []);
+
+  const fit = useCallback((d?: LaserDoc) => {
+    // Холст ещё не размечен (нулевой размер) — вид не трогаем, иначе масштаб
+    // уйдёт в минимум и лист «исчезнет».
+    if (size.w < 60 || size.h < 60) return;
+    const dd = d ?? docRef.current;
+    const w = Math.max(dd.w, 1);
+    const h = Math.max(dd.h, 1);
+    const s = Math.max(0.05, Math.min((size.w - 60) / w, (size.h - 60) / h));
+    setView({ s, ox: (size.w - w * s) / 2, oy: (size.h + h * s) / 2 });
+  }, [size.w, size.h]);
+
+  useEffect(() => {
+    if (!fitted.current && size.w > 100) {
+      fitted.current = true;
+      fit();
+    }
+  }, [size, fit]);
+
+  const zoomAt = useCallback((px: number, py: number, k: number) => {
+    setView((v) => {
+      const s = Math.max(0.05, Math.min(400, v.s * k));
+      const ratio = s / v.s;
+      return { s, ox: px - (px - v.ox) * ratio, oy: py - (py - v.oy) * ratio };
+    });
+  }, []);
+
+  // ---------------- производные данные ----------------
+
+  const selShapes = useMemo(() => doc.shapes.filter((s) => sel.has(s.id)), [doc.shapes, sel]);
+  const selBBox = useMemo(() => selectionBBox(selShapes), [selShapes]);
+
+  const pickable = useCallback((s: LaserShape) => {
+    if (s.hidden || s.locked) return false;
+    const cfg = doc.layers[s.layer];
+    return !!cfg && cfg.visible !== false && cfg.locked !== true;
+  }, [doc.layers]);
+
+  /** Точки привязки к объектам: узлы кривых, углы и центры примитивов. */
+  const snapPoints = useMemo(() => {
+    const out: Pt[] = [];
+    const MAX = 20000;
+    for (const s of doc.shapes) {
+      if (!pickable(s)) continue;
+      if (s.kind === 'path') {
+        for (const n of s.nodes) {
+          out.push({ x: n.x, y: n.y });
+          if (out.length > MAX) return out;
+        }
+      } else {
+        const bb = shapeBBox(s);
+        out.push(
+          { x: bb[0], y: bb[1] }, { x: bb[2], y: bb[1] },
+          { x: bb[2], y: bb[3] }, { x: bb[0], y: bb[3] },
+          { x: (bb[0] + bb[2]) / 2, y: (bb[1] + bb[3]) / 2 }
+        );
+        if (out.length > MAX) return out;
+      }
+    }
+    return out;
+  }, [doc.shapes, pickable]);
+
+  /** Привязка курсора: сначала к объектам, затем к сетке. */
+  const snapWorld = useCallback((p: Pt, alt: boolean): Pt => {
+    if (alt || !grid.snap) return p;
+    const tol = 7 / Math.max(view.s, 0.001);
+    const obj = nearestSnapPoint(snapPoints, p, tol);
+    if (obj) return obj;
+    if (grid.on && grid.step > 0) {
+      return {
+        x: Math.round(p.x / grid.step) * grid.step,
+        y: Math.round(p.y / grid.step) * grid.step,
+      };
+    }
+    return p;
+  }, [grid, snapPoints, view.s]);
+
+  const pickShape = useCallback((p: Pt): LaserShape | null => {
+    const tol = Math.max(0.6, 6 / Math.max(view.s, 0.001));
+    for (let i = doc.shapes.length - 1; i >= 0; i--) {
+      const s = doc.shapes[i];
+      if (!pickable(s)) continue;
+      if (hitShape(s, p, tol)) return s;
+    }
+    return null;
+  }, [doc.shapes, pickable, view.s]);
+
+  // ---------------- операции над объектами ----------------
+
+  const patchSelected = useCallback((patch: Partial<LaserShape>, label = 'Изменён объект') => {
+    if (!selRef.current.size) return;
+    const ids = selRef.current;
+    commit({
+      ...docRef.current,
+      shapes: docRef.current.shapes.map((s) => (ids.has(s.id) ? ({ ...s, ...patch } as LaserShape) : s)),
+    }, label);
+  }, [commit]);
+
+  const replaceShapes = useCallback((map: Map<string, LaserShape>, label: string, keepHistory = true) => {
+    const shapes = docRef.current.shapes.map((s) => map.get(s.id) ?? s);
+    const next = { ...docRef.current, shapes };
+    if (keepHistory) commit(next, label);
+    else setDoc(next);
+  }, [commit, setDoc]);
+
+  const applyGeometry = useCallback((g: { x?: number; y?: number; w?: number; h?: number }) => {
+    const bb = selectionBBox(docRef.current.shapes.filter((s) => selRef.current.has(s.id)));
+    if (!bb) return;
+    const ids = selRef.current;
+    const cur = docRef.current.shapes.filter((s) => ids.has(s.id));
+    let map = new Map<string, LaserShape>(cur.map((s) => [s.id, s]));
+
+    if (g.w !== undefined || g.h !== undefined) {
+      const w0 = Math.max(bb[2] - bb[0], 1e-6);
+      const h0 = Math.max(bb[3] - bb[1], 1e-6);
+      const sx = g.w !== undefined ? Math.max(0.01, g.w) / w0 : 1;
+      const sy = g.h !== undefined ? Math.max(0.01, g.h) / h0 : 1;
+      const next = new Map<string, LaserShape>();
+      for (const [id, s] of map) next.set(id, scaleShape(s, bb[0], bb[1], sx, sy));
+      map = next;
+    }
+    if (g.x !== undefined || g.y !== undefined) {
+      const nb = selectionBBox([...map.values()]) ?? bb;
+      const dx = (g.x ?? nb[0]) - nb[0];
+      const dy = (g.y ?? nb[1]) - nb[1];
+      const next = new Map<string, LaserShape>();
+      for (const [id, s] of map) next.set(id, translateShape(s, dx, dy));
+      map = next;
+    }
+    replaceShapes(map, 'Изменён размер/позиция');
+  }, [replaceShapes]);
+
+  const rotateSel = useCallback((deg: number) => {
+    const bb = selectionBBox(docRef.current.shapes.filter((s) => selRef.current.has(s.id)));
+    if (!bb) return;
+    const cx = (bb[0] + bb[2]) / 2;
+    const cy = (bb[1] + bb[3]) / 2;
+    const map = new Map<string, LaserShape>();
+    for (const s of docRef.current.shapes) {
+      if (selRef.current.has(s.id)) map.set(s.id, rotateShape(s, cx, cy, deg));
+    }
+    replaceShapes(map, `Поворот на ${deg}°`);
+  }, [replaceShapes]);
+
+  const mirrorSel = useCallback((axis: 'h' | 'v') => {
+    const bb = selectionBBox(docRef.current.shapes.filter((s) => selRef.current.has(s.id)));
+    if (!bb) return;
+    const cx = (bb[0] + bb[2]) / 2;
+    const cy = (bb[1] + bb[3]) / 2;
+    const map = new Map<string, LaserShape>();
+    for (const s of docRef.current.shapes) {
+      if (selRef.current.has(s.id)) map.set(s.id, mirrorShape(s, cx, cy, axis));
+    }
+    replaceShapes(map, axis === 'h' ? 'Отражено по горизонтали' : 'Отражено по вертикали');
+  }, [replaceShapes]);
+
+  const duplicateSel = useCallback(() => {
+    const cur = docRef.current.shapes.filter((s) => selRef.current.has(s.id));
+    if (!cur.length) return;
+    const step = Math.max(2, grid.step * 5);
+    const copies = cur.map((s) => ({
+      ...translateShape(s, step, -step),
+      id: luid(s.kind),
+      name: `${s.name} (копия)`,
+    }));
+    commit({ ...docRef.current, shapes: [...docRef.current.shapes, ...copies] }, `Дубликат: ${copies.length} шт.`);
+    setSel(new Set(copies.map((c) => c.id)));
+  }, [commit, grid.step, setSel]);
+
+  const deleteSel = useCallback(() => {
+    const ids = new Set(
+      docRef.current.shapes.filter((s) => selRef.current.has(s.id) && !s.locked).map((s) => s.id)
+    );
+    if (!ids.size) {
+      setMsg({ text: 'Нечего удалять: выделение пусто или объекты заблокированы.', ok: false });
+      return;
+    }
+    const groups = docRef.current.groups.filter((g) =>
+      docRef.current.shapes.some((s) => s.groupId === g.id && !ids.has(s.id))
+    );
+    commit({
+      ...docRef.current,
+      shapes: docRef.current.shapes.filter((s) => !ids.has(s.id)),
+      groups,
+    }, `Удалено объектов: ${ids.size}`);
+    setSel(new Set());
+    setNodeEdit(null);
+  }, [commit, setSel]);
+
+  const groupSel = useCallback(() => {
+    const ids = selRef.current;
+    if (ids.size < 2) return;
+    const id = luid('grp');
+    const n = docRef.current.groups.length + 1;
+    commit({
+      ...docRef.current,
+      groups: [...docRef.current.groups, { id, name: `Группа ${n}` }],
+      shapes: docRef.current.shapes.map((s) => (ids.has(s.id) ? { ...s, groupId: id } : s)),
+    }, `Сгруппировано объектов: ${ids.size}`);
+  }, [commit]);
+
+  const ungroupSel = useCallback(() => {
+    const ids = selRef.current;
+    const touched = new Set(
+      docRef.current.shapes.filter((s) => ids.has(s.id) && s.groupId).map((s) => s.groupId as string)
+    );
+    if (!touched.size) {
+      setMsg({ text: 'В выделении нет групп.', ok: false });
+      return;
+    }
+    const groups = docRef.current.groups.filter((g) => !touched.has(g.id));
+    commit({
+      ...docRef.current,
+      groups,
+      shapes: docRef.current.shapes.map((s) =>
+        ids.has(s.id) && s.groupId && touched.has(s.groupId) ? { ...s, groupId: undefined } : s
+      ),
+    }, `Разгруппировано: ${touched.size}`);
+  }, [commit]);
+
+  const orderSel = useCallback((cmd: 'front' | 'back' | 'forward' | 'backward') => {
+    const ids = selRef.current;
+    if (!ids.size) return;
+    const list = docRef.current.shapes;
+    const picked = list.filter((s) => ids.has(s.id));
+    const rest = list.filter((s) => !ids.has(s.id));
+    let shapes: LaserShape[];
+    if (cmd === 'front') shapes = [...rest, ...picked];
+    else if (cmd === 'back') shapes = [...picked, ...rest];
+    else {
+      shapes = rest.slice();
+      const firstIdx = list.findIndex((s) => ids.has(s.id));
+      const at = cmd === 'forward' ? Math.min(shapes.length, firstIdx + picked.length) : Math.max(0, firstIdx - 1);
+      shapes.splice(at, 0, ...picked);
+    }
+    commit({ ...docRef.current, shapes }, 'Изменён порядок объектов', true);
+  }, [commit]);
+
+  const alignSel = useCallback((mode: AlignMode) => {
+    const shapes = alignShapes(docRef.current.shapes, selRef.current, mode, docRef.current.w, docRef.current.h);
+    commit({ ...docRef.current, shapes }, 'Выравнивание объектов', true);
+  }, [commit]);
+
+  const booleanSel = useCallback((op: BooleanOp) => {
+    // Порядок как в CorelDRAW: первый (нижний по z) объект — целевой
+    const picked = docRef.current.shapes.filter((s) => selRef.current.has(s.id));
+    if (picked.length < 2) {
+      setMsg({ text: 'Для булевой операции нужно выделить не менее двух объектов.', ok: false });
+      return;
+    }
+    try {
+      const result = booleanShapes(picked, op);
+      if (!result.length) {
+        setMsg({ text: 'Операция не дала результата: объекты не пересекаются.', ok: false });
+        return;
+      }
+      const ids = new Set(picked.map((s) => s.id));
+      const names: Record<BooleanOp, string> = {
+        union: 'Объединение (Weld)',
+        subtract: 'Вычитание (Trim)',
+        intersect: 'Пересечение',
+        xor: 'Исключение (XOR)',
+      };
+      const at = docRef.current.shapes.findIndex((s) => ids.has(s.id));
+      const shapes = [
+        ...docRef.current.shapes.filter((s) => !ids.has(s.id)),
+      ];
+      shapes.splice(Math.max(0, at), 0, ...result);
+      commit({ ...docRef.current, shapes }, `${names[op]}: ${picked.length} → ${result.length}`);
+      setSel(new Set(result.map((s) => s.id)));
+    } catch (e) {
+      setMsg({ text: e instanceof Error ? e.message : 'Не удалось выполнить булеву операцию.', ok: false });
+    }
+  }, [commit, setSel]);
+
+  const contourSel = useCallback((delta: number, layer?: LaserLayerId) => {
+    const picked = docRef.current.shapes.filter((s) => selRef.current.has(s.id));
+    if (!picked.length) {
+      setMsg({ text: 'Выделите объект для построения контура.', ok: false });
+      return;
+    }
+    try {
+      const created: LaserShape[] = [];
+      for (const s of picked) {
+        created.push(...offsetShape(s, delta, layer));
+      }
+      if (!created.length) {
+        setMsg({ text: 'Контур не построен: объект слишком мал для такого отступа.', ok: false });
+        return;
+      }
+      commit({ ...docRef.current, shapes: [...docRef.current.shapes, ...created] },
+        `Контур ${delta > 0 ? '+' : ''}${delta.toFixed(2)} мм: ${created.length} объект(ов)`);
+      setSel(new Set(created.map((s) => s.id)));
+    } catch (e) {
+      setMsg({ text: e instanceof Error ? e.message : 'Ошибка построения контура.', ok: false });
+    }
+  }, [commit, setSel]);
+
+  const toCurves = useCallback(() => {
+    const picked = docRef.current.shapes.filter((s) => selRef.current.has(s.id));
+    if (!picked.length) return;
+    const ids = new Set(picked.map((s) => s.id));
+    const converted: LaserShape[] = [];
+    for (const s of picked) {
+      if (s.kind === 'dim') continue;
+      converted.push(...shapeToPath(s));
+    }
+    if (!converted.length) {
+      setMsg({ text: 'Размерную линию нельзя преобразовать в кривую.', ok: false });
+      return;
+    }
+    const shapes = docRef.current.shapes.flatMap((s) => (ids.has(s.id)
+      ? (s.kind === 'dim' ? [s] : shapeToPath(s))
+      : [s]));
+    commit({ ...docRef.current, shapes }, `В кривые: ${converted.length} контур(ов)`);
+    setSel(new Set(converted.map((s) => s.id)));
+    setTool('shape');
+  }, [commit, setSel]);
+
+  const filletSel = useCallback((r: number) => {
+    const picked = docRef.current.shapes.filter((s) => selRef.current.has(s.id));
+    if (!picked.length) return;
+    const map = new Map<string, LaserShape>();
+    for (const s of picked) {
+      if (s.kind === 'text' || s.kind === 'dim') continue;
+      map.set(s.id, filletShapeCorners(s, r));
+    }
+    if (!map.size) {
+      setMsg({ text: 'Скругление доступно для контуров, а не для текста и размеров.', ok: false });
+      return;
+    }
+    replaceShapes(map, `Скругление углов R${r} мм`);
+  }, [replaceShapes]);
+
+  const arraySel = useCallback((rows: number, cols: number, gapX: number, gapY: number) => {
+    const picked = docRef.current.shapes.filter((s) => selRef.current.has(s.id));
+    if (!picked.length) return;
+    const copies = arrayShapes(picked, Math.max(1, rows), Math.max(1, cols), gapX, gapY);
+    if (!copies.length) {
+      setMsg({ text: 'Массив 1×1 ничего не добавляет.', ok: false });
+      return;
+    }
+    const bb = selectionBBox([...picked, ...copies]);
+    if (bb && (bb[2] > docRef.current.w + 1 || bb[3] > docRef.current.h + 1)) {
+      setMsg({ text: 'Внимание: массив выходит за пределы листа — часть деталей станок не обработает.', ok: false });
+    }
+    commit({ ...docRef.current, shapes: [...docRef.current.shapes, ...copies] },
+      `Массив ${rows}×${cols}: добавлено ${copies.length} объектов`);
+    setSel(new Set([...selRef.current, ...copies.map((c) => c.id)]));
+  }, [commit, setSel]);
+
+  const autoNest = useCallback(() => {
+    if (!docRef.current.shapes.length) return;
+    try {
+      const shapes = autoNestShapes(docRef.current.shapes, docRef.current.w, docRef.current.h, 5, 3);
+      commit({ ...docRef.current, shapes }, 'Автораскладка деталей на листе');
+      setTimeout(() => fit(), 30);
+    } catch (e) {
+      setMsg({ text: e instanceof Error ? e.message : 'Автораскладка не удалась.', ok: false });
+    }
+  }, [commit, fit]);
+
+  const applyMaterial = useCallback((preset: MaterialPreset) => {
+    const layers = { ...docRef.current.layers };
+    const patch = (id: LaserLayerId, p: Partial<LaserLayerConfig>) => {
+      layers[id] = { ...layers[id], ...p };
+    };
+    patch('cut', {
+      power: preset.cutPower, speed: preset.cutSpeed, passes: preset.cutPasses, kerf: preset.kerf,
+    });
+    patch('inner', { power: preset.cutPower, speed: Math.round(preset.cutSpeed * 0.9), passes: preset.cutPasses, kerf: preset.kerf });
+    patch('fold', { power: preset.foldPower, speed: preset.foldSpeed });
+    patch('score', { power: preset.scorePower, speed: preset.scoreSpeed });
+    patch('engrave', { power: preset.engravePower, speed: preset.engraveSpeed });
+    commit({
+      ...docRef.current,
+      layers,
+      materialPresetId: preset.id,
+      materialThickness: preset.thicknessMm,
+    }, `Материал: ${preset.name} (${preset.thicknessMm} мм)`);
+  }, [commit]);
+
+  const patchLayer = useCallback((id: LaserLayerId, p: Partial<LaserLayerConfig>) => {
+    commit({
+      ...docRef.current,
+      layers: { ...docRef.current.layers, [id]: { ...docRef.current.layers[id], ...p } },
+      materialPresetId: '',
+    }, `Слой «${docRef.current.layers[id]?.short ?? id}»: параметры лазера`, true);
+  }, [commit]);
+
+  // ---------------- генератор развёрток ----------------
+
+  const generateUnfold = useCallback(() => {
+    setUnfoldBusy(true);
+    window.setTimeout(() => {
+      try {
+        const params: UnfoldParams = {
+          ...unfoldParams,
+          thickness: docRef.current.materialThickness || unfoldParams.thickness,
+        };
+        const { shapes, groups } = generateUnfolding(params, 12, 12);
+        if (!shapes.length) {
+          setMsg({ text: 'Развёртка не построена: проверьте размеры.', ok: false });
+          return;
+        }
+        const bb = selectionBBox(shapes);
+        const over = bb && (bb[2] > docRef.current.w + 0.5 || bb[3] > docRef.current.h + 0.5);
+        commit({
+          ...docRef.current,
+          shapes: [...docRef.current.shapes, ...shapes],
+          groups: [...docRef.current.groups, ...groups],
+        }, `Развёртка: ${UNFOLD_TEMPLATES.find((t) => t.id === params.template)?.name ?? params.template} (${shapes.length} объектов)`);
+        setSel(new Set(shapes.map((s) => s.id)));
+        if (over) {
+          setMsg({
+            text: `Развёртка (${(bb![2] - bb![0]).toFixed(0)}×${(bb![3] - bb![1]).toFixed(0)} мм) больше листа `
+              + `${docRef.current.w}×${docRef.current.h} мм — увеличьте стол или уменьшите деталь.`,
+            ok: false,
+          });
+        }
+      } catch (e) {
+        setMsg({ text: e instanceof Error ? e.message : 'Ошибка генератора развёрток.', ok: false });
+      } finally {
+        setUnfoldBusy(false);
+      }
+    }, 20);
+  }, [unfoldParams, commit, setSel]);
+
+  // ---------------- файлы ----------------
+
+  const fileName = useCallback((ext: string) => `${safeFileName(doc.name)}.${ext}`, [doc.name]);
+
+  const runExport = useCallback(async (format: LaserExportFormat) => {
+    try {
+      if (format === 'gcode') {
+        const text = exportLaserGCode(docRef.current, gcode);
+        download(fileName('gcode'), new Blob([text], { type: 'text/plain;charset=utf-8' }));
+        setMsg({ text: `G-Code сохранён: ${fileName('gcode')} (${(text.length / 1024).toFixed(1)} КБ)`, ok: true });
+      } else if (format === 'svg') {
+        download(fileName('svg'), new Blob([exportLaserSvg(docRef.current)], { type: 'image/svg+xml;charset=utf-8' }));
+        setMsg({ text: `SVG сохранён: ${fileName('svg')}`, ok: true });
+      } else if (format === 'dxf') {
+        download(fileName('dxf'), new Blob([exportLaserDxf(docRef.current)], { type: 'application/dxf' }));
+        setMsg({ text: `DXF сохранён: ${fileName('dxf')}`, ok: true });
+      } else if (format === 'project') {
+        download(fileName('pslaser'), new Blob([serializeLaserProject(docRef.current)], { type: 'application/json' }));
+        setMsg({ text: `Проект сохранён: ${fileName('pslaser')}`, ok: true });
+      } else if (format === 'png') {
+        const pxPerMm = Math.max(2, Math.min(20, 2400 / Math.max(docRef.current.w, docRef.current.h)));
+        const w = Math.max(64, Math.round(docRef.current.w * pxPerMm));
+        const h = Math.max(64, Math.round(docRef.current.h * pxPerMm));
+        const cv = document.createElement('canvas');
+        cv.width = w;
+        cv.height = h;
+        const ctx = cv.getContext('2d');
+        if (!ctx) throw new Error('canvas недоступен');
+        const v: LaserView = { s: pxPerMm, ox: 0, oy: h };
+        const themeNow = laserTheme(theme);
+        drawLaserSheet(ctx, docRef.current, v, w, h, themeNow);
+        for (const s of docRef.current.shapes) {
+          if (s.hidden) continue;
+          const cfg = docRef.current.layers[s.layer];
+          if (!cfg?.visible) continue;
+          drawLaserShape(ctx, s, v, cfg.color, {});
+        }
+        const blob = await new Promise<Blob | null>((resolve) => cv.toBlob(resolve, 'image/png'));
+        if (!blob) throw new Error('не удалось создать PNG');
+        download(fileName('png'), blob);
+        setMsg({ text: `PNG сохранён: ${fileName('png')} (${w}×${h} px)`, ok: true });
+      }
+      setDialog(null);
+    } catch (e) {
+      setMsg({ text: e instanceof Error ? e.message : 'Ошибка экспорта.', ok: false });
+    }
+  }, [fileName, gcode, theme]);
+
+  const openProjectFile = useCallback((file: File) => {
+    file.text().then((text) => {
+      const name = file.name.toLowerCase();
+      if (name.endsWith('.pslaser') || name.endsWith('.json')) {
+        const next = parseLaserProject(text);
+        if (!next) {
+          setMsg({ text: 'Это не проект PSBees Laser (.pslaser) или файл повреждён.', ok: false });
+          return;
+        }
+        past.current = [...past.current, { doc: docRef.current, label: 'Открыт проект' }].slice(-HISTORY_LIMIT);
+        future.current = [];
+        setDoc(next);
+        setHistTick((t) => t + 1);
+        setSel(new Set());
+        setSim(null);
+        setMsg({ text: `Открыт проект «${next.name}»: ${next.shapes.length} объектов`, ok: true });
+        setTimeout(() => fit(next), 40);
+        return;
+      }
+      // SVG / DXF — импорт векторной геометрии
+      const shapes = importVectorFile(text, file.name, docRef.current.h);
+      if (!shapes.length) {
+        setMsg({ text: 'В файле не найдено векторных объектов (поддерживаются SVG и DXF).', ok: false });
+        return;
+      }
+      // переносим импорт в пределы листа
+      const bb = selectionBBox(shapes);
+      let placed = shapes;
+      if (bb && (bb[0] < 0 || bb[1] < 0 || bb[2] > docRef.current.w || bb[3] > docRef.current.h)) {
+        const dx = 5 - bb[0];
+        const dy = 5 - bb[1];
+        placed = shapes.map((s) => translateShape(s, dx, dy));
+      }
+      commit({ ...docRef.current, shapes: [...docRef.current.shapes, ...placed] },
+        `Импорт ${file.name}: ${placed.length} объектов`);
+      setSel(new Set(placed.map((s) => s.id)));
+      setTimeout(() => fit(), 40);
+    }).catch(() => setMsg({ text: 'Не удалось прочитать файл.', ok: false }));
+  }, [commit, fit, setDoc, setSel]);
+
+  const runSimulate = useCallback(() => {
+    setSimBusy(true);
+    setDialog('sim');
+    window.setTimeout(() => {
+      try {
+        setSim(buildLaserSimulation(docRef.current));
+      } catch (e) {
+        setMsg({ text: e instanceof Error ? e.message : 'Не удалось рассчитать траекторию.', ok: false });
+        setSim(null);
+      } finally {
+        setSimBusy(false);
+      }
+    }, 20);
+  }, []);
+
+  // ---------------- мышь ----------------
+
+  const cloneSelected = useCallback((): LaserShape[] =>
+    docRef.current.shapes.filter((s) => selRef.current.has(s.id)), []);
+
+  const onPointerDown = useCallback((e: RPointerEvent<HTMLCanvasElement>) => {
+    const cv = overRef.current;
+    if (!cv) return;
+    cv.setPointerCapture(e.pointerId);
+    const rect = cv.getBoundingClientRect();
+    const px = e.clientX - rect.left;
+    const py = e.clientY - rect.top;
+    const raw = toWorld(view, px, py);
+    const p = snapWorld(raw, e.altKey);
+    histStart.current = docRef.current;
+
+    const panning = e.button === 1 || spaceDown || tool === 'pan';
+    if (panning) {
+      drag.current = { mode: 'pan', px, py, view };
+      return;
+    }
+    if (e.button === 2) return;
+
+    // --- инструмент «Форма»: узлы и рычаги ---
+    if (tool === 'shape') {
+      // Цель — выделенная кривая, иначе ближайшая кривая под курсором
+      const single = selShapes.length === 1 ? selShapes[0] : null;
+      const under = pickShape(p);
+      const candidate = single?.kind === 'path' ? single : (under?.kind === 'path' ? under : null);
+      const target = candidate as PathShape | null;
+      if (!target) {
+        if (under) {
+          setSel(new Set([under.id]));
+          setMsg({
+            text: 'Это не кривая. Нажмите Ctrl+Q («В кривые»), чтобы править её узлы.',
+            ok: false,
+          });
+        } else {
+          setSel(new Set());
+          setNodeEdit(null);
+        }
+        return;
+      }
+      setSel(new Set([target.id]));
+      setNodeEdit({ id: target.id, node: null });
+      const tol = 8 / Math.max(view.s, 0.001);
+      const nodeIdx = nearestNodeIndex(target, p, tol);
+      if (nodeIdx >= 0) {
+        const handle = nearestHandle(target, nodeIdx, p, tol * 0.8);
+        if (handle) {
+          drag.current = { mode: 'handle', id: target.id, idx: nodeIdx, which: handle, orig: target, moved: false };
+        } else {
+          drag.current = { mode: 'node', id: target.id, idx: nodeIdx, orig: target, moved: false };
+        }
+        setNodeEdit({ id: target.id, node: nodeIdx });
+        return;
+      }
+      // клик по сегменту — выбираем ближайшую точку на кривой (двойной клик добавит узел)
+      setNodeEdit({ id: target.id, node: null });
+      drag.current = { mode: 'node', id: target.id, idx: -1, orig: target, moved: false };
+      return;
+    }
+
+    // --- инструменты рисования ---
+    if (tool === 'rect' || tool === 'ellipse' || tool === 'polygon') {
+      setDraft({ t: tool, layer: activeLayer, a: p, b: p, shift: e.shiftKey });
+      drag.current = { mode: 'marquee', a: p, shift: false, base: new Set(), moved: false };
+      return;
+    }
+    if (tool === 'line') {
+      if (!draft || draft.t !== 'line') {
+        setDraft({ t: 'line', layer: activeLayer, a: p, b: p, shift: e.shiftKey });
+      } else {
+        finishLine({ ...draft, b: e.shiftKey ? constrainAngle(draft.a, p, 15) : p });
+      }
+      return;
+    }
+    if (tool === 'dim') {
+      if (!draft || draft.t !== 'dim') {
+        setDraft({ t: 'dim', a: p, b: null, c: null });
+      } else if (!draft.b) {
+        setDraft({ ...draft, b: p });
+      } else {
+        finishDim({ ...draft, c: p });
+      }
+      return;
+    }
+    if (tool === 'text') {
+      const layer: LaserLayerId = activeLayer === 'guide' ? 'engrave' : activeLayer;
+      const shape: LaserShape = {
+        id: luid('text'), kind: 'text', layer, name: 'Надпись (гравировка)',
+        x: p.x, y: p.y, text: 'Текст', size: 6, strokeWidth: 0.4, rot: 0, mirror: false,
+        filled: layer === 'engrave',
+      };
+      commit({ ...docRef.current, shapes: [...docRef.current.shapes, shape] }, 'Добавлена надпись');
+      setSel(new Set([shape.id]));
+      setTool('select');
+      setMsg({ text: 'Надпись поставлена. Текст, кегль и толщину линии измените в панели свойств справа.', ok: true });
+      return;
+    }
+    if (tool === 'pen') {
+      if (!draft || draft.t !== 'pen') {
+        setDraft({
+          t: 'pen', layer: activeLayer, closed: false, dragging: true, shift: e.shiftKey,
+          nodes: [{ x: p.x, y: p.y }],
+        });
+        return;
+      }
+      const first = draft.nodes[0];
+      const closeTol = 8 / Math.max(view.s, 0.001);
+      if (draft.nodes.length >= 3 && Math.hypot(first.x - p.x, first.y - p.y) <= closeTol) {
+        finishPen({ ...draft, closed: true, dragging: false });
+        return;
+      }
+      setDraft({
+        ...draft,
+        dragging: true,
+        shift: e.shiftKey,
+        nodes: [...draft.nodes, { x: p.x, y: p.y }],
+      });
+      return;
+    }
+
+    // --- выбор: маркеры, объекты, маркиз ---
+    if (selBBox && selShapes.length) {
+      const handles = selectionHandlePoints(selBBox, view);
+      const h = handles.find((x) => Math.hypot(x.px - px, x.py - py) <= 7);
+      if (h) {
+        drag.current = {
+          mode: 'resize', handle: h.id, bb: selBBox,
+          orig: cloneSelected(), moved: false, uniform: e.shiftKey,
+        };
+        return;
+      }
+    }
+
+    const hit = pickShape(p);
+    if (hit) {
+      let next = selRef.current;
+      if (e.shiftKey) {
+        next = new Set(selRef.current);
+        if (next.has(hit.id)) next.delete(hit.id);
+        else next.add(hit.id);
+      } else if (!next.has(hit.id)) {
+        next = new Set([hit.id]);
+      }
+      setSel(next);
+      const moving = docRef.current.shapes.filter((s) => next.has(s.id) && !s.locked);
+      drag.current = { mode: 'move', start: p, orig: moving, moved: false };
+      return;
+    }
+
+    if (!e.shiftKey) setSel(new Set());
+    drag.current = { mode: 'marquee', a: p, shift: e.shiftKey, base: new Set(selRef.current), moved: false };
+    setMarquee({ a: p, b: p });
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [view, tool, activeLayer, draft, selBBox, selShapes, snapWorld, pickShape, commit, setSel, spaceDown, cloneSelected]);
+
+  /** Завершение рисования отрезка. */
+  const finishLine = useCallback((d: Extract<Draft, { t: 'line' }>) => {
+    if (Math.hypot(d.b.x - d.a.x, d.b.y - d.a.y) < MIN_DRAW_MM) {
+      setDraft(null);
+      return;
+    }
+    const shape: LaserShape = {
+      id: luid('line'), kind: 'path', layer: d.layer, name: 'Отрезок',
+      nodes: [{ x: d.a.x, y: d.a.y }, { x: d.b.x, y: d.b.y }], closed: false, filled: false,
+    };
+    commit({ ...docRef.current, shapes: [...docRef.current.shapes, shape] }, 'Добавлен отрезок');
+    setSel(new Set([shape.id]));
+    setDraft(null);
+    setTool('select');
+  }, [commit, setSel]);
+
+  /** Завершение рисования кривой пером. */
+  const finishPen = useCallback((d: Extract<Draft, { t: 'pen' }>) => {
+    const nodes = d.nodes.filter((n, i) =>
+      i === 0 || Math.hypot(n.x - d.nodes[i - 1].x, n.y - d.nodes[i - 1].y) > 1e-4);
+    if (nodes.length < 2) {
+      setDraft(null);
+      return;
+    }
+    const shape: LaserShape = {
+      id: luid('curve'), kind: 'path', layer: d.layer,
+      name: d.closed ? 'Замкнутая кривая' : 'Кривая',
+      nodes, closed: d.closed, filled: false,
+    };
+    commit({ ...docRef.current, shapes: [...docRef.current.shapes, shape] },
+      d.closed ? `Добавлен замкнутый контур (${nodes.length} узлов)` : `Добавлена кривая (${nodes.length} узлов)`);
+    setSel(new Set([shape.id]));
+    setDraft(null);
+    setTool('select');
+  }, [commit, setSel]);
+
+  /** Завершение размерной линии. */
+  const finishDim = useCallback((d: Extract<Draft, { t: 'dim' }>) => {
+    if (!d.b) {
+      setDraft(null);
+      return;
+    }
+    const len = Math.hypot(d.b.x - d.a.x, d.b.y - d.a.y);
+    if (len < MIN_DRAW_MM) {
+      setDraft(null);
+      return;
+    }
+    const off = d.c ? perpOffset(d.a, d.b, d.c) : 8;
+    const shape: LaserShape = {
+      id: luid('dim'), kind: 'dim', layer: 'guide', name: `Размер ${len.toFixed(1)} мм`,
+      x1: d.a.x, y1: d.a.y, x2: d.b.x, y2: d.b.y,
+      offset: Math.abs(off) < 2 ? (off < 0 ? -2 : 2) : off,
+      label: `${len.toFixed(2)} мм`,
+    };
+    commit({ ...docRef.current, shapes: [...docRef.current.shapes, shape] }, `Добавлен размер ${len.toFixed(2)} мм`);
+    setSel(new Set([shape.id]));
+    setDraft(null);
+    setTool('select');
+  }, [commit, setSel]);
+
+  /** Финал протяжки (прямоугольник / эллипс / многоугольник / маркиз). */
+  const finishDragDraw = useCallback((d: Draft) => {
+    const shape = draftToShape(d);
+    setDraft(null);
+    if (!shape || shape.kind === 'path') {
+      if (shape && shape.kind === 'path') {
+        commit({ ...docRef.current, shapes: [...docRef.current.shapes, shape] }, 'Добавлен отрезок');
+        setSel(new Set([shape.id]));
+        setTool('select');
+      }
+      return;
+    }
+    if (shape.kind === 'polygon') {
+      shape.sides = polygonSides;
+      shape.star = polygonStar;
+      shape.innerRatio = 0.45;
+    }
+    const bb = shapeBBox(shape);
+    if (bb[2] - bb[0] < MIN_DRAW_MM || bb[3] - bb[1] < MIN_DRAW_MM) return;
+    commit({ ...docRef.current, shapes: [...docRef.current.shapes, shape] }, `Добавлен объект: ${shape.name}`);
+    setSel(new Set([shape.id]));
+    setTool('select');
+  }, [commit, polygonSides, polygonStar, setSel]);
+
+  const onPointerMove = useCallback((e: RPointerEvent<HTMLCanvasElement>) => {
+    const cv = overRef.current;
+    if (!cv) return;
+    const rect = cv.getBoundingClientRect();
+    const px = e.clientX - rect.left;
+    const py = e.clientY - rect.top;
+    const raw = toWorld(view, px, py);
+    const p = snapWorld(raw, e.altKey);
+    setMouse({ px, py, wx: p.x, wy: p.y });
+    setSnapMark(grid.snap && !e.altKey ? nearestSnapPoint(snapPoints, raw, 7 / Math.max(view.s, 0.001)) : null);
+
+    const d = drag.current;
+    if (!d) {
+      // предпросмотр незавершённого рисунка
+      if (draft) {
+        if (draft.t === 'line') {
+          setDraft({ ...draft, b: e.shiftKey ? constrainAngle(draft.a, p, 15) : p, shift: e.shiftKey });
+        } else if (draft.t === 'dim') {
+          if (!draft.b) setDraft({ ...draft, c: null });
+          else setDraft({ ...draft, c: p });
+        } else if (draft.t === 'pen' && draft.dragging && draft.nodes.length) {
+          const nodes = draft.nodes.slice();
+          const last = nodes[nodes.length - 1];
+          const dx = p.x - last.x;
+          const dy = p.y - last.y;
+          nodes[nodes.length - 1] = {
+            ...last,
+            smooth: Math.hypot(dx, dy) > 1e-3,
+            cp2x: p.x, cp2y: p.y,
+            cp1x: last.x - dx, cp1y: last.y - dy,
+          };
+          setDraft({ ...draft, nodes, shift: e.shiftKey });
+        }
+      }
+      return;
+    }
+
+    if (d.mode === 'pan') {
+      const dx = px - d.px;
+      const dy = py - d.py;
+      setView({ s: d.view.s, ox: d.view.ox + dx, oy: d.view.oy + dy });
+      return;
+    }
+
+    if (d.mode === 'marquee') {
+      if (draft && (draft.t === 'rect' || draft.t === 'ellipse' || draft.t === 'polygon')) {
+        setDraft({ ...draft, b: constrainBox(draft.a, p, e.shiftKey || draft.shift) });
+        return;
+      }
+      d.moved = true;
+      setMarquee({ a: d.a, b: p });
+      const x0 = Math.min(d.a.x, p.x);
+      const x1 = Math.max(d.a.x, p.x);
+      const y0 = Math.min(d.a.y, p.y);
+      const y1 = Math.max(d.a.y, p.y);
+      const next = new Set(d.shift ? d.base : []);
+      for (const s of docRef.current.shapes) {
+        if (!pickable(s)) continue;
+        const bb = shapeBBox(s);
+        if (bb[0] >= x0 - 1e-6 && bb[2] <= x1 + 1e-6 && bb[1] >= y0 - 1e-6 && bb[3] <= y1 + 1e-6) {
+          next.add(s.id);
+        }
+      }
+      setSel(next);
+      return;
+    }
+
+    if (d.mode === 'move') {
+      const dx = p.x - d.start.x;
+      const dy = p.y - d.start.y;
+      if (!d.moved && Math.hypot(dx, dy) * view.s < 1.5) return;
+      d.moved = true;
+      const map = new Map<string, LaserShape>();
+      for (const s of d.orig) map.set(s.id, translateShape(s, dx, dy));
+      const shapes = docRef.current.shapes.map((s) => map.get(s.id) ?? s);
+      setDoc({ ...docRef.current, shapes });
+      return;
+    }
+
+    if (d.mode === 'resize') {
+      d.moved = true;
+      const bb = d.bb;
+      let nx0 = bb[0], ny0 = bb[1], nx1 = bb[2], ny1 = bb[3];
+      const h = d.handle;
+      if (h === 'e' || h === 'se' || h === 'ne') nx1 = p.x;
+      if (h === 'w' || h === 'sw' || h === 'nw') nx0 = p.x;
+      if (h === 'n' || h === 'ne' || h === 'nw') ny1 = p.y;
+      if (h === 's' || h === 'se' || h === 'sw') ny0 = p.y;
+      const w0 = Math.max(bb[2] - bb[0], 1e-6);
+      const h0 = Math.max(bb[3] - bb[1], 1e-6);
+      let newW = Math.max(Math.abs(nx1 - nx0), 0.2);
+      let newH = Math.max(Math.abs(ny1 - ny0), 0.2);
+      const both = (h === 'se' || h === 'ne' || h === 'nw' || h === 'sw');
+      if (d.uniform && both) {
+        const k = Math.max(newW / w0, newH / h0);
+        newW = w0 * k;
+        newH = h0 * k;
+      }
+      const sx = h === 'n' || h === 's' ? 1 : newW / w0;
+      const sy = h === 'e' || h === 'w' ? 1 : newH / h0;
+      const anchorX = (h === 'w' || h === 'sw' || h === 'nw') ? bb[2] : bb[0];
+      const anchorY = (h === 's' || h === 'se' || h === 'sw') ? bb[3] : bb[1];
+      const map = new Map<string, LaserShape>();
+      for (const s of d.orig) map.set(s.id, scaleShape(s, anchorX, anchorY, sx, sy));
+      const shapes = docRef.current.shapes.map((s) => map.get(s.id) ?? s);
+      setDoc({ ...docRef.current, shapes });
+      return;
+    }
+
+    if (d.mode === 'node' || d.mode === 'handle') {
+      const shape = docRef.current.shapes.find((s) => s.id === d.id);
+      if (!shape || shape.kind !== 'path') return;
+      if (d.mode === 'node' && d.idx < 0) return;
+      d.moved = true;
+      const next = d.mode === 'node'
+        ? moveNode(d.orig, d.idx, p)
+        : moveHandle(d.orig, d.idx, d.which, p);
+      const shapes = docRef.current.shapes.map((s) => (s.id === d.id ? (next as LaserShape) : s));
+      setDoc({ ...docRef.current, shapes });
+      return;
+    }
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [view, draft, grid.snap, snapPoints, snapWorld, pickable, setDoc, setSel]);
+
+  const onPointerUp = useCallback((e: RPointerEvent<HTMLCanvasElement>) => {
+    const cv = overRef.current;
+    if (cv && e.pointerId !== undefined) {
+      try { cv.releasePointerCapture(e.pointerId); } catch { /* уже снято */ }
+    }
+    const d = drag.current;
+    drag.current = null;
+    if (!d) return;
+
+    if (d.mode === 'marquee') {
+      setMarquee(null);
+      if (draft && (draft.t === 'rect' || draft.t === 'ellipse' || draft.t === 'polygon')) {
+        finishDragDraw(draft);
+        histStart.current = null;
+        return;
+      }
+      if (!d.moved) histStart.current = null;
+      return;
+    }
+    if (d.mode === 'move' && d.moved) {
+      commitDrag(`Перемещено объектов: ${d.orig.length}`);
+      return;
+    }
+    if (d.mode === 'resize' && d.moved) {
+      commitDrag('Изменён размер');
+      return;
+    }
+    if ((d.mode === 'node' || d.mode === 'handle') && d.moved) {
+      commitDrag(d.mode === 'node' ? 'Перемещён узел кривой' : 'Изменён рычаг Безье');
+      return;
+    }
+    histStart.current = null;
+  }, [commitDrag, draft, finishDragDraw]);
+
+  const onDoubleClick = useCallback((e: RPointerEvent<HTMLCanvasElement>) => {
+    const cv = overRef.current;
+    if (!cv) return;
+    const rect = cv.getBoundingClientRect();
+    const p = snapWorld(toWorld(view, e.clientX - rect.left, e.clientY - rect.top), e.altKey);
+
+    if (tool === 'pen' && draft?.t === 'pen') {
+      finishPen(draft);
+      return;
+    }
+
+    if (tool === 'shape') {
+      const shape = docRef.current.shapes.find((s) => s.id === nodeEdit?.id);
+      if (shape && shape.kind === 'path') {
+        const idx = nearestNodeIndex(shape, p, 10 / Math.max(view.s, 0.001));
+        if (idx >= 0) {
+          const next = deleteNode(shape, idx);
+          if (!next) {
+            setMsg({ text: 'Нельзя удалить узел: останется вырожденный контур.', ok: false });
+            return;
+          }
+          const shapes = docRef.current.shapes.map((s) => (s.id === shape.id ? (next as LaserShape) : s));
+          commit({ ...docRef.current, shapes }, 'Удалён узел кривой');
+          setNodeEdit({ id: shape.id, node: null });
+          return;
+        }
+        const ins = insertNode(shape, p);
+        if (ins) {
+          const shapes = docRef.current.shapes.map((s) => (s.id === shape.id ? (ins.shape as LaserShape) : s));
+          commit({ ...docRef.current, shapes }, 'Добавлен узел на кривой');
+          setNodeEdit({ id: shape.id, node: ins.index });
+        }
+        return;
+      }
+    }
+
+    // двойной клик по объекту в режиме выбора: кривую — править узлами, группу — выделить целиком
+    const hit = pickShape(p);
+    if (!hit) return;
+    if (hit.kind === 'path') {
+      setSel(new Set([hit.id]));
+      setNodeEdit({ id: hit.id, node: null });
+      setTool('shape');
+      setMsg({ text: 'Кривая открыта для правки узлов (F10).', ok: true });
+      return;
+    }
+    if (hit.groupId) {
+      const ids = new Set(docRef.current.shapes.filter((s) => s.groupId === hit.groupId).map((s) => s.id));
+      setSel(ids);
+      const g = docRef.current.groups.find((x) => x.id === hit.groupId);
+      setMsg({ text: `Выделена группа «${g?.name ?? 'без имени'}»: ${ids.size} объектов`, ok: true });
+    }
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [tool, draft, view, nodeEdit, commit, pickShape, snapWorld, finishPen, setSel]);
+
+  const onWheel = useCallback((e: RWheelEvent<HTMLCanvasElement>) => {
+    const cv = overRef.current;
+    if (!cv) return;
+    const rect = cv.getBoundingClientRect();
+    const px = e.clientX - rect.left;
+    const py = e.clientY - rect.top;
+    if (e.shiftKey) {
+      // горизонтальная прокрутка листа
+      setView((v) => ({ ...v, ox: v.ox - e.deltaY }));
+      return;
+    }
+    zoomAt(px, py, e.deltaY < 0 ? 1.12 : 1 / 1.12);
+  }, [zoomAt]);
+
+  const nudgeTimer = useRef(0);
+  const nudge = useCallback((dx: number, dy: number) => {
+    const cur = cloneSelected().filter((s) => !s.locked);
+    if (!cur.length) return;
+    const map = new Map<string, LaserShape>();
+    for (const s of cur) map.set(s.id, translateShape(s, dx, dy));
+    replaceShapes(map, 'Сдвиг стрелками', false);
+    nudgeTimer.current = window.setTimeout(() => commitDrag('Сдвиг стрелками'), 400);
+    if (!histStart.current) histStart.current = docRef.current;
+  }, [cloneSelected, replaceShapes, commitDrag]);
+
+  // ---------------- клавиатура ----------------
+
+  const keyHandler = useCallback((e: KeyboardEvent) => {
+    if (mode !== 'laser') return;
+    const t = e.target as HTMLElement | null;
+    if (t && (t.tagName === 'INPUT' || t.tagName === 'TEXTAREA' || t.tagName === 'SELECT' || t.isContentEditable)) return;
+    const ctrl = e.ctrlKey || e.metaKey;
+    const key = e.key;
+
+    if (key === ' ' && !spaceDown) {
+      setSpaceDown(true);
+      e.preventDefault();
+      return;
+    }
+
+    if (ctrl) {
+      const k = key.toLowerCase();
+      if (k === 'z' && !e.shiftKey) { e.preventDefault(); undo(); return; }
+      if ((k === 'y') || (k === 'z' && e.shiftKey)) { e.preventDefault(); redo(); return; }
+      if (k === 'a') {
+        e.preventDefault();
+        setSel(new Set(docRef.current.shapes.filter(pickable).map((s) => s.id)));
+        return;
+      }
+      if (k === 'd') { e.preventDefault(); duplicateSel(); return; }
+      if (k === 'g' && !e.shiftKey) { e.preventDefault(); groupSel(); return; }
+      if (k === 'g' && e.shiftKey) { e.preventDefault(); ungroupSel(); return; }
+      if (k === 'q') { e.preventDefault(); toCurves(); return; }
+      if (k === 's') { e.preventDefault(); void runExport('project'); return; }
+      if (k === 'o') { e.preventDefault(); fileRef.current?.click(); return; }
+      if (k === 'e') { e.preventDefault(); setDialog('export'); return; }
+      if (k === 'n') { e.preventDefault(); setDialog('new'); return; }
+      if (k === '=' || k === '+') { e.preventDefault(); zoomAt(size.w / 2, size.h / 2, 1.25); return; }
+      if (k === '-') { e.preventDefault(); zoomAt(size.w / 2, size.h / 2, 1 / 1.25); return; }
+      if (k === '0') { e.preventDefault(); fit(); return; }
+      return;
+    }
+
+    if (e.altKey) {
+      const k = key.toLowerCase();
+      if (k === 'w' || k === 'ц') { e.preventDefault(); booleanSel('union'); return; }
+      if (k === 't' || k === 'е') { e.preventDefault(); booleanSel('subtract'); return; }
+      if (k === 'i' || k === 'ш') { e.preventDefault(); booleanSel('intersect'); return; }
+      if (k === 'x' || k === 'ч') { e.preventDefault(); booleanSel('xor'); return; }
+      return;
+    }
+
+    switch (key) {
+      case 'Delete':
+      case 'Backspace':
+        e.preventDefault();
+        if (tool === 'shape' && nodeEdit?.node !== null && nodeEdit?.node !== undefined) {
+          const shape = docRef.current.shapes.find((s) => s.id === nodeEdit.id);
+          if (shape && shape.kind === 'path') {
+            const next = deleteNode(shape, nodeEdit.node);
+            if (next) {
+              commit({
+                ...docRef.current,
+                shapes: docRef.current.shapes.map((s) => (s.id === shape.id ? (next as LaserShape) : s)),
+              }, 'Удалён узел кривой');
+              setNodeEdit({ id: shape.id, node: null });
+            }
+          }
+          return;
+        }
+        deleteSel();
+        return;
+      case 'Escape':
+        if (draft) { setDraft(null); setMsg({ text: 'Рисование отменено.', ok: null }); return; }
+        if (dialog) { setDialog(null); return; }
+        setSel(new Set());
+        setNodeEdit(null);
+        return;
+      case 'Enter':
+        if (draft?.t === 'pen') { e.preventDefault(); finishPen(draft); return; }
+        if (draft?.t === 'line') { e.preventDefault(); finishLine(draft); return; }
+        if (draft?.t === 'dim') { e.preventDefault(); finishDim(draft); return; }
+        return;
+      case 'F10':
+        e.preventDefault();
+        setTool('shape');
+        return;
+      case 'F2':
+        e.preventDefault();
+        setDialog('sheet');
+        return;
+      case 'ArrowLeft': {
+        e.preventDefault();
+        const st = e.shiftKey ? grid.step * 10 : grid.step;
+        nudge(-(st || 1), 0);
+        return;
+      }
+      case 'ArrowRight': {
+        e.preventDefault();
+        const st = e.shiftKey ? grid.step * 10 : grid.step;
+        nudge(st || 1, 0);
+        return;
+      }
+      case 'ArrowUp': {
+        e.preventDefault();
+        const st = e.shiftKey ? grid.step * 10 : grid.step;
+        nudge(0, st || 1);
+        return;
+      }
+      case 'ArrowDown': {
+        e.preventDefault();
+        const st = e.shiftKey ? grid.step * 10 : grid.step;
+        nudge(0, -(st || 1));
+        return;
+      }
+      case 'f': case 'F': case 'а': case 'А': fit(); return;
+      case 's': case 'S': case 'ы': case 'Ы':
+        if (tool === 'shape' && nodeEdit?.node !== null && nodeEdit?.node !== undefined) {
+          const shape = docRef.current.shapes.find((x) => x.id === nodeEdit.id);
+          if (shape && shape.kind === 'path') {
+            const next = toggleSmooth(shape, nodeEdit.node);
+            commit({
+              ...docRef.current,
+              shapes: docRef.current.shapes.map((x) => (x.id === shape.id ? (next as LaserShape) : x)),
+            }, next.nodes[nodeEdit.node].smooth ? 'Узел сделан гладким' : 'Узел сделан угловым');
+          }
+        }
+        return;
+      default: break;
+    }
+
+    // выбор инструмента буквой
+    const toolByKey = LASER_TOOLS.find((x) => x.key.toLowerCase() === key.toLowerCase() && x.key !== 'F10');
+    if (toolByKey && !draft) {
+      setTool(toolByKey.id);
+      if (toolByKey.id !== 'shape') setNodeEdit(null);
+    }
+  }, [
+    mode, spaceDown, undo, redo, duplicateSel, deleteSel, groupSel, ungroupSel, toCurves, booleanSel,
+    runExport, zoomAt, fit, size.w, size.h, draft, dialog, tool, nodeEdit, grid.step, nudge, commit,
+    pickable, setSel, finishPen, finishLine, finishDim,
+  ]);
+
+  const keyRef = useRef(keyHandler);
+  keyRef.current = keyHandler;
+  useEffect(() => {
+    const down = (e: KeyboardEvent) => keyRef.current(e);
+    const up = (e: KeyboardEvent) => { if (e.key === ' ') setSpaceDown(false); };
+    window.addEventListener('keydown', down);
+    window.addEventListener('keyup', up);
+    return () => {
+      window.removeEventListener('keydown', down);
+      window.removeEventListener('keyup', up);
+    };
+  }, []);
+
+  // ---------------- отрисовка: базовый слой ----------------
+
+  useEffect(() => {
+    const cv = baseRef.current;
+    if (!cv) return;
+    cancelAnimationFrame(baseRaf.current);
+    baseRaf.current = requestAnimationFrame(() => {
+      baseRaf.current = 0;
+      const dpr = perfDpr();
+      if (cv.width !== Math.round(size.w * dpr)) cv.width = Math.round(size.w * dpr);
+      if (cv.height !== Math.round(size.h * dpr)) cv.height = Math.round(size.h * dpr);
+      cv.style.width = `${size.w}px`;
+      cv.style.height = `${size.h}px`;
+      const ctx = cv.getContext('2d');
+      if (!ctx) return;
+      ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+
+      drawLaserSheet(ctx, doc, view, size.w, size.h, th);
+      drawLaserGrid(ctx, view, size.w, size.h, grid, th);
+
+      for (const s of doc.shapes) {
+        if (s.hidden) continue;
+        const cfg = doc.layers[s.layer];
+        if (!cfg?.visible) continue;
+        drawLaserShape(ctx, s, view, cfg.color, { selected: sel.has(s.id) });
+      }
+
+      if (selBBox) {
+        drawSelectionBox(ctx, selBBox, view, th);
+        drawSelectionLabel(ctx, selBBox, view, th, sel.size > 1 ? `${sel.size} объектов` : undefined);
+      }
+
+      if (tool === 'shape' && nodeEdit) {
+        const shape = doc.shapes.find((s) => s.id === nodeEdit.id);
+        if (shape && shape.kind === 'path') {
+          drawPathNodes(ctx, shape, view, th, nodeEdit.node);
+        }
+      }
+    });
+  }, [doc, view, size, sel, selBBox, grid, th, tool, nodeEdit]);
+
+  // ---------------- отрисовка: оверлей ----------------
+
+  useEffect(() => {
+    const cv = overRef.current;
+    if (!cv) return;
+    cancelAnimationFrame(overRaf.current);
+    overRaf.current = requestAnimationFrame(() => {
+      overRaf.current = 0;
+      const dpr = perfDpr();
+      if (cv.width !== Math.round(size.w * dpr)) cv.width = Math.round(size.w * dpr);
+      if (cv.height !== Math.round(size.h * dpr)) cv.height = Math.round(size.h * dpr);
+      cv.style.width = `${size.w}px`;
+      cv.style.height = `${size.h}px`;
+      const ctx = cv.getContext('2d');
+      if (!ctx) return;
+      ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+      ctx.clearRect(0, 0, size.w, size.h);
+
+      // перекрестие курсора с координатами
+      if (mouse.px >= 0 && tool !== 'pan') {
+        ctx.strokeStyle = th.grid;
+        ctx.lineWidth = 1;
+        ctx.beginPath();
+        ctx.moveTo(0, Math.round(mouse.py) + 0.5);
+        ctx.lineTo(size.w, Math.round(mouse.py) + 0.5);
+        ctx.moveTo(Math.round(mouse.px) + 0.5, 0);
+        ctx.lineTo(Math.round(mouse.px) + 0.5, size.h);
+        ctx.stroke();
+      }
+
+      // точка привязки
+      if (snapMark) {
+        const p = toScreen(view, snapMark.x, snapMark.y);
+        ctx.strokeStyle = th.sel;
+        ctx.lineWidth = 1.4;
+        ctx.beginPath();
+        ctx.moveTo(p.px - 6, p.py);
+        ctx.lineTo(p.px + 6, p.py);
+        ctx.moveTo(p.px, p.py - 6);
+        ctx.lineTo(p.px, p.py + 6);
+        ctx.stroke();
+      }
+
+      // черновик рисования
+      if (draft) {
+        const shape = draftToShape(draft);
+        if (shape) {
+          const color = shape.kind === 'dim' ? th.dim : (doc.layers[shape.layer]?.color ?? th.sel);
+          drawLaserShape(ctx, shape, view, color, { draft: true });
+        }
+        if (draft.t === 'pen' && draft.nodes.length) {
+          // узлы строящейся кривой
+          ctx.fillStyle = th.node;
+          for (const n of draft.nodes) {
+            const p = toScreen(view, n.x, n.y);
+            ctx.beginPath();
+            ctx.rect(p.px - 3, p.py - 3, 6, 6);
+            ctx.fill();
+          }
+          const first = toScreen(view, draft.nodes[0].x, draft.nodes[0].y);
+          ctx.strokeStyle = th.sel;
+          ctx.lineWidth = 1.2;
+          ctx.beginPath();
+          ctx.arc(first.px, first.py, 7, 0, Math.PI * 2);
+          ctx.stroke();
+        }
+      }
+
+      // маркиз
+      if (marquee) drawMarquee(ctx, marquee.a, marquee.b, view, th);
+    });
+  }, [draft, marquee, mouse.px, mouse.py, snapMark, view, size, th, tool, doc.layers]);
+
+  // ---------------- очистка при размонтировании ----------------
+  useEffect(() => () => {
+    cancelAnimationFrame(baseRaf.current);
+    cancelAnimationFrame(overRaf.current);
+    window.clearTimeout(nudgeTimer.current);
+  }, []);
+
+  // ---------------- панели ----------------
+
+  const propsActions: PropsActions = useMemo(() => ({
+    onPatch: (patch) => patchSelected(patch),
+    onGeometry: (g) => applyGeometry(g),
+    onRotateStep: (deg) => rotateSel(deg),
+    onMirror: (axis) => mirrorSel(axis),
+    onAlign: (m) => alignSel(m),
+    onBoolean: (op) => booleanSel(op),
+    onContour: (delta, layer) => contourSel(delta, layer),
+    onToCurves: () => toCurves(),
+    onFillet: (r) => filletSel(r),
+    onArray: (rows, cols, gx, gy) => arraySel(rows, cols, gx, gy),
+    onDuplicate: () => duplicateSel(),
+    onDelete: () => deleteSel(),
+    onGroup: () => groupSel(),
+    onUngroup: () => ungroupSel(),
+    onOrder: (cmd) => orderSel(cmd),
+    onLayer: (layer) => patchSelected({ layer } as Partial<LaserShape>, `Перенесено на слой «${doc.layers[layer]?.short ?? layer}»`),
+    onLock: (locked) => patchSelected({ locked } as Partial<LaserShape>, locked ? 'Объект заблокирован' : 'Объект разблокирован'),
+    onHide: (hidden) => patchSelected({ hidden } as Partial<LaserShape>, hidden ? 'Объект скрыт' : 'Объект показан'),
+  }), [
+    patchSelected, applyGeometry, rotateSel, mirrorSel, alignSel, booleanSel, contourSel, toCurves,
+    filletSel, arraySel, duplicateSel, deleteSel, groupSel, ungroupSel, orderSel, doc.layers,
+  ]);
+
+  const toggleLayerVisible = useCallback((id: LaserLayerId) => {
+    patchLayer(id, { visible: !docRef.current.layers[id]?.visible });
+  }, [patchLayer]);
+
+  const toggleLayerLock = useCallback((id: LaserLayerId) => {
+    patchLayer(id, { locked: !docRef.current.layers[id]?.locked });
+  }, [patchLayer]);
+
+  const showAllLayers = useCallback(() => {
+    const layers = { ...docRef.current.layers };
+    for (const id of LASER_LAYER_ORDER) layers[id] = { ...layers[id], visible: true };
+    commit({ ...docRef.current, layers }, 'Все слои показаны', true);
+    setSel(new Set());
+  }, [commit, setSel]);
+
+  const cursor = useMemo(() => {
+    if (spaceDown || tool === 'pan') return drag.current?.mode === 'pan' ? 'grabbing' : 'grab';
+    if (tool === 'select') return 'default';
+    return 'crosshair';
+  }, [spaceDown, tool]);
+
+  // ---------------- шапка ----------------
+
+  const tb = (icon: string, title: string, onClick: () => void, opts?: { disabled?: boolean; active?: boolean; wide?: boolean }) => (
+    <button
+      type="button"
+      className={'tb-btn' + (opts?.wide ? ' wide' : '') + (opts?.active ? ' active' : '')}
+      title={title}
+      aria-label={title}
+      disabled={opts?.disabled}
+      onClick={onClick}
+    >
+      <Ic n={icon} />
+    </button>
+  );
+
+  const toolbar = (
+    <div className="toolbar">
+      <div className="brand">
+        <span className="brandmark"><img src="/logo.png" alt="" width={32} height={32} draggable={false} /></span>
+        <span className="brandtext">
+          <b>PS<em>Bees</em></b>
+          <small>LASER · РАЗВЁРТКА · CORELDRAW STYLE</small>
+        </span>
+      </div>
+
+      <ModeSwitcher mode={mode} onChange={onModeChange} />
+
+      <div className="tb-group" aria-label="Файл">
+        {tb('new', 'Новый лист / новый проект (Ctrl+N)', () => setDialog('new'))}
+        {tb('open', 'Открыть проект или импорт SVG/DXF (Ctrl+O)', () => fileRef.current?.click())}
+        {tb('save', 'Сохранить проект .pslaser (Ctrl+S)', () => void runExport('project'))}
+        {tb('spark', 'Векторизовать изображение (трассировка в контуры)', () => setDialog('trace'))}
+        {tb('gerber', 'Экспорт на станок: G-Code, DXF, SVG, PNG (Ctrl+E)', () => setDialog('export'), { wide: false })}
+      </div>
+
+      <div className="tb-group" aria-label="Отмена и повтор">
+        {tb('undo', `Отменить (Ctrl+Z)${past.current.length ? ': ' + past.current[past.current.length - 1].label : ''}`, undo, { disabled: !past.current.length })}
+        {tb('redo', `Повторить (Ctrl+Y)${future.current.length ? ': ' + future.current[future.current.length - 1].label : ''}`, redo, { disabled: !future.current.length })}
+      </div>
+
+      <div className="tb-group" aria-label="Правка объекта">
+        {tb('copy-dup', 'Дублировать (Ctrl+D)', duplicateSel, { disabled: !sel.size })}
+        {tb('trash', 'Удалить (Del)', deleteSel, { disabled: !sel.size })}
+        {tb('group', 'Сгруппировать (Ctrl+G)', groupSel, { disabled: sel.size < 2 })}
+        {tb('ungroup', 'Разгруппировать (Ctrl+Shift+G)', ungroupSel, { disabled: !sel.size })}
+        {tb('bezier', 'Преобразовать в кривые (Ctrl+Q)', toCurves, { disabled: !sel.size })}
+      </div>
+
+      <div className="tb-group" aria-label="Булевы операции">
+        {tb('weld', 'Объединение / Weld (Alt+W)', () => booleanSel('union'), { disabled: sel.size < 2 })}
+        {tb('trim', 'Вычитание / Trim (Alt+T)', () => booleanSel('subtract'), { disabled: sel.size < 2 })}
+        {tb('intersect', 'Пересечение / Intersect (Alt+I)', () => booleanSel('intersect'), { disabled: sel.size < 2 })}
+        {tb('offset', `Контур наружу +${contourState.delta} мм`, () => contourSel(Math.abs(contourState.delta) || 0.1, contourState.layer), { disabled: !sel.size })}
+      </div>
+
+      <div className="tb-group" aria-label="Выравнивание">
+        {tb('align-left', 'Выровнять по левому краю', () => alignSel('left'), { disabled: !sel.size })}
+        {tb('align-center-x', 'Выровнять центры по X выделения', () => alignSel('center-x'), { disabled: !sel.size })}
+        {tb('align-center-y', 'Выровнять центры по Y выделения', () => alignSel('center-y'), { disabled: !sel.size })}
+        {tb('maximize', 'По центру листа', () => alignSel('page-center'), { disabled: !sel.size })}
+        {tb('align-right', 'Выровнять по правому краю', () => alignSel('right'), { disabled: !sel.size })}
+        {tb('align-top', 'Выровнять по верхнему краю', () => alignSel('top'), { disabled: !sel.size })}
+        {tb('align-bottom', 'Выровнять по нижнему краю', () => alignSel('bottom'), { disabled: !sel.size })}
+      </div>
+
+      <div className="tb-group" aria-label="Вид">
+        {tb('zoomin', 'Приблизить (Ctrl +)', () => zoomAt(size.w / 2, size.h / 2, 1.25))}
+        {tb('zoomout', 'Отдалить (Ctrl −)', () => zoomAt(size.w / 2, size.h / 2, 1 / 1.25))}
+        {tb('fit', 'Показать весь лист (F / Ctrl+0)', () => fit())}
+        {tb('grid', grid.on ? 'Сетка включена — выключить' : 'Сетка выключена — включить',
+          () => setGrid((g) => ({ ...g, on: !g.on })), { active: grid.on })}
+        {tb('node', grid.snap ? 'Привязка к сетке и объектам включена — выключить' : 'Привязка выключена',
+          () => setGrid((g) => ({ ...g, snap: !g.snap })), { active: grid.snap })}
+      </div>
+
+      <div className="tb-group" aria-label="Развёртка и станок">
+        {tb('unfold', 'Генератор развёрток (панель слева)', () => setLeftTab('unfold'), { active: leftTab === 'unfold' })}
+        {tb('panel', 'Автораскладка деталей на листе', autoNest, { disabled: !doc.shapes.length })}
+        {tb('play', 'Симуляция обработки на станке', runSimulate, { disabled: !doc.shapes.length })}
+      </div>
+
+      <div style={{ flex: 1 }} />
+
+      <div className="tb-group" aria-label="Оформление">
+        {tb(theme === 'dark' ? 'sun' : 'moon', theme === 'dark' ? 'Включить светлую тему' : 'Включить тёмную тему',
+          () => setTheme(theme === 'dark' ? 'light' : 'dark'))}
+        <button type="button" className="tb-btn cu" title="Активный слой: новые объекты рисуются на нём"
+          style={{ borderColor: doc.layers[activeLayer]?.color, color: doc.layers[activeLayer]?.color }}>
+          {doc.layers[activeLayer]?.short ?? activeLayer}
+        </button>
+      </div>
+
+      <div className="tb-group toolbar-exit" aria-label="Выход">
+        <button type="button" className="tb-btn close-app" title="Закрыть приложение / сайт"
+          aria-label="Закрыть приложение или вкладку" onClick={onCloseApp}>
+          <Ic n="close" />
+        </button>
+      </div>
+    </div>
+  );
+
+  // ---------------- левая колонка ----------------
+
+  const leftColumn = (
+    <div className="side" style={{ width: 300 }}>
+      <div className="pane-full">
+        <div className="tabs">
+          <button type="button" className={leftTab === 'unfold' ? 'on' : ''} onClick={() => setLeftTab('unfold')}>Развёртка</button>
+          <button type="button" className={leftTab === 'layers' ? 'on' : ''} onClick={() => setLeftTab('layers')}>Слои</button>
+          <button type="button" className={leftTab === 'objects' ? 'on' : ''} onClick={() => setLeftTab('objects')}>
+            Объекты{doc.shapes.length ? ` (${doc.shapes.length})` : ''}
+          </button>
+        </div>
+        <div className="pane-scroll">
+          {leftTab === 'unfold' && (
+            <UnfoldPanel
+              params={unfoldParams}
+              onParams={(patch) => setUnfoldParams((p) => ({ ...p, ...patch }))}
+              onGenerate={generateUnfold}
+              busy={unfoldBusy}
+            />
+          )}
+          {leftTab === 'layers' && (
+            <LaserLayersPanel
+              doc={doc}
+              active={activeLayer}
+              onActive={setActiveLayer}
+              onPatch={patchLayer}
+              onToggleVisible={toggleLayerVisible}
+              onToggleLock={toggleLayerLock}
+              onShowAll={showAllLayers}
+            />
+          )}
+          {leftTab === 'objects' && (
+            <LaserObjectsPanel
+              doc={doc}
+              sel={sel}
+              filter={objFilter}
+              onFilter={setObjFilter}
+              onPick={(id, additive) => {
+                if (additive) {
+                  const next = new Set(selRef.current);
+                  if (next.has(id)) next.delete(id); else next.add(id);
+                  setSel(next);
+                } else {
+                  setSel(new Set([id]));
+                }
+              }}
+              onToggleHidden={(id) => {
+                const map = new Map<string, LaserShape>();
+                const s = doc.shapes.find((x) => x.id === id);
+                if (s) map.set(id, { ...s, hidden: !s.hidden });
+                replaceShapes(map, s?.hidden ? 'Объект показан' : 'Объект скрыт');
+              }}
+              onToggleLocked={(id) => {
+                const map = new Map<string, LaserShape>();
+                const s = doc.shapes.find((x) => x.id === id);
+                if (s) map.set(id, { ...s, locked: !s.locked });
+                replaceShapes(map, s?.locked ? 'Объект разблокирован' : 'Объект заблокирован');
+              }}
+              onShowAll={() => {
+                const map = new Map<string, LaserShape>();
+                for (const s of doc.shapes) if (s.hidden) map.set(s.id, { ...s, hidden: false });
+                if (!map.size) return;
+                replaceShapes(map, `Показано скрытых объектов: ${map.size}`);
+              }}
+              onRename={(id, name) => {
+                const map = new Map<string, LaserShape>();
+                const s = doc.shapes.find((x) => x.id === id);
+                if (s) map.set(id, { ...s, name });
+                replaceShapes(map, 'Переименован объект', false);
+              }}
+            />
+          )}
+        </div>
+      </div>
+    </div>
+  );
+
+  // ---------------- правая колонка ----------------
+
+  const rightColumn = (
+    <div className="side right" style={{ width: 292 }}>
+      <div className="pane-full">
+        <LaserPropsPanel
+          doc={doc}
+          shapes={selShapes}
+          active={activeLayer}
+          actions={propsActions}
+          arrayState={arrayState}
+          onArrayState={(patch) => setArrayState((s) => ({ ...s, ...patch }))}
+          contourState={contourState}
+          onContourState={(patch) => setContourState((s) => ({ ...s, ...patch }))}
+          msg={msg}
+        />
+        <LaserGridPanel grid={grid} onGrid={(patch) => setGrid((g) => ({ ...g, ...patch }))} />
+        {selShapes.length === 1 && selShapes[0].kind === 'polygon' && (
+          <div className="props">
+            <h3>Новый многоугольник</h3>
+            <NI label="Углов / лучей" value={polygonSides} min={3} max={64} step={1}
+              on={(v) => setPolygonSides(Math.round(v))} />
+            <label className="laser-check">
+              <input type="checkbox" checked={polygonStar} onChange={(e) => setPolygonStar(e.target.checked)} />
+              Рисовать звезду
+            </label>
+          </div>
+        )}
+        <LaserMaterialPanel
+          doc={doc}
+          onApply={applyMaterial}
+          onThickness={(mm) => commit({ ...docRef.current, materialThickness: mm }, `Толщина материала ${mm} мм`, true)}
+        />
+        <LaserJobPanel
+          doc={doc}
+          sim={sim}
+          busy={simBusy}
+          onSimulate={runSimulate}
+          onExport={() => setDialog('export')}
+          onNest={autoNest}
+        />
+        <div className="props">
+          <h3>Лист станка</h3>
+          <div className="laser-job-grid">
+            <div><span>Проект</span><b title={doc.name}>{doc.name}</b></div>
+            <div><span>Стол</span><b>{doc.w}×{doc.h} мм</b></div>
+            <div><span>Объектов</span><b>{doc.shapes.length}</b></div>
+            <div><span>Групп</span><b>{doc.groups.length}</b></div>
+          </div>
+          <button type="button" className="btn" onClick={() => setDialog('sheet')}>
+            <Ic n="ruler" size={14} />
+            <span>Размер стола и материал…</span>
+          </button>
+          <button
+            type="button"
+            className="btn danger"
+            onClick={() => setConfirmAsk({
+              title: 'Очистить лист?',
+              text: 'Все объекты развёртки будут удалены. Действие можно отменить (Ctrl+Z).',
+              ok: 'Очистить лист',
+              onOk: () => {
+                commit({ ...docRef.current, shapes: [], groups: [] }, 'Лист очищен');
+                setSel(new Set());
+                setConfirmAsk(null);
+              },
+            })}
+          >
+            <Ic n="trash" size={14} />
+            <span>Очистить лист</span>
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+
+  const toolMeta = LASER_TOOLS.find((t) => t.id === tool)!;
+
+  return (
+    <>
+      {toolbar}
+
+      <div className="main">
+        {leftColumn}
+
+        <div className="canvas-wrap" ref={wrapRef}>
+          <canvas ref={baseRef} className="canvas-base" />
+          <canvas
+            ref={overRef}
+            className="canvas-over"
+            style={{ cursor }}
+            onPointerDown={onPointerDown}
+            onPointerMove={onPointerMove}
+            onPointerUp={onPointerUp}
+            onPointerCancel={onPointerUp}
+            onDoubleClick={onDoubleClick}
+            onWheel={onWheel}
+            onContextMenu={(e) => e.preventDefault()}
+            onPointerLeave={() => {
+              setMouse((m) => ({ ...m, px: -100, py: -100 }));
+              setSnapMark(null);
+            }}
+          />
+
+          <div className="tool-dock" role="toolbar" aria-label="Инструменты лазерного редактора">
+            {TOOL_GROUPS.map((grp, gi) => (
+              <ToolGroup key={gi}>
+                {gi > 0 && <div className="dock-sep" />}
+                {grp.map((id) => {
+                  const t = LASER_TOOLS.find((x) => x.id === id)!;
+                  return (
+                    <button
+                      key={id}
+                      type="button"
+                      data-tool-id={id}
+                      className={'tb-btn dock-btn' + (tool === id ? ' active' : '')}
+                      title={`${t.name} (${t.key}) — ${t.hint}`}
+                      onClick={() => { setTool(id); if (id !== 'shape') setNodeEdit(null); }}
+                    >
+                      <Ic n={t.icon} />
+                    </button>
+                  );
+                })}
+              </ToolGroup>
+            ))}
+          </div>
+
+          <div className="laser-tool-hint" title={toolMeta.hint}>
+            <Ic n={toolMeta.icon} size={14} />
+            <b>{toolMeta.name}</b>
+            <span>{toolMeta.hint}</span>
+          </div>
+
+          <input
+            ref={fileRef}
+            type="file"
+            accept=".pslaser,.json,.svg,.dxf,application/json,image/svg+xml"
+            style={{ display: 'none' }}
+            onChange={(e) => {
+              const f = e.target.files?.[0];
+              if (f) openProjectFile(f);
+              e.target.value = '';
+            }}
+          />
+        </div>
+
+        {rightColumn}
+      </div>
+
+      <div className="status">
+        <span>X <b>{mouse.wx.toFixed(2)}</b></span>
+        <span>Y <b>{mouse.wy.toFixed(2)}</b></span>
+        <span>Лист: <b>{doc.w}×{doc.h} мм</b></span>
+        <span>
+          Слой: <b style={{ color: doc.layers[activeLayer]?.color }}>{doc.layers[activeLayer]?.short}</b>
+          {' · '}
+          <b>{doc.layers[activeLayer]?.power}%</b> / {doc.layers[activeLayer]?.speed} мм/с
+          {doc.layers[activeLayer]?.passes > 1 ? ` · ${doc.layers[activeLayer]?.passes} прох.` : ''}
+        </span>
+        <span>
+          Сетка: <b>{grid.on ? `${grid.step} мм` : 'выкл.'}</b>
+          {' · '}
+          <b className={grid.snap ? '' : 'off'}>{grid.snap ? 'привязка' : 'без привязки'}</b>
+        </span>
+        <span title="100% — натуральный размер на экране 96 dpi (1 мм = 3,78 px)">
+          Масштаб: <b>{Math.round((view.s * 100) / 3.7795)}%</b>
+          {' · '}{view.s.toFixed(2)} px/мм
+        </span>
+        <span className="sp" />
+        {selShapes.length > 0 && selBBox && (
+          <span>
+            Выделено: <b>{selShapes.length}</b>
+            {' · '}
+            <b>{(selBBox[2] - selBBox[0]).toFixed(2)} × {(selBBox[3] - selBBox[1]).toFixed(2)} мм</b>
+          </span>
+        )}
+        {sim && (
+          <span title="Рассчитанное время обработки и длина реза">
+            Задание: <b>{Math.round(sim.totalTimeSec)} с</b> · рез <b>{sim.cutLengthMm.toFixed(0)} мм</b>
+          </span>
+        )}
+        {msg?.text && (
+          <span className={msg.ok === false ? 'status-alert' : 'status-note'} title={msg.text}>{msg.text}</span>
+        )}
+        <span className="lg" title="Черновик развёртки сохраняется в этом браузере автоматически">
+          <span className="pulse" />
+          {cloudUser ? 'черновик в сеансе' : 'черновик в браузере'}
+          {savedTick ? ` · ${new Date(savedTick).toLocaleTimeString('ru-RU')}` : ''}
+        </span>
+      </div>
+
+      {dialog === 'new' && (
+        <LaserSheetDialog
+          doc={newLaserDoc(doc.w, doc.h, 'Новая развёртка')}
+          title="Новый проект развёртки"
+          onClose={() => setDialog(null)}
+          onOk={(next) => {
+            const preset = MATERIAL_PRESETS.find((m) => m.id === next.materialId);
+            const fresh = newLaserDoc(next.w, next.h, next.name);
+            fresh.materialThickness = next.thickness;
+            fresh.materialPresetId = next.materialId;
+            if (preset) {
+              fresh.layers.cut = { ...fresh.layers.cut, power: preset.cutPower, speed: preset.cutSpeed, passes: preset.cutPasses, kerf: preset.kerf };
+              fresh.layers.inner = { ...fresh.layers.inner, power: preset.cutPower, speed: preset.cutSpeed, passes: preset.cutPasses, kerf: preset.kerf };
+              fresh.layers.fold = { ...fresh.layers.fold, power: preset.foldPower, speed: preset.foldSpeed };
+              fresh.layers.score = { ...fresh.layers.score, power: preset.scorePower, speed: preset.scoreSpeed };
+              fresh.layers.engrave = { ...fresh.layers.engrave, power: preset.engravePower, speed: preset.engraveSpeed };
+            }
+            past.current = [...past.current, { doc: docRef.current, label: 'Новый проект' }].slice(-HISTORY_LIMIT);
+            future.current = [];
+            setDoc(fresh);
+            setHistTick((t) => t + 1);
+            setSel(new Set());
+            setSim(null);
+            setDialog(null);
+            setMsg({ text: `Новый лист ${next.w}×${next.h} мм: «${next.name}»`, ok: true });
+            setTimeout(() => fit(fresh), 40);
+          }}
+        />
+      )}
+      {dialog === 'sheet' && (
+        <LaserSheetDialog
+          doc={doc}
+          title="Размер стола и материал"
+          onClose={() => setDialog(null)}
+          onOk={(next) => {
+            const preset = MATERIAL_PRESETS.find((m) => m.id === next.materialId);
+            commit({
+              ...docRef.current,
+              name: next.name,
+              w: next.w,
+              h: next.h,
+              materialThickness: next.thickness,
+              materialPresetId: next.materialId,
+              layers: preset ? (() => {
+                const layers = { ...docRef.current.layers };
+                layers.cut = { ...layers.cut, power: preset.cutPower, speed: preset.cutSpeed, passes: preset.cutPasses, kerf: preset.kerf };
+                layers.inner = { ...layers.inner, power: preset.cutPower, speed: preset.cutSpeed, passes: preset.cutPasses, kerf: preset.kerf };
+                layers.fold = { ...layers.fold, power: preset.foldPower, speed: preset.foldSpeed };
+                layers.score = { ...layers.score, power: preset.scorePower, speed: preset.scoreSpeed };
+                layers.engrave = { ...layers.engrave, power: preset.engravePower, speed: preset.engraveSpeed };
+                return layers;
+              })() : docRef.current.layers,
+            }, `Лист ${next.w}×${next.h} мм, материал ${next.thickness} мм`);
+            setDialog(null);
+            setTimeout(() => fit(), 40);
+          }}
+        />
+      )}
+      {dialog === 'export' && (
+        <LaserExportDialog
+          doc={doc}
+          sim={sim}
+          gcode={gcode}
+          onGcodeChange={(patch) => setGcode((g) => ({ ...g, ...patch }))}
+          onExport={(format) => void runExport(format)}
+          onClose={() => setDialog(null)}
+        />
+      )}
+      {dialog === 'sim' && <LaserSimDialog doc={doc} onClose={() => setDialog(null)} />}
+      {dialog === 'trace' && (
+        <LaserTraceDialog
+          layer={activeLayer === 'guide' ? 'engrave' : activeLayer}
+          defaultWidthMm={Math.min(80, Math.max(20, doc.w / 3))}
+          onClose={() => setDialog(null)}
+          onInsert={(shapes, info) => {
+            commit({ ...docRef.current, shapes: [...docRef.current.shapes, ...shapes] },
+              `Трассировка изображения: ${shapes.length} контуров`);
+            setSel(new Set(shapes.map((s) => s.id)));
+            setDialog(null);
+            setMsg({ text: info, ok: true });
+          }}
+        />
+      )}
+      {confirmAsk && (
+        <ConfirmDialog
+          title={confirmAsk.title}
+          text={confirmAsk.text}
+          ok={confirmAsk.ok}
+          danger
+          onOk={confirmAsk.onOk}
+          onClose={() => setConfirmAsk(null)}
+        />
+      )}
+    </>
+  );
+}
+
+// Обёртка группы кнопок дока — нужен Fragment с key
+function ToolGroup({ children }: { children: ReactNode }) {
+  return <Fragment>{children}</Fragment>;
+}
+
+/** Компактная панель сетки и привязки лазерного редактора. */
+function LaserGridPanel({
+  grid,
+  onGrid,
+}: {
+  grid: LaserGridConf & { snap: boolean };
+  onGrid: (patch: Partial<LaserGridConf & { snap: boolean }>) => void;
+}) {
+  const steps: [string, string][] = [
+    ['0.1', '0,1 мм'],
+    ['0.5', '0,5 мм'],
+    ['1', '1 мм'],
+    ['2', '2 мм'],
+    ['5', '5 мм'],
+    ['10', '10 мм'],
+  ];
+  return (
+    <div className="props">
+      <h3>Сетка и привязка</h3>
+      <SI label="Шаг сетки" value={String(grid.step)} on={(v) => onGrid({ step: parseFloat(v) || 1 })} options={steps} />
+      <NI label="Главные линии" value={grid.major} min={2} max={100} step={1}
+        on={(v) => onGrid({ major: Math.max(2, Math.round(v)) })} />
+      <div className="laser-btnrow">
+        <button type="button" className={'btn tiny' + (grid.on ? ' primary' : '')}
+          onClick={() => onGrid({ on: !grid.on })}>
+          {grid.on ? 'Сетка включена' : 'Сетка выключена'}
+        </button>
+        <button type="button" className={'btn tiny' + (grid.snap ? ' primary' : '')}
+          onClick={() => onGrid({ snap: !grid.snap })}>
+          {grid.snap ? 'Привязка вкл.' : 'Привязка выкл.'}
+        </button>
+        <button type="button" className="btn tiny" onClick={() => onGrid({ style: grid.style === 'lines' ? 'dots' : 'lines' })}>
+          {grid.style === 'lines' ? 'Линии' : 'Точки'}
+        </button>
+      </div>
+      <p className="sub">
+        Привязка сначала ищет узлы и углы ближайших объектов, затем — сетку.
+        Alt временно отключает привязку для свободного рисования.
+      </p>
+    </div>
+  );
+}

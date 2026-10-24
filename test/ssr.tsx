@@ -37,6 +37,22 @@ if (!html.includes('PCB-помощник')) throw new Error('copilot title not r
   }
 }
 if (!html.includes('светлую тему') && !html.includes('тёмную тему')) throw new Error('theme toggle not rendered');
+
+// Режимы рабочего пространства: платы, лазерный станок и 3D-моделирование.
+// Переключатель всегда в шапке, а сам лазерный редактор подгружается лениво —
+// в разметке режима «Платы» его панелей быть не должно.
+{
+  if (!html.includes('mode-switcher')) throw new Error('нет переключателя режимов в шапке');
+  for (const m of ['Платы', 'Лазерный', '3D моделирование']) {
+    if (!html.includes(m)) throw new Error(`переключатель режимов: нет «${m}»`);
+  }
+  if (!html.includes('Скоро в разработке') && !html.includes('скоро')) {
+    throw new Error('у режима 3D нет метки «скоро»');
+  }
+  for (const laser of ['Генератор развёрток', 'Задание на станок', 'Слои станка']) {
+    if (html.includes(laser)) throw new Error(`лазерный редактор не ленивый: «${laser}» в разметке плат`);
+  }
+}
 // Тест цепи: отдельный прозрачный слой между платой и интерактивным оверлеем.
 {
   const base = html.indexOf('class="canvas-base"');
