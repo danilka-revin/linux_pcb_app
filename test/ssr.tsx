@@ -38,19 +38,20 @@ if (!html.includes('PCB-помощник')) throw new Error('copilot title not r
 }
 if (!html.includes('светлую тему') && !html.includes('тёмную тему')) throw new Error('theme toggle not rendered');
 
-// Режимы рабочего пространства: платы, лазерный станок и 3D-моделирование.
-// Переключатель всегда в шапке, а сам лазерный редактор подгружается лениво —
+// Режимы рабочего пространства: платы, чертежи и 3D-моделирование.
+// Переключатель всегда в шапке, а сам редактор чертежей подгружается лениво —
 // в разметке режима «Платы» его панелей быть не должно.
 {
   if (!html.includes('mode-switcher')) throw new Error('нет переключателя режимов в шапке');
-  for (const m of ['Платы', 'Лазерный', '3D моделирование']) {
+  for (const m of ['Платы', 'Чертежи', '3D моделирование']) {
     if (!html.includes(m)) throw new Error(`переключатель режимов: нет «${m}»`);
   }
+  if (html.includes('>Лазерный</span>')) throw new Error('в шапке осталась вкладка «Лазерный»');
   if (!html.includes('Скоро в разработке') && !html.includes('скоро')) {
     throw new Error('у режима 3D нет метки «скоро»');
   }
-  for (const laser of ['Генератор развёрток', 'Задание на станок', 'Слои станка']) {
-    if (html.includes(laser)) throw new Error(`лазерный редактор не ленивый: «${laser}» в разметке плат`);
+  for (const lazy of ['Генератор развёрток', 'Задание на станок', 'Слои станка']) {
+    if (html.includes(lazy)) throw new Error(`редактор чертежей не ленивый: «${lazy}» в разметке плат`);
   }
 }
 // Тест цепи: отдельный прозрачный слой между платой и интерактивным оверлеем.
@@ -170,17 +171,20 @@ if (html.includes('gen-fail')) throw new Error('SSR: панель деталей
   }
 }
 
-// генератор коробок — самостоятельное окно: кнопка в шапке есть в любом режиме,
-// а раскладка из окна уходит в редактор чертежей (переключая режим, если нужно)
+// генератор коробок — самостоятельное окно редактора чертежей: в шапке режима
+// «Платы» его кнопки нет, а раскладка из окна уходит на лист чертежа
 {
-  if (!html.includes('Генератор коробок')) throw new Error('в шапке нет генератора коробок');
-  if (!html.includes('>Коробки</span>')) throw new Error('в шапке нет кнопки «Коробки»');
+  if (html.includes('>Коробки</span>')) throw new Error('в шапке редактора плат появилась кнопка «Коробки»');
+  if (html.includes('Генератор коробок')) throw new Error('в разметке плат не должно быть генератора коробок');
   const app = readFileSync('src/App.tsx', 'utf8');
-  for (const m of ['BoxWindow', 'placeBox', 'boxPayload', 'onOpenBoxes', 'box-win-msg']) {
-    if (!app.includes(m) && !readFileSync('src/styles.css', 'utf8').includes(m)) {
-      throw new Error(`окно коробок: не найдено «${m}»`);
-    }
+  for (const m of ['BoxWindow', 'placeBox', 'boxPayload', 'onOpenBoxes']) {
+    if (!app.includes(m)) throw new Error(`окно коробок: в App.tsx не найдено «${m}»`);
   }
+  if (!readFileSync('src/styles.css', 'utf8').includes('box-win-msg')) {
+    throw new Error('окно коробок: в стилях нет «box-win-msg»');
+  }
+  const editor = readFileSync('src/ui/laser.tsx', 'utf8');
+  if (!editor.includes('Генератор коробок')) throw new Error('в тулбаре редактора чертежей нет генератора коробок');
 }
 
 // панель генератора с готовой деталью и деревом папок

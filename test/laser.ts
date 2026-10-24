@@ -740,10 +740,12 @@ const pathArea = (s: PathShape) => {
     assert(gcode.includes(must), `в G-Code нет ${must}`);
   }
   assert(gcode.includes('; PSBees Laser CAM'), 'заголовок программы');
-  assert(gcode.indexOf('Слой: Гравировка') < gcode.indexOf('Слой: Сквозная резка') === false
-    || gcode.indexOf('Гравировка') < gcode.indexOf('Сквозная резка'), 'порядок слоёв в программе');
-  assert(gcode.indexOf('Гравировка') < gcode.indexOf('Сквозная резка'), 'гравировка раньше резки в файле');
-  assert(gcode.indexOf('Внутренние вырезы') < gcode.indexOf('Сквозная резка'), 'отверстия раньше внешнего контура');
+  assert(gcode.indexOf('Слой: Заливка области') < gcode.indexOf('Слой: Основной контур') === false
+    || gcode.indexOf('Заливка области') < gcode.indexOf('Основной контур'), 'порядок слоёв в программе');
+  assert(gcode.indexOf('Заливка области') < gcode.indexOf('Основной контур'),
+    'заливка раньше внешнего контура в файле');
+  assert(gcode.indexOf('Внутренние контуры') < gcode.indexOf('Основной контур'),
+    'отверстия раньше внешнего контура');
   assert(!gcode.includes('Направляющие и размеры'), 'слой размеров не попадает в программу');
   // мощность в S пропорциональна проценту
   const sCut = /M4 S(\d+)/g;

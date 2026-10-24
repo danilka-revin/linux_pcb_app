@@ -38,8 +38,8 @@ export interface LaserLayerConfig {
 export const DEFAULT_LASER_LAYERS: Record<LaserLayerId, LaserLayerConfig> = {
   cut: {
     id: 'cut',
-    name: 'Сквозная резка (внешний контур)',
-    short: 'Резка (Cut)',
+    name: 'Основной контур (внешний)',
+    short: 'Контур (Cut)',
     color: '#ff453a',
     mode: 'cut',
     power: 85,
@@ -54,8 +54,8 @@ export const DEFAULT_LASER_LAYERS: Record<LaserLayerId, LaserLayerConfig> = {
   },
   inner: {
     id: 'inner',
-    name: 'Внутренние вырезы и отверстия',
-    short: 'Внутр. рез',
+    name: 'Внутренние контуры и отверстия',
+    short: 'Внутренний (Inner)',
     color: '#c084fc',
     mode: 'cut',
     power: 85,
@@ -86,7 +86,7 @@ export const DEFAULT_LASER_LAYERS: Record<LaserLayerId, LaserLayerConfig> = {
   },
   score: {
     id: 'score',
-    name: 'Контурная разметка (надрез)',
+    name: 'Контурная разметка (тонкая линия)',
     short: 'Разметка (Score)',
     color: '#38bdf8',
     mode: 'score',
@@ -102,8 +102,8 @@ export const DEFAULT_LASER_LAYERS: Record<LaserLayerId, LaserLayerConfig> = {
   },
   engrave: {
     id: 'engrave',
-    name: 'Гравировка заливкой (Растр / Скан)',
-    short: 'Гравировка',
+    name: 'Заливка области (растр)',
+    short: 'Заливка (Engrave)',
     color: '#ffc233',
     mode: 'fill',
     power: 30,
@@ -118,7 +118,7 @@ export const DEFAULT_LASER_LAYERS: Record<LaserLayerId, LaserLayerConfig> = {
   },
   guide: {
     id: 'guide',
-    name: 'Направляющие и размеры (не режется)',
+    name: 'Направляющие и размеры (не выводятся)',
     short: 'Размеры',
     color: '#94a3b8',
     mode: 'guide',
@@ -367,7 +367,7 @@ export function fmtMm(v: number, digits = 2): string {
   return String(Object.is(r, -0) ? 0 : r);
 }
 
-export function newLaserDoc(w = 300, h = 200, name = 'Развёртка корпуса'): LaserDoc {
+export function newLaserDoc(w = 300, h = 200, name = 'Новый чертёж'): LaserDoc {
   const layers: Record<LaserLayerId, LaserLayerConfig> = {
     cut: { ...DEFAULT_LASER_LAYERS.cut },
     inner: { ...DEFAULT_LASER_LAYERS.inner },

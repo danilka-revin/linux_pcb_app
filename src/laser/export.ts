@@ -299,10 +299,14 @@ function escapeXml(s: string): string {
     .replace(/"/g, '&quot;');
 }
 
-/** Экспорт в SVG (масштаб 1:1 в миллиметрах — для CorelDRAW, LightBurn, Inkscape) */
-export function exportLaserSvg(doc: LaserDoc): string {
+/**
+ * Экспорт в SVG (масштаб 1:1 в миллиметрах — для CorelDRAW, Illustrator, Inkscape).
+ * Толщина линии задаётся опцией: по умолчанию 0.2 мм, как в остальных форматах.
+ */
+export function exportLaserSvg(doc: LaserDoc, opts: { strokeWidthMm?: number } = {}): string {
   const W = doc.w;
   const H = doc.h;
+  const strokeW = fmtMm(Math.max(0, Number.isFinite(opts.strokeWidthMm) ? (opts.strokeWidthMm as number) : 0.2));
   const flipY = (y: number) => Number((H - y).toFixed(3));
   const fx = (x: number) => Number(x.toFixed(3));
 
@@ -312,7 +316,7 @@ export function exportLaserSvg(doc: LaserDoc): string {
     `<svg xmlns="http://www.w3.org/2000/svg" width="${fmtMm(W)}mm" height="${fmtMm(H)}mm" viewBox="0 0 ${fmtMm(W)} ${fmtMm(H)}">`
   );
   out.push(`  <title>${escapeXml(doc.name)}</title>`);
-  out.push(`  <desc>PSBees Laser Vector &amp; Unfolding Editor (${fmtMm(W)}x${fmtMm(H)} mm)</desc>`);
+  out.push(`  <desc>PSBees Vector Drawing Editor (${fmtMm(W)}x${fmtMm(H)} mm)</desc>`);
 
   for (const layerId of LASER_LAYER_ORDER) {
     if (layerId === 'guide') continue;
@@ -327,7 +331,7 @@ export function exportLaserSvg(doc: LaserDoc): string {
         : '';
 
     out.push(
-      `  <g id="layer-${layerId}" data-layer-name="${escapeXml(cfg.short)}" stroke="${cfg.color}" stroke-width="0.2" fill="none" stroke-linecap="round" stroke-linejoin="round"${dashAttr}>`
+      `  <g id="layer-${layerId}" data-layer-name="${escapeXml(cfg.short)}" stroke="${cfg.color}" stroke-width="${strokeW}" fill="none" stroke-linecap="round" stroke-linejoin="round"${dashAttr}>`
     );
 
     for (const s of shapes) {

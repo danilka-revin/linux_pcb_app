@@ -1,4 +1,4 @@
-// Лазерный редактор в jsdom: переключение режимов, генератор развёрток,
+// Редактор чертежей в jsdom: переключение режимов, генератор развёрток и коробок,
 // рисование мышью, выделение, автораскладка, усечение кривых, экспорт и симуляция.
 // Настоящие обработчики LaserEditor; отрисовка canvas заменена заглушкой.
 import assert from 'node:assert/strict';
@@ -123,10 +123,10 @@ await settle();
 {
   assert(win.document.querySelector('.mode-switcher'), 'переключатель режимов в шапке');
   const tabs = [...win.document.querySelectorAll('.mode-tab')];
-  assert.equal(tabs.length, 3, 'три режима: платы, лазерный, 3D');
+  assert.equal(tabs.length, 3, 'три режима: платы, чертежи, 3D');
   assert(tabs[0].textContent?.includes('Платы'));
-  assert(tabs[1].textContent?.includes('Лазерный'));
-  assert(tabs[1].classList.contains('active'), 'активен лазерный режим');
+  assert(tabs[1].textContent?.includes('Чертежи'), 'режим векторного редактора называется «Чертежи»');
+  assert(tabs[1].classList.contains('active'), 'активен режим чертежей');
   assert(tabs[2].textContent?.includes('3D моделирование'));
   assert(tabs[2].textContent?.includes('скоро'), 'у 3D-режима метка «скоро»');
 
@@ -207,7 +207,7 @@ await settle();
   assert.equal(layers.length, 6, `слоёв чертежа: ${layers.length}`);
   assert(text().includes('Слои чертежа'), 'панель слоёв чертежа');
   const names = layers.map((l) => l.textContent ?? '').join('|');
-  for (const n of ['Резка', 'Внутр. рез', 'Сгиб', 'Разметка', 'Гравировка', 'Размеры']) {
+  for (const n of ['Контур', 'Внутренний', 'Сгиб', 'Разметка', 'Заливка', 'Размеры']) {
     assert(names.includes(n), `слой «${n}»`);
   }
   await click(layers.find((l) => l.textContent?.includes('Сгиб'))!.querySelector('.laser-layer-main')!);
@@ -345,7 +345,7 @@ await settle();
   assert(status().includes('50.00 мм'), `подпись размера: ${status()}`);
 
   // надпись
-  await click(byTitle('Текст (гравировка)'));
+  await click(byTitle('Текст (надпись)'));
   await pointer('pointerdown', px(250), py(180));
   await settle();
   assert(status().includes('Надпись поставлена'), `надпись поставлена: ${status()}`);
@@ -663,12 +663,17 @@ await settle();
   await settle();
   assert(text().includes('Экспорт чертежа'), 'диалог экспорта чертежа');
   const formats = [...win.document.querySelectorAll('.laser-format')] as HTMLButtonElement[];
-  assert.equal(formats.length, 3, `форматов экспорта: ${formats.length}`);
+  assert.equal(formats.length, 6, `форматов экспорта: ${formats.length}`);
   const labels = formats.map((f) => f.textContent ?? '').join('|');
-  for (const l of ['DXF', 'SVG', 'PSBees Laser']) assert(labels.includes(l), `формат ${l}`);
+  for (const l of ['DXF', 'PDF 1:1 мм', 'EPS / PostScript', 'PLT (HPGL/2)', 'SVG', 'Проект PSBees']) {
+    assert(labels.includes(l), `формат ${l}`);
+  }
   // станочные форматы из диалога убраны
   assert(!labels.includes('G-Code'), 'G-Code скрыт');
   assert(!labels.includes('PNG'), 'PNG-чертёж скрыт');
+  // обмен с CorelDRAW объяснён прямо в диалоге
+  assert(text().includes('Обмен с CorelDRAW'), 'подсказка про обмен с CorelDRAW');
+  assert(text().includes('.cdr закрытый'), 'объяснение, почему .cdr не читается');
   assert(!text().includes('Параметры G-Code'), 'настроек G-Code в диалоге нет');
   assert(text().includes('Длина контуров'), 'в сводке экспорта длина контуров, а не время обработки');
   assert(!text().includes('Время'), 'станочное время в сводке не показывается');
@@ -739,12 +744,54 @@ await settle();
   await settle();
   assert(downloads.some((d) => d.endsWith('.svg')), `SVG скачан: ${downloads.join(', ')}`);
 
+  // форматы обмена с CorelDRAW: PDF, EPS и PLT — тот же чертёж в масштабе 1:1
+  const fmtCard = (t: string) => {
+    const f = [...win.document.querySelectorAll('.laser-format')]
+      .find((x) => (x.textContent ?? '').includes(t)) as HTMLButtonElement;
+    assert(f, `карточка формата «${t}»`);
+    return f;
+  };
+
+  await clickTitle('Экспорт чертежа');
+  await settle();
+  await click(fmtCard('PDF 1:1 мм'));
+  await settle();
+  assert(text().includes('Параметры векторного файла'), 'параметры векторных форматов');
+  assert(text().includes('Слои чертежа как слои PDF (OCG)'), 'опция слоёв PDF');
+  assert(!text().includes('Параметры DXF'), 'настройки DXF не показываются для PDF');
+  await click(byText('Скачать .pdf'));
+  await settle();
+  assert(downloads.some((d) => d.endsWith('.pdf')), `PDF скачан: ${downloads.join(', ')}`);
+  assert(status().includes('PDF сохранён'), `сообщение о PDF: ${status()}`);
+  assert(status().includes('слоями PDF'), 'в сообщении упомянуты слои PDF');
+
+  await clickTitle('Экспорт чертежа');
+  await settle();
+  await click(fmtCard('EPS / PostScript'));
+  await settle();
+  await click(byText('Скачать .eps'));
+  await settle();
+  assert(downloads.some((d) => d.endsWith('.eps')), `EPS скачан: ${downloads.join(', ')}`);
+  assert(status().includes('EPS сохранён'), `сообщение о EPS: ${status()}`);
+
+  await clickTitle('Экспорт чертежа');
+  await settle();
+  await click(fmtCard('PLT (HPGL/2)'));
+  await settle();
+  assert(text().includes('Допуск аппроксимации кривых'), 'допуск аппроксимации для PLT');
+  assert(text().includes('Отдельное перо на каждый слой'), 'перья плоттера для PLT');
+  assert(text().includes('40 юнитов HPGL на миллиметр'), 'единицы HPGL объяснены');
+  await click(byText('Скачать .plt'));
+  await settle();
+  assert(downloads.some((d) => d.endsWith('.plt')), `PLT скачан: ${downloads.join(', ')}`);
+  assert(status().includes('HPGL/2'), `сообщение о PLT: ${status()}`);
+
   await clickTitle('Экспорт чертежа');
   await settle();
   await click([...win.document.querySelectorAll('.laser-format')].find((f) => f.textContent?.includes('Проект'))!);
-  await click(byText('Скачать .pslaser'));
+  await click(byText('Скачать .psdraw'));
   await settle();
-  assert(downloads.some((d) => d.endsWith('.pslaser')), 'проект скачан');
+  assert(downloads.some((d) => d.endsWith('.psdraw')), 'проект скачан как .psdraw');
   await clickTitle('Экспорт чертежа'); // закрыть через «Закрыть»
   await clickText('Закрыть');
   await settle();
@@ -954,8 +1001,8 @@ await settle();
   const tabs = [...win.document.querySelectorAll('.mode-tab')];
   assert.equal(tabs.length, 3);
   assert(tabs[2].classList.contains('active'), 'активен режим 3D');
-  await click(byText('Открыть лазерный редактор и развёртки'));
-  assert(modeCalls.includes('3d:laser'), 'переход из 3D в лазерный редактор');
+  await click(byText('Открыть редактор чертежей и развёртки'));
+  assert(modeCalls.includes('3d:laser'), 'переход из 3D в редактор чертежей');
   await click(byText('3D-предпросмотр текущей платы'));
   assert(modeCalls.includes('preview3d'), 'открытие 3D-вида платы');
 }
@@ -1015,16 +1062,16 @@ await settle();
     return b;
   };
 
-  // Платы → Лазерный: редактор развёрток подгружается лениво и заменяет рабочее место
-  await click(tabOf('Лазерный'));
+  // Платы → Чертежи: векторный редактор подгружается лениво и заменяет рабочее место
+  await click(tabOf('Чертежи'));
   await settle(400);
-  assert(text().includes('Генератор развёрток'), 'лазерный редактор открылся из режима плат');
+  assert(text().includes('Генератор развёрток'), 'редактор чертежей открылся из режима плат');
   assert(text().includes('Лист и чертёж'), 'панель листа и чертежа');
   assert(!text().includes('Задание на станок'), 'станочное задание не показывается');
   assert(!win.document.querySelector('.tool-dock [data-tool-id="track"]'), 'инструменты платы скрыты');
   assert.equal(loadWorkspaceMode(), 'laser', 'выбранный режим запомнен');
 
-  // Лазерный → Платы: плата и её черновик возвращаются мгновенно
+  // Чертежи → Платы: плата и её черновик возвращаются мгновенно
   await click(tabOf('Платы'));
   await settle(250);
   assert(win.document.querySelector('.canvas-base'), 'холст платы вернулся');
@@ -1041,12 +1088,12 @@ await settle();
   await settle(200);
   assert(win.document.querySelector('.canvas-base'), 'возврат из 3D в редактор плат');
 
-  // из 3D можно уйти сразу в лазерный режим
+  // из 3D можно уйти сразу в режим чертежей
   await click(tabOf('3D моделирование'));
   await settle(150);
-  await click(byTextLike('Открыть лазерный редактор и развёртки'));
+  await click(byTextLike('Открыть редактор чертежей и развёртки'));
   await settle(300);
-  assert(text().includes('Генератор развёрток'), 'из 3D — сразу в лазерный редактор');
+  assert(text().includes('Генератор развёрток'), 'из 3D — сразу в редактор чертежей');
 
   // окно коробок открывается из тулбара рисовалки и переносит раскладку на лист
   const boxFoot = () => [...win.document.querySelectorAll('.box-studio .foot .btn')] as HTMLButtonElement[];
@@ -1061,18 +1108,15 @@ await settle();
   await clickTab('Объекты');
   assert(objRows().length > 0, `детали коробки в дереве объектов: ${objRows().length}`);
 
-  // в режиме плат окно открывается кнопкой «Коробки» в шапке программы,
-  // а перенос раскладки сам переключает режим на рисовалку
+  // в шапке редактора плат кнопки «Коробки» нет: генератор открывается только
+  // из тулбара редактора чертежей и там же переносит раскладку на лист
   await click(tabOf('Платы'));
   await settle(300);
   assert(win.document.querySelector('.canvas-base'), 'вернулись в редактор плат');
-  await click(byTitle('Генератор коробок'));
-  await settle(400);
-  assert(win.document.querySelector('.box-studio'), 'окно коробок доступно из режима плат');
-  await click(boxFoot().find((b) => b.textContent?.includes('Перенести в рисовалку'))!);
-  await settle(700);
-  assert(text().includes('Генератор развёрток'), 'перенос раскладки переключил режим на рисовалку');
-  assert(status().includes('помещены на лист'), `детали из окна легли на лист: ${status()}`);
+  const boxesInToolbar = buttons().find((b) => (b.getAttribute('title') ?? '').includes('Генератор коробок'));
+  assert(!boxesInToolbar, 'в тулбаре редактора плат нет кнопки «Коробки»');
+  assert(!win.document.querySelector('.box-studio'), 'окно коробок в режиме плат закрыто');
+  assert(!text().includes('>Коробки<'), 'подписи «Коробки» в шапке плат нет');
   saveWorkspaceMode('pcb');
 }
 
@@ -1080,14 +1124,16 @@ await act(async () => root.unmount());
 // jsdom держит цикл кадров — без закрытия окна процесс не завершится сам
 dom.window.close();
 process.stdout.write(
-  'LASER DOM OK: режимы, генератор развёрток, слои чертежа, толщина материала, рисование мышью, '
+  'LASER DOM OK: режимы (платы / чертежи / 3D), генератор развёрток, слои чертежа, толщина листа, '
+  + 'рисование мышью, '
   + 'перенос и масштаб маркером, узлы кривой (F10), усечение кривых (X: усечь/продлить/разрезать, '
   + 'границы по выделению, разбивка по пересечениям), отмена, булевы операции, контур, '
   + 'экспорт: настройки DXF в диалоге (версия, сущности, ноль координат), план слоёв файла, '
-  + 'контроль точности, разбивка по слоям в ZIP, SVG и проект, черновик, '
-  + 'отдельное окно генератора коробок (из шапки программы и из рисовалки, '
-  + 'перенос раскладки с автопереключением режима), '
-  + 'размер стола, очистка листа, '
+  + 'контроль точности, разбивка по слоям в ZIP, форматы обмена с CorelDRAW (PDF, EPS, PLT), '
+  + 'SVG и проект .psdraw, черновик, '
+  + 'отдельное окно генератора коробок (кнопка в тулбаре редактора чертежей, в шапке плат её нет, '
+  + 'перенос раскладки на лист), '
+  + 'размер листа, очистка листа, '
   + 'студия коробок (каталог 28 типов, поиск, 3D-сборка, раскладка, DXF, помещение на лист), '
   + 'экран 3D и переключение режимов из редактора плат\n',
   () => process.exit(0),
