@@ -4,11 +4,15 @@
 
 import {
   luid,
+  selectionBBox,
+  shapeBBox,
+  translateShape,
   type LaserGroup,
   type LaserShape,
   type PathNode,
   type Pt,
 } from './model';
+import { buildBox, layoutBoxParts } from './boxes';
 
 export type UnfoldTemplateId =
   | 'folded-box'
@@ -330,201 +334,79 @@ function buildFoldedBox(p: UnfoldParams, ox = 15, oy = 15): { shapes: LaserShape
 }
 
 /**
- * Построение зубчатого ребра для шипового соединения (Finger Joint) между точками A и B.
- * mode = 'male'   — шипы выступают наружу на толщину листа;
- * mode = 'female' — пазы выбраны внутрь на толщину листа (ответные шипам);
- * mode = 'flat'   — прямой край (например, верх стенки при открытой крышке).
- * clearance — зазор плотной посадки: пазы расширяются вдоль края, чтобы
- * собирать корпус без шлифовки (на шипы не влияет — размер детали остаётся точным).
+ * 2. Корпус на шипах (Finger-Joint Box) для лазерной резки из фанеры или акрила.
+ *
+ * Геометрию считает общий движок коробок (src/laser/boxes.ts) — те же замки
+ * шип-паз с подрезкой углов, что и в каталоге «Генератор коробок». Параметры
+ * берутся из настроек развёртки. Раньше здесь жил свой раскрой на ~200 строк.
  */
-function fingerEdge(
-  a: Pt,
-  b: Pt,
-  thickness: number,
-  targetFingerW: number,
-  mode: 'male' | 'female' | 'flat',
-  clearance = 0,
-  cornerTrimStart = false,
-  cornerTrimEnd = false
-): Pt[] {
-  const dx = b.x - a.x, dy = b.y - a.y;
-  const len = Math.hypot(dx, dy);
-  if (mode === 'flat' || len < thickness * 3) return [{ ...a }, { ...b }];
-
-  const ux = dx / len, uy = dy / len;
-  // Нормаль наружу: при обходе контура против часовой стрелки — справа от вектора AB
-  const nx = uy, ny = -ux;
-
-  // Нечётное число сегментов ≥ 3: углы всегда остаются «полными»
-  let count = Math.max(3, Math.round(len / Math.max(4, targetFingerW)));
-  if (count % 2 === 0) count += 1;
-
-  const startOffset = cornerTrimStart ? thickness : 0;
-  const endOffset = cornerTrimEnd ? thickness : 0;
-  const innerLen = Math.max(thickness, len - startOffset - endOffset);
-  const segW = innerLen / count;
-  const clear = Math.max(0, Math.min(clearance, segW * 0.4));
-  // Знак высоты: шипы наружу (+), пазы внутрь (−)
-  const tabH = mode === 'male' ? thickness : -thickness;
-  const isTabAt = (i: number) => (mode === 'male' ? i % 2 === 1 : i % 2 === 0);
-
-  const at = (d: number, h: number): Pt => ({
-    x: a.x + ux * d + nx * h,
-    y: a.y + uy * d + ny * h,
+function buildFingerBox(
+  p: UnfoldParams,
+  ox = 12,
+  oy = 12,
+  sheetW = 0,
+  sheetH = 0
+): { shapes: LaserShape[]; groups: LaserGroup[] } {
+  const t = Math.max(1, p.thickness);
+  const built = buildBox('universal', {
+    x: Math.max(25, p.length),
+    y: Math.max(25, p.width),
+    h: Math.max(15, p.height),
+    thickness: t,
+    finger: Math.max(5, p.fingerWidth),
+    play: Math.max(0, Math.min(1, p.clearance || 0)),
+    outside: false,
+    floor: true,
+    lid: !p.openTop,
+    bottomEdge: 'male',
+    topEdge: p.openTop ? 'flat' : 'male',
+    labels: true,
+    reference: false,
   });
 
-  const pts: Pt[] = [at(startOffset, 0)];
-  for (let i = 0; i < count; i++) {
-    const d0 = startOffset + i * segW;
-    const d1 = startOffset + (i + 1) * segW;
-    if (!isTabAt(i)) {
-      pts.push(at(d1, 0));
-      continue;
-    }
-    // паз расширяется зазором посадки, шип остаётся номинальным
-    const s0 = mode === 'female' ? Math.max(startOffset, d0 - clear / 2) : d0;
-    const s1 = mode === 'female' ? Math.min(startOffset + innerLen, d1 + clear / 2) : d1;
-    pts.push(at(s0, 0), at(s0, tabH), at(s1, tabH), at(s1, 0));
-  }
-  const endD = startOffset + innerLen;
-  if (Math.abs(endD - len) > 1e-6) pts.push(at(len - endOffset, 0));
-  return pts;
-}
-
-/** Панель корпуса: четыре ребра (низ, право, верх, лево) собираются в замкнутый контур. */
-function buildFingerPanel(
-  ox: number,
-  oy: number,
-  w: number,
-  h: number,
-  t: number,
-  fw: number,
-  clearance: number,
-  edges: [
-    'male' | 'female' | 'flat',
-    'male' | 'female' | 'flat',
-    'male' | 'female' | 'flat',
-    'male' | 'female' | 'flat',
-  ],
-  trimCorners: boolean
-): Pt[] {
-  const c0 = { x: ox, y: oy };
-  const c1 = { x: ox + w, y: oy };
-  const c2 = { x: ox + w, y: oy + h };
-  const c3 = { x: ox, y: oy + h };
-  const trimTop = trimCorners && edges[2] !== 'flat';
-
-  const eBottom = fingerEdge(c0, c1, t, fw, edges[0], clearance, trimCorners, trimCorners);
-  const eRight = fingerEdge(c1, c2, t, fw, edges[1], clearance, trimCorners, trimTop);
-  const eTop = fingerEdge(c2, c3, t, fw, edges[2], clearance, trimTop, trimTop);
-  const eLeft = fingerEdge(c3, c0, t, fw, edges[3], clearance, trimTop, trimCorners);
-
-  const all = [...eBottom, ...eRight, ...eTop, ...eLeft];
-  // Соседние рёбра дают общую угловую точку — убираем дубликаты
-  const clean: Pt[] = [];
-  for (const p of all) {
-    if (!clean.length || Math.hypot(p.x - clean[clean.length - 1].x, p.y - clean[clean.length - 1].y) > 0.02) {
-      clean.push(p);
-    }
-  }
-  const first = clean[0];
-  const last = clean[clean.length - 1];
-  if (clean.length > 2 && first && last && Math.hypot(first.x - last.x, first.y - last.y) < 0.02) clean.pop();
-  return clean;
-}
-
-/**
- * 2. Корпус на шипах (Finger-Joint Box) для лазерной резки из фанеры или акрила.
- */
-function buildFingerBox(p: UnfoldParams, ox = 12, oy = 12): { shapes: LaserShape[]; groups: LaserGroup[] } {
-  const L = Math.max(25, p.length);
-  const W = Math.max(25, p.width);
-  const H = Math.max(15, p.height);
-  const t = Math.max(1, p.thickness);
-  const fw = Math.max(5, p.fingerWidth);
   const gap = Math.max(6, t * 2 + 4);
-  // Зазор посадки: 0 — плотная сборка (фанера), 0.1…0.3 мм — под покраску/акрил
-  const clearance = Math.max(0, Math.min(1, p.clearance || 0));
+  // Раскладку полками делаем под реальный стол, если он известен; иначе —
+  // в компактный блок примерно в полтора корня из общей площади деталей.
+  const areaOf = (q: Pt[]) => {
+    let a = 0;
+    for (let i = 0, j = q.length - 1; i < q.length; j = i++) a += (q[j].x + q[i].x) * (q[j].y - q[i].y);
+    return Math.abs(a / 2);
+  };
+  const total = built.parts.reduce((sum, q) => sum + areaOf(q.outline) * Math.max(1, q.count ?? 1), 0);
+  const widest = built.parts.reduce((m, q) => {
+    const xs = q.outline.map((v) => v.x), ys = q.outline.map((v) => v.y);
+    return Math.max(m, Math.max(...xs) - Math.min(...xs), Math.max(...ys) - Math.min(...ys));
+  }, 0);
+  const rowW = sheetW > ox * 2 ? sheetW - ox : Math.max(widest + gap, Math.sqrt(Math.max(1, total)) * 1.6);
+  const rowH = sheetH > oy * 2 ? sheetH - oy : 1e5;
+  const { shapes, groups } = layoutBoxParts(built.parts, { sheetW: rowW, sheetH: rowH, gap, margin: 0 });
 
-  const shapes: LaserShape[] = [];
-  const groups: LaserGroup[] = [];
+  // Раскладка начинается от нуля — переносим её в заданную точку листа
+  const bb = selectionBBox(shapes);
+  if (bb) {
+    const dx = ox - bb[0];
+    const dy = oy - bb[1];
+    for (let i = 0; i < shapes.length; i++) shapes[i] = translateShape(shapes[i], dx, dy);
+  }
 
-  const addPanel = (
-    px: number,
-    py: number,
-    pw: number,
-    ph: number,
-    title: string,
-    edges: ['male' | 'female' | 'flat', 'male' | 'female' | 'flat', 'male' | 'female' | 'flat', 'male' | 'female' | 'flat'],
-    trim: boolean,
-    withPcbHoles = false
-  ) => {
-    const gId = luid('grp');
-    groups.push({ id: gId, name: title });
-    const pts = buildFingerPanel(px, py, pw, ph, t, fw, clearance, edges, trim);
-    shapes.push({
-      id: luid('panel'),
-      kind: 'path',
-      layer: 'cut',
-      name: title,
-      groupId: gId,
-      closed: true,
-      filled: false,
-      nodes: ptNodes(pts),
-    });
-    shapes.push({
-      id: luid('lbl'),
-      kind: 'text',
-      layer: 'score',
-      name: `Маркировка: ${title}`,
-      groupId: gId,
-      x: px + 6,
-      y: py + ph / 2 - 1.5,
-      text: title.toUpperCase(),
-      size: 3.5,
-      strokeWidth: 0.25,
-      rot: 0,
-      mirror: false,
-      filled: false,
-    });
-    if (withPcbHoles && p.pcbMount) {
-      const cx = px + pw / 2;
-      const cy = py + ph / 2;
-      const dx = Math.min(pw - 8, p.pcbHoleDistX) / 2;
-      const dy = Math.min(ph - 8, p.pcbHoleDistY) / 2;
+  // Стойки под печатную плату размечаем на дне, как в прежнем генераторе
+  if (p.pcbMount) {
+    const floor = groups.find((g) => g.name === 'Дно');
+    const outline = shapes.find((s) => s.groupId === floor?.id && s.layer === 'cut');
+    if (floor && outline) {
+      const b = shapeBBox(outline);
+      const cx = (b[0] + b[2]) / 2;
+      const cy = (b[1] + b[3]) / 2;
+      const dx = Math.min(b[2] - b[0] - 8, p.pcbHoleDistX) / 2;
+      const dy = Math.min(b[3] - b[1] - 8, p.pcbHoleDistY) / 2;
       const r = Math.max(0.8, p.holeD / 2);
-      for (const [sx, sy] of [[-1, -1], [1, -1], [1, 1], [-1, 1]]) {
+      for (const [sx, sy] of [[-1, -1], [1, -1], [1, 1], [-1, 1]] as [number, number][]) {
         shapes.push({
-          id: luid('hole'),
-          kind: 'ellipse',
-          layer: 'inner',
-          name: 'Отверстие под плату',
-          groupId: gId,
-          cx: cx + sx * dx,
-          cy: cy + sy * dy,
-          rx: r,
-          ry: r,
-          rot: 0,
-          startAngle: 0,
-          endAngle: 360,
-          filled: false,
+          id: luid('hole'), kind: 'ellipse', layer: 'inner', name: 'Отверстие под плату', groupId: floor.id,
+          cx: cx + sx * dx, cy: cy + sy * dy, rx: r, ry: r, rot: 0, startAngle: 0, endAngle: 360, filled: false,
         });
       }
     }
-  };
-
-  // Ряд 1: Дно (L×W), Передняя стенка (L×H), Задняя стенка (L×H)
-  addPanel(ox, oy, L, W, 'BTM (Дно)', ['male', 'male', 'male', 'male'], false, true);
-  const topEdge: 'male' | 'female' | 'flat' = p.openTop ? 'flat' : 'female';
-  addPanel(ox + L + gap, oy, L, H, 'FRONT (Перед)', ['female', 'male', topEdge, 'male'], false, false);
-  addPanel(ox + L + gap, oy + H + gap, L, H, 'BACK (Тыл)', ['female', 'male', topEdge, 'male'], false, false);
-
-  // Ряд 2: Левая стенка (W×H), Правая стенка (W×H), и Крышка (если !openTop)
-  const row2Y = oy + Math.max(W, H * 2 + gap) + gap;
-  addPanel(ox, row2Y, W, H, 'LEFT (Лево)', ['female', 'female', topEdge, 'female'], true, false);
-  addPanel(ox + W + gap, row2Y, W, H, 'RIGHT (Право)', ['female', 'female', topEdge, 'female'], true, false);
-  if (!p.openTop) {
-    addPanel(ox + (W + gap) * 2, row2Y, L, W, 'TOP (Крышка)', ['male', 'male', 'male', 'male'], false, false);
   }
 
   return { shapes, groups };
@@ -1073,12 +955,18 @@ function buildGear(p: UnfoldParams, ox = 60, oy = 60): { shapes: LaserShape[]; g
   return { shapes, groups };
 }
 
-export function generateUnfolding(params: UnfoldParams, ox = 15, oy = 15): { shapes: LaserShape[]; groups: LaserGroup[] } {
+export function generateUnfolding(
+  params: UnfoldParams,
+  ox = 15,
+  oy = 15,
+  sheetW = 0,
+  sheetH = 0
+): { shapes: LaserShape[]; groups: LaserGroup[] } {
   switch (params.template) {
     case 'folded-box':
       return buildFoldedBox(params, ox, oy);
     case 'finger-box':
-      return buildFingerBox(params, ox, oy);
+      return buildFingerBox(params, ox, oy, sheetW, sheetH);
     case 'bent-case':
       return buildBentCase(params, ox, oy);
     case 'cylinder-cone':

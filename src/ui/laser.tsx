@@ -25,6 +25,7 @@ import {
   type GCodeExportOptions, type LaserSimulation,
 } from '../laser/export';
 import { DEFAULT_UNFOLD_PARAMS, UNFOLD_TEMPLATES, generateUnfolding, type UnfoldParams } from '../laser/unfold';
+import { BoxStudio, type BoxApplyPayload } from './box-studio';
 import {
   loadLaserDraft, parseLaserProject, safeFileName, saveLaserDraft, serializeLaserProject,
 } from '../laser/project';
@@ -224,7 +225,7 @@ export function LaserEditor({
   const [unfoldParams, setUnfoldParams] = useState<UnfoldParams>({ ...DEFAULT_UNFOLD_PARAMS });
   const [unfoldBusy, setUnfoldBusy] = useState(false);
   const [msg, setMsg] = useState<{ text: string; ok: boolean | null } | null>(null);
-  const [dialog, setDialog] = useState<'sheet' | 'new' | 'export' | 'sim' | 'trace' | null>(null);
+  const [dialog, setDialog] = useState<'sheet' | 'new' | 'export' | 'sim' | 'trace' | 'boxes' | null>(null);
   const [confirmAsk, setConfirmAsk] = useState<{ title: string; text: string; ok: string; onOk: () => void } | null>(null);
   const [sim, setSim] = useState<LaserSimulation | null>(null);
   const [simBusy, setSimBusy] = useState(false);
@@ -717,7 +718,7 @@ export function LaserEditor({
           ...unfoldParams,
           thickness: docRef.current.materialThickness || unfoldParams.thickness,
         };
-        const { shapes, groups } = generateUnfolding(params, 12, 12);
+        const { shapes, groups } = generateUnfolding(params, 12, 12, docRef.current.w, docRef.current.h);
         if (!shapes.length) {
           setMsg({ text: 'Развёртка не построена: проверьте размеры.', ok: false });
           return;
@@ -744,6 +745,26 @@ export function LaserEditor({
       }
     }, 20);
   }, [unfoldParams, commit, setSel]);
+
+  // ---------------- генератор коробок ----------------
+
+  const applyBox = useCallback((p: BoxApplyPayload) => {
+    const bb = selectionBBox(p.shapes);
+    commit({
+      ...docRef.current,
+      shapes: [...docRef.current.shapes, ...p.shapes],
+      groups: [...docRef.current.groups, ...p.groups],
+    }, `Коробка: ${p.title}`);
+    setSel(new Set(p.shapes.map((s) => s.id)));
+    const over = bb && (bb[2] > docRef.current.w + 0.5 || bb[3] > docRef.current.h + 0.5);
+    setMsg({
+      text: over
+        ? `Детали (${(bb![2] - bb![0]).toFixed(0)}×${(bb![3] - bb![1]).toFixed(0)} мм) не влезли на лист `
+          + `${docRef.current.w}×${docRef.current.h} мм — увеличьте стол или подберите лист в студии коробок.`
+        : `${p.title} помещены на лист: ${p.shapes.length} объектов, готовы к резке и экспорту в DXF.`,
+      ok: !over,
+    });
+  }, [commit, setSel]);
 
   // ---------------- файлы ----------------
 
@@ -1359,6 +1380,7 @@ export function LaserEditor({
       if (k === 's') { e.preventDefault(); void runExport('project'); return; }
       if (k === 'o') { e.preventDefault(); fileRef.current?.click(); return; }
       if (k === 'e') { e.preventDefault(); setDialog('export'); return; }
+      if (k === 'b') { e.preventDefault(); setDialog('boxes'); return; }
       if (k === 'n') { e.preventDefault(); setDialog('new'); return; }
       if (k === '=' || k === '+') { e.preventDefault(); zoomAt(size.w / 2, size.h / 2, 1.25); return; }
       if (k === '-') { e.preventDefault(); zoomAt(size.w / 2, size.h / 2, 1 / 1.25); return; }
@@ -1724,6 +1746,7 @@ export function LaserEditor({
 
       <div className="tb-group" aria-label="Развёртка и станок">
         {tb('unfold', 'Генератор развёрток (панель слева)', () => setLeftTab('unfold'), { active: leftTab === 'unfold' })}
+        {tb('cube', 'Генератор коробок: 28 типов, шип-паз, DXF (Ctrl+B)', () => setDialog('boxes'), { active: dialog === 'boxes' })}
         {tb('panel', 'Автораскладка деталей на листе', autoNest, { disabled: !doc.shapes.length })}
         {tb('play', 'Симуляция обработки на станке', runSimulate, { disabled: !doc.shapes.length })}
       </div>
@@ -2015,6 +2038,10 @@ export function LaserEditor({
           {savedTick ? ` · ${new Date(savedTick).toLocaleTimeString('ru-RU')}` : ''}
         </span>
       </div>
+
+      {dialog === 'boxes' && (
+        <BoxStudio doc={doc} onApply={applyBox} onClose={() => setDialog(null)} onMsg={(m) => setMsg({ text: m.text, ok: m.ok })} />
+      )}
 
       {dialog === 'new' && (
         <LaserSheetDialog

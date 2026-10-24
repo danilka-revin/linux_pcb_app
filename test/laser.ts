@@ -486,40 +486,50 @@ const pathArea = (s: PathShape) => {
     );
   }
 
-  // 2. Шиповой корпус: 6 панелей, шипы выступают на толщину листа, пазы — внутрь
+  // 2. Шиповой корпус: 6 панелей общего движка коробок, габариты наружные
   {
     const p: UnfoldParams = {
       ...base, template: 'finger-box', length: 90, width: 60, height: 35, thickness: 3,
       fingerWidth: 12, clearance: 0, openTop: false, pcbMount: false,
     };
-    const { shapes } = generateUnfolding(p, 12, 12);
+    const { shapes, groups } = generateUnfolding(p, 12, 12);
     const panels = byLayer(shapes, 'cut');
     assert.equal(panels.length, 6, `закрытая коробка: 6 панелей, получено ${panels.length}`);
-    const btm = panels.find((s) => s.name.startsWith('BTM'))! as PathShape;
-    const bbb = shapeBBox(btm);
-    // дно со всех сторон имеет шипы: габарит больше номинала на толщину листа
-    assert(near(bbb[0], 12 - 3, 0.05), `шип дна слева: ${bbb[0]}`);
-    assert(near(bbb[1], 12 - 3, 0.05), `шип дна снизу: ${bbb[1]}`);
-    assert(near(bbb[2], 12 + 90 + 3, 0.05), `шип дна справа: ${bbb[2]}`);
-    assert(near(bbb[3], 12 + 60 + 3, 0.05), `шип дна сверху: ${bbb[3]}`);
+    const dims = (s: LaserShape): [number, number] => {
+      const b = shapeBBox(s);
+      return [b[2] - b[0], b[3] - b[1]].sort((a, c) => a - c) as [number, number];
+    };
 
-    const front = panels.find((s) => s.name.startsWith('FRONT'))! as PathShape;
-    const fbb = shapeBBox(front);
-    // передняя стенка: пазы выбраны внутрь, наружу выступают только боковые шипы
-    assert(near(fbb[1], 12, 0.05), `низ передней стенки без выступа: ${fbb[1]}`);
-    assert(front.nodes.some((n) => near(n.y, 12 + 3, 0.05)), 'пазы дна выбраны внутрь на толщину');
+    const btm = panels.find((s) => s.name === 'Дно')! as PathShape;
+    const bb = shapeBBox(btm);
+    // Дно и крышка — внешние панели: габарит равен наружному размеру коробки
+    assert.deepEqual(dims(btm), [66, 96], 'дно (90+2·3)×(60+2·3) мм');
+    assert(btm.nodes.some((n) => near(n.y, bb[1] + 3, 0.05)), 'пазы дна выбраны внутрь на толщину листа');
 
-    const openBox = generateUnfolding({ ...p, openTop: true }, 12, 12).shapes;
-    assert.equal(byLayer(openBox, 'cut').length, 5, 'открытая коробка: 5 панелей');
+    const front = panels.find((s) => s.name === 'Стенка передняя')! as PathShape;
+    const fb = shapeBBox(front);
+    assert.deepEqual(dims(front), [41, 96], 'передняя стенка: наружная ширина, высота с шипами низа и верха');
+    assert(front.nodes.some((n) => near(n.y, fb[1] + 3, 0.05)), 'основание шипов на толщину выше торцов');
+    assert(front.nodes.length > 20, 'кромки с шипами описаны подробно');
 
-    // зазор посадки расширяет пазы, но не меняет габарит детали
+    const side = panels.find((s) => s.name === 'Стенка левая')! as PathShape;
+    assert.deepEqual(dims(side), [41, 66], 'боковая стенка короче дна на две толщины, шипы по торцам');
+
+    const openShapes = generateUnfolding({ ...p, openTop: true }, 12, 12).shapes;
+    assert.equal(byLayer(openShapes, 'cut').length, 5, 'открытая коробка: 5 панелей');
+    const openFront = byLayer(openShapes, 'cut').find((s) => s.name === 'Стенка передняя')! as PathShape;
+    assert.deepEqual(dims(openFront), [38, 96], 'без крышки шипы только на нижнем торце');
+
+    // Зазор посадки расширяет пазы, но габарит детали остаётся точным
     const loose = generateUnfolding({ ...p, clearance: 0.3 }, 12, 12).shapes;
-    const looseFront = byLayer(loose, 'cut').find((s) => s.name.startsWith('FRONT'))! as PathShape;
-    assert.deepEqual(shapeBBox(looseFront), fbb, 'зазор не меняет габарит стенки');
+    const looseFront = byLayer(loose, 'cut').find((s) => s.name === 'Стенка передняя')! as PathShape;
+    assert.deepEqual(dims(looseFront), dims(front), 'зазор не меняет габарит стенки');
     assert(looseFront.nodes.length >= front.nodes.length, 'пазы с зазором описаны подробнее');
 
     const withPcb = generateUnfolding({ ...p, pcbMount: true, pcbHoleDistX: 70, pcbHoleDistY: 45, holeD: 3.2 }, 12, 12).shapes;
     assert(byLayer(withPcb, 'inner').length >= 4, 'отверстия под печатную плату');
+    assert.equal(groups.length, 6, 'каждая панель — своя группа');
+    assert(shapes.some((s) => s.layer === 'engrave'), 'детали подписаны');
   }
 
   // 3. П-образное шасси: контур, две линии гиба, вентиляция, отверстия платы
