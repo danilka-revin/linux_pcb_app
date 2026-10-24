@@ -1047,6 +1047,32 @@ await settle();
   await click(byTextLike('Открыть лазерный редактор и развёртки'));
   await settle(300);
   assert(text().includes('Генератор развёрток'), 'из 3D — сразу в лазерный редактор');
+
+  // окно коробок открывается из тулбара рисовалки и переносит раскладку на лист
+  const boxFoot = () => [...win.document.querySelectorAll('.box-studio .foot .btn')] as HTMLButtonElement[];
+  await click(byTitle('Генератор коробок'));
+  await settle(400);
+  assert(win.document.querySelector('.box-studio'), 'окно коробок открылось из рисовалки');
+  assert(boxFoot().some((b) => b.textContent?.includes('Перенести в рисовалку')), 'кнопка переноса в окне');
+  await click(boxFoot().find((b) => b.textContent?.includes('Перенести в рисовалку'))!);
+  await settle(500);
+  assert(!win.document.querySelector('.box-studio'), 'окно закрылось после переноса');
+  assert(status().includes('помещены на лист'), `раскладка из окна на листе: ${status()}`);
+  await clickTab('Объекты');
+  assert(objRows().length > 0, `детали коробки в дереве объектов: ${objRows().length}`);
+
+  // в режиме плат окно открывается кнопкой «Коробки» в шапке программы,
+  // а перенос раскладки сам переключает режим на рисовалку
+  await click(tabOf('Платы'));
+  await settle(300);
+  assert(win.document.querySelector('.canvas-base'), 'вернулись в редактор плат');
+  await click(byTitle('Генератор коробок'));
+  await settle(400);
+  assert(win.document.querySelector('.box-studio'), 'окно коробок доступно из режима плат');
+  await click(boxFoot().find((b) => b.textContent?.includes('Перенести в рисовалку'))!);
+  await settle(700);
+  assert(text().includes('Генератор развёрток'), 'перенос раскладки переключил режим на рисовалку');
+  assert(status().includes('помещены на лист'), `детали из окна легли на лист: ${status()}`);
   saveWorkspaceMode('pcb');
 }
 
@@ -1059,7 +1085,8 @@ process.stdout.write(
   + 'границы по выделению, разбивка по пересечениям), отмена, булевы операции, контур, '
   + 'экспорт: настройки DXF в диалоге (версия, сущности, ноль координат), план слоёв файла, '
   + 'контроль точности, разбивка по слоям в ZIP, SVG и проект, черновик, '
-  + 'отдельное окно генератора коробок, '
+  + 'отдельное окно генератора коробок (из шапки программы и из рисовалки, '
+  + 'перенос раскладки с автопереключением режима), '
   + 'размер стола, очистка листа, '
   + 'студия коробок (каталог 28 типов, поиск, 3D-сборка, раскладка, DXF, помещение на лист), '
   + 'экран 3D и переключение режимов из редактора плат\n',
