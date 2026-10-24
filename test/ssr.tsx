@@ -170,6 +170,19 @@ if (html.includes('gen-fail')) throw new Error('SSR: панель деталей
   }
 }
 
+// генератор коробок — самостоятельное окно: кнопка в шапке есть в любом режиме,
+// а раскладка из окна уходит в редактор чертежей (переключая режим, если нужно)
+{
+  if (!html.includes('Генератор коробок')) throw new Error('в шапке нет генератора коробок');
+  if (!html.includes('>Коробки</span>')) throw new Error('в шапке нет кнопки «Коробки»');
+  const app = readFileSync('src/App.tsx', 'utf8');
+  for (const m of ['BoxWindow', 'placeBox', 'boxPayload', 'onOpenBoxes', 'box-win-msg']) {
+    if (!app.includes(m) && !readFileSync('src/styles.css', 'utf8').includes(m)) {
+      throw new Error(`окно коробок: не найдено «${m}»`);
+    }
+  }
+}
+
 // панель генератора с готовой деталью и деревом папок
 const gen = generate('dip 8 m3 подписи');
 if (!gen.ok) throw new Error('SSR: dip 8 m3 подписи не собралось');

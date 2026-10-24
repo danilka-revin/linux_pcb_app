@@ -1,8 +1,10 @@
-// Диалоги лазерного редактора: новый лист/размер стола, экспорт на станок,
-// симуляция обработки и векторизация изображения (аналог PowerTRACE).
+// Диалоги редактора чертежей: новый лист и его размер, экспорт чертежа
+// (параметры DXF, план файла, контроль точности, разбивка по слоям),
+// симуляция обработки (станочная часть, под флагом MACHINE_UI) и векторизация
+// изображения (аналог PowerTRACE).
 
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { Modal, NI, SI } from './widgets';
+import { Modal, NI, SI, TI } from './widgets';
 import { Ic } from './icons';
 import { ProgressBar } from './progress';
 import {
@@ -12,18 +14,30 @@ import {
   type LaserSimulation,
 } from '../laser/export';
 import {
+  DXF_LAYER_NAMES, dxfLayerPlan, exportDxf, measureDxfAccuracy, normalizeDxfOptions, visibleShapes,
+  type DxfAccuracy, type DxfOptions,
+} from '../laser/dxf';
+import {
   LASER_LAYER_ORDER,
   MATERIAL_PRESETS,
+  docContourLength,
   luid,
   type LaserDoc,
   type LaserLayerId,
   type LaserShape,
   type Pt,
 } from '../laser/model';
+import { MACHINE_UI } from '../laser/features';
 import { toScreen, type LaserView } from '../laser/render';
 import { facesToPolys, traceImage, type BitmapImage, type TraceResult } from '../pcb/imagetrace';
 
 export type LaserExportFormat = 'gcode' | 'svg' | 'dxf' | 'png' | 'project';
+
+/** Как отдавать DXF: одним файлом или отдельными файлами по слоям (архивом ZIP). */
+export type LaserDxfSplit = 'single' | 'layers';
+
+/** Порог числа объектов, выше которого живая проверка точности в диалоге не гоняется. */
+const DXF_ACCURACY_LIMIT = 4000;
 
 const SHEET_PRESETS: { id: string; name: string; w: number; h: number }[] = [
   { id: 'k40', name: 'K40 CO₂ (320×220 мм)', w: 320, h: 220 },
@@ -96,30 +110,39 @@ export function LaserSheetDialog({
           placeholder="Например: Корпус прибора 120×80"
         />
       </div>
-      <SI label="Стол станка" value={preset} on={applyPreset}
+      <SI label={MACHINE_UI ? 'Стол станка' : 'Формат листа'} value={preset} on={applyPreset}
         options={SHEET_PRESETS.map((p) => [p.id, p.name] as [string, string])} />
       <div className="laser-grid2">
         <NI label="Ширина X, мм" value={w} min={20} max={3000} step={1} on={setW} />
         <NI label="Глубина Y, мм" value={h} min={20} max={3000} step={1} on={setH} />
       </div>
-      <SI label="Материал" value={materialId} on={setMaterialId}
-        options={MATERIAL_PRESETS.map((m) => [m.id, `${m.name} (${m.thicknessMm} мм)`] as [string, string])} />
+      {MACHINE_UI && (
+        <SI label="Материал" value={materialId} on={setMaterialId}
+          options={MATERIAL_PRESETS.map((m) => [m.id, `${m.name} (${m.thicknessMm} мм)`] as [string, string])} />
+      )}
       <NI label="Толщина, мм" value={thickness} min={0.1} max={50} step={0.1} on={setThickness} />
       <p className="sub">
-        Размер стола задаёт рабочее поле: объекты за его пределами станок не обработает.
-        Толщина материала используется генератором развёрток (шип-паз, клапаны, зазоры посадки).
+        {MACHINE_UI
+          ? 'Размер стола задаёт рабочее поле: объекты за его пределами станок не обработает. '
+            + 'Толщина материала используется генератором развёрток (шип-паз, клапаны, зазоры посадки).'
+          : 'Размер листа задаёт границы чертежа: объекты за его пределами не попадут в раскладку. '
+            + 'Толщина материала используется генератором развёрток и коробок (шип-паз, клапаны, зазоры посадки).'}
       </p>
     </Modal>
   );
 }
 
-// ---------------- экспорт на станок ----------------
+// ---------------- экспорт чертежа ----------------
 
 export function LaserExportDialog({
   doc,
   sim,
   gcode,
   onGcodeChange,
+  dxf,
+  onDxfChange,
+  dxfSplit,
+  onDxfSplitChange,
   onExport,
   onClose,
 }: {
@@ -127,10 +150,15 @@ export function LaserExportDialog({
   sim: LaserSimulation | null;
   gcode: GCodeExportOptions;
   onGcodeChange: (patch: Partial<GCodeExportOptions>) => void;
+  dxf: DxfOptions;
+  onDxfChange: (patch: Partial<DxfOptions>) => void;
+  dxfSplit: LaserDxfSplit;
+  onDxfSplitChange: (split: LaserDxfSplit) => void;
   onExport: (format: LaserExportFormat) => void;
   onClose: () => void;
 }) {
-  const [format, setFormat] = useState<LaserExportFormat>('gcode');
+  const [format, setFormat] = useState<LaserExportFormat>(MACHINE_UI ? 'gcode' : 'dxf');
+  const contourMm = useMemo(() => docContourLength(doc), [doc]);
   const perLayer = useMemo(
     () =>
       LASER_LAYER_ORDER.map((id) => ({
@@ -140,6 +168,48 @@ export function LaserExportDialog({
       })).filter((r) => r.count > 0),
     [doc.shapes, doc.layers]
   );
+
+  // ---------------- DXF: план файла и живая проверка точности ----------------
+
+  const dxfOpts = useMemo(() => normalizeDxfOptions(dxf), [dxf]);
+  const dxfShapes = useMemo(() => visibleShapes(doc, dxfOpts), [doc, dxfOpts]);
+  const dxfPlan = useMemo(() => dxfLayerPlan(doc, dxfOpts, dxfShapes), [doc, dxfOpts, dxfShapes]);
+  /** Слои, которые станут отдельными файлами архива. */
+  const dxfFiles = useMemo(
+    () =>
+      LASER_LAYER_ORDER
+        .filter((id) => (id !== 'guide' || dxfOpts.includeGuide))
+        .filter((id) => dxfShapes.some((s) => s.layer === id))
+        .map((id) => ({ id, name: `${DXF_LAYER_NAMES[id]}.dxf`, count: dxfShapes.filter((s) => s.layer === id).length })),
+    [dxfShapes, dxfOpts.includeGuide]
+  );
+  const [acc, setAcc] = useState<DxfAccuracy | null>(null);
+  const [accState, setAccState] = useState<'idle' | 'busy' | 'skip'>('idle');
+  // Комментарий на геометрию не влияет — из-за него дорогую проверку не перезапускаем.
+  const accKey = useMemo(() => JSON.stringify({ ...dxfOpts, comment: '' }), [dxfOpts]);
+
+  // Проверка дорогая (файл пишется и читается обратно), поэтому с задержкой
+  // и только пока открыта вкладка DXF.
+  useEffect(() => {
+    if (format !== 'dxf') return;
+    if (dxfShapes.length > DXF_ACCURACY_LIMIT) {
+      setAcc(null);
+      setAccState('skip');
+      return;
+    }
+    let dead = false;
+    setAccState('busy');
+    const t = setTimeout(() => {
+      try {
+        setAcc(measureDxfAccuracy(doc, exportDxf(doc, dxfOpts), dxfOpts));
+        if (!dead) setAccState('idle');
+      } catch {
+        if (!dead) { setAcc(null); setAccState('idle'); }
+      }
+    }, 260);
+    return () => { dead = true; clearTimeout(t); };
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- dxfOpts входит в accKey
+  }, [format, doc, accKey, dxfShapes.length]);
 
   const formats: { id: LaserExportFormat; name: string; ext: string; desc: string; icon: string }[] = [
     {
@@ -151,10 +221,10 @@ export function LaserExportDialog({
     },
     {
       id: 'dxf',
-      name: 'AutoCAD DXF (R12)',
-      ext: '.dxf',
+      name: 'AutoCAD DXF',
+      ext: dxfSplit === 'layers' ? `.zip (${dxfFiles.length} × .dxf)` : '.dxf',
       icon: 'gerber',
-      desc: 'Векторный чертёж по слоям CUT / INNER / FOLD / SCORE / ENGRAVE — открывается в RDWorks, CypCut, CorelDRAW, AutoCAD, LightBurn.',
+      desc: 'Точный векторный чертёж 1:1 в миллиметрах по слоям CUT / INNER / FOLD / SCORE / ENGRAVE — открывается в RDWorks, CypCut, CorelDRAW, AutoCAD, LightBurn. Версию, сущности, слои, допуски и разбивку по файлам можно настроить ниже.',
     },
     {
       id: 'svg',
@@ -179,23 +249,27 @@ export function LaserExportDialog({
     },
   ];
 
+  // G-Code и PNG-чертёж — станочные форматы: в составе «рисовалки» их нет.
+  const shown = MACHINE_UI ? formats : formats.filter((f) => f.id !== 'gcode' && f.id !== 'png');
+  const active = shown.find((f) => f.id === format) ?? shown[0];
+
   return (
     <Modal
-      title="Экспорт развёртки на лазерный станок"
+      title={MACHINE_UI ? 'Экспорт развёртки на лазерный станок' : 'Экспорт чертежа'}
       onClose={onClose}
       className="laser-export-dialog"
       foot={
         <>
           <button type="button" className="btn" onClick={onClose}>Закрыть</button>
-          <button type="button" className="btn primary" onClick={() => onExport(format)}>
+          <button type="button" className="btn primary" onClick={() => onExport(active.id)}>
             <Ic n="gerber" size={15} />
-            <span>Скачать {formats.find((f) => f.id === format)?.ext}</span>
+            <span>Скачать {active.ext}</span>
           </button>
         </>
       }
     >
       <div className="laser-export-formats">
-        {formats.map((f) => (
+        {shown.map((f) => (
           <button
             key={f.id}
             type="button"
@@ -208,15 +282,21 @@ export function LaserExportDialog({
           </button>
         ))}
       </div>
-      <p className="sub">{formats.find((f) => f.id === format)?.desc}</p>
+      <p className="sub">{active.desc}</p>
 
       <div className="laser-export-summary">
         <div><span>Проект</span><b>{doc.name}</b></div>
         <div><span>Лист</span><b>{doc.w} × {doc.h} мм</b></div>
-        <div><span>Материал</span><b>{doc.materialThickness} мм</b></div>
+        <div><span>Толщина</span><b>{doc.materialThickness} мм</b></div>
         <div><span>Объектов</span><b>{doc.shapes.filter((s) => !s.hidden).length}</b></div>
-        <div><span>Длина реза</span><b>{sim ? `${sim.cutLengthMm.toFixed(1)} мм` : 'не рассчитано'}</b></div>
-        <div><span>Время</span><b>{sim ? `${Math.round(sim.totalTimeSec)} с` : 'не рассчитано'}</b></div>
+        {MACHINE_UI ? (
+          <>
+            <div><span>Длина реза</span><b>{sim ? `${sim.cutLengthMm.toFixed(1)} мм` : 'не рассчитано'}</b></div>
+            <div><span>Время</span><b>{sim ? `${Math.round(sim.totalTimeSec)} с` : 'не рассчитано'}</b></div>
+          </>
+        ) : (
+          <div><span>Длина контуров</span><b>{contourMm.toFixed(1)} мм</b></div>
+        )}
       </div>
 
       <div className="laser-export-layers">
@@ -225,15 +305,19 @@ export function LaserExportDialog({
             <span className="laser-layer-swatch" style={{ background: r.cfg.color }} />
             <span className="laser-job-layer-name">{r.cfg.short}</span>
             <span>{r.count} объ.</span>
-            <span>{r.cfg.power}% / {r.cfg.speed} мм/с</span>
-            <span>{r.cfg.passes} прох.</span>
-            {r.cfg.kerf > 0 && <span>керф {r.cfg.kerf}</span>}
+            {MACHINE_UI && (
+              <>
+                <span>{r.cfg.power}% / {r.cfg.speed} мм/с</span>
+                <span>{r.cfg.passes} прох.</span>
+                {r.cfg.kerf > 0 && <span>керф {r.cfg.kerf}</span>}
+              </>
+            )}
           </div>
         ))}
         {!perLayer.length && <div className="hint">На листе нет видимых объектов — экспорт будет пустым.</div>}
       </div>
 
-      {format === 'gcode' && (
+      {MACHINE_UI && format === 'gcode' && (
         <div className="props laser-gcode-opts">
           <h3>Параметры G-Code</h3>
           <SI
@@ -258,6 +342,202 @@ export function LaserExportDialog({
             Порядок слоёв в программе: гравировка → разметка → биговка → внутренние вырезы → внешний контур.
             Начало координат (0;0) — левый нижний угол листа, как на столе станка.
           </p>
+        </div>
+      )}
+
+      {format === 'dxf' && (
+        <div className="props laser-dxf-opts">
+          <h3>Параметры DXF</h3>
+
+          <div className="laser-split" role="group">
+            <button
+              type="button"
+              data-dxf-split="single"
+              className={'laser-split-btn' + (dxfSplit === 'single' ? ' active' : '')}
+              onClick={() => onDxfSplitChange('single')}
+            >
+              <Ic n="gerber" size={14} />
+              <span>Один файл</span>
+              <em>.dxf</em>
+            </button>
+            <button
+              type="button"
+              data-dxf-split="layers"
+              className={'laser-split-btn' + (dxfSplit === 'layers' ? ' active' : '')}
+              onClick={() => onDxfSplitChange('layers')}
+            >
+              <Ic n="layers" size={14} />
+              <span>Файлы по слоям</span>
+              <em>.zip · {dxfFiles.length}</em>
+            </button>
+          </div>
+          <p className="sub">
+            {dxfSplit === 'layers'
+              ? 'Каждый слой чертежа — отдельный DXF внутри архива: в RDWorks и CypCut файлы заводятся по одному, режимы назначаются сразу и ничего не теряется при импорте.'
+              : 'Все слои в одном файле: слои CUT, INNER, FOLD, SCORE, ENGRAVE становятся слоями DXF со своими цветами и типами линий.'}
+          </p>
+
+          <div className="laser-grid2">
+            <SI
+              label="Версия"
+              value={dxf.version}
+              on={(v) => onDxfChange({ version: v as DxfOptions['version'] })}
+              options={[
+                ['R2000', 'R2000 (AC1015) — полный DXF'],
+                ['R12', 'R12 (AC1009) — для старых CAM'],
+              ]}
+            />
+            <SI
+              label="Сущности"
+              value={dxf.entities}
+              on={(v) => onDxfChange({ entities: v as DxfOptions['entities'] })}
+              options={[
+                ['auto', 'Авто — дуги и сплайны, где возможно'],
+                ['exact', 'Точно — ARC, CIRCLE, ELLIPSE, SPLINE'],
+                ['polyline', 'Полилинии LWPOLYLINE'],
+                ['lines', 'Только отрезки LINE'],
+              ]}
+            />
+            <SI
+              label="Единицы"
+              value={dxf.units}
+              on={(v) => onDxfChange({ units: v as DxfOptions['units'] })}
+              options={[['mm', 'Миллиметры'], ['inch', 'Дюймы']]}
+            />
+            <SI
+              label="Ноль координат"
+              value={dxf.origin}
+              on={(v) => onDxfChange({ origin: v as DxfOptions['origin'] })}
+              options={[
+                ['sheet', 'Угол листа — (0;0) чертежа'],
+                ['bbox', 'Левый нижний угол деталей'],
+                ['center', 'Центр габарита деталей'],
+                ['zero', 'Координаты чертежа без сдвига'],
+              ]}
+            />
+            <SI
+              label="Слои"
+              value={dxf.layers}
+              on={(v) => onDxfChange({ layers: v as DxfOptions['layers'] })}
+              options={[
+                ['laser', 'Слои чертежа (CUT, INNER, FOLD…)'],
+                ['single', 'Один слой для всего'],
+                ['objects', 'Слой на каждый объект'],
+              ]}
+            />
+            {dxf.layers === 'single' && (
+              <TI label="Имя слоя" value={dxf.singleLayer} on={(v) => onDxfChange({ singleLayer: v })} />
+            )}
+            <SI
+              label="Цвета"
+              value={dxf.colors}
+              on={(v) => onDxfChange({ colors: v as DxfOptions['colors'] })}
+              options={[
+                ['aci', 'Индекс AutoCAD (ACI)'],
+                ['truecolor', 'Точный RGB (код 420)'],
+                ['bylayer', 'ByLayer — цветом слоя'],
+              ]}
+            />
+            <SI
+              label="Пунктир сгиба"
+              value={dxf.foldDash}
+              on={(v) => onDxfChange({ foldDash: v as DxfOptions['foldDash'] })}
+              options={[
+                ['segments', 'Физические штрихи'],
+                ['linetype', 'Тип линии DASHED'],
+                ['solid', 'Сплошная линия'],
+              ]}
+            />
+
+            <NI label="Допуск, мм" value={dxf.tolerance} min={0.0005} max={2} step={0.005}
+              on={(v) => onDxfChange({ tolerance: v })} />
+            <NI label="Точность, знаков" value={dxf.precision} min={1} max={9} step={1}
+              on={(v) => onDxfChange({ precision: Math.round(v) })} />
+            <NI label="Масштаб" value={dxf.scale} min={0.01} max={100} step={0.1}
+              on={(v) => onDxfChange({ scale: v })} />
+            <NI label="Сварка, мм" value={dxf.weld} min={0} max={2} step={0.005}
+              on={(v) => onDxfChange({ weld: Math.max(0, v) })} />
+          </div>
+
+          <div className="laser-dxf-checks">
+            <label className="laser-check">
+              <input type="checkbox" checked={dxf.kerf}
+                onChange={(e) => onDxfChange({ kerf: e.target.checked })} />
+              Компенсация толщины луча (керф) на слоях резки
+            </label>
+            <label className="laser-check">
+              <input type="checkbox" checked={dxf.tabs}
+                onChange={(e) => onDxfChange({ tabs: e.target.checked })} />
+              Удерживающие перемычки (разрывы контура)
+            </label>
+            <label className="laser-check">
+              <input type="checkbox" checked={dxf.flipY}
+                onChange={(e) => onDxfChange({ flipY: e.target.checked })} />
+              Инверсия Y — для программ с отсчётом сверху
+            </label>
+            <label className="laser-check">
+              <input type="checkbox" checked={dxf.textAsEntity}
+                onChange={(e) => onDxfChange({ textAsEntity: e.target.checked })} />
+              Текст объектом TEXT (иначе — штриховыми контурами)
+            </label>
+            <label className="laser-check">
+              <input type="checkbox" checked={dxf.blocks}
+                onChange={(e) => onDxfChange({ blocks: e.target.checked })} />
+              Повторяющиеся детали — блоки BLOCK / INSERT
+            </label>
+            <label className="laser-check">
+              <input type="checkbox" checked={dxf.includeHidden}
+                onChange={(e) => onDxfChange({ includeHidden: e.target.checked })} />
+              Включить скрытые объекты
+            </label>
+            <label className="laser-check">
+              <input type="checkbox" checked={dxf.includeGuide}
+                onChange={(e) => onDxfChange({ includeGuide: e.target.checked })} />
+              Включить слой «Размеры» (направляющие, не режется)
+            </label>
+          </div>
+          <TI label="Комментарий в шапке" value={dxf.comment} on={(v) => onDxfChange({ comment: v })} />
+
+          <div className="laser-dxf-plan">
+            <h4>{dxfSplit === 'layers' ? 'Файлы архива' : 'Слои файла'}</h4>
+            {dxfSplit === 'layers'
+              ? dxfFiles.map((f) => (
+                <div key={f.id} className="laser-dxf-row">
+                  <Ic n="gerber" size={13} />
+                  <b>{f.name}</b>
+                  <span>{doc.layers[f.id]?.short}</span>
+                  <span>{f.count} объ.</span>
+                </div>
+              ))
+              : dxfPlan.map((p) => (
+                <div key={p.name} className="laser-dxf-row">
+                  <span className="laser-layer-swatch" style={{ background: p.color }} />
+                  <b>{p.name}</b>
+                  <span>ACI {p.aci}</span>
+                  <span>{p.linetype === 'DASHED' ? 'DASHED' : 'CONTINUOUS'}</span>
+                  <span>{p.shapes} объ.</span>
+                </div>
+              ))}
+            {!dxfShapes.length && <div className="hint">Нет видимых объектов — файл будет пустым.</div>}
+          </div>
+
+          <div className={'laser-dxf-acc' + (acc && !acc.ok ? ' bad' : '')}>
+            <Ic n={acc && acc.ok ? 'check' : 'ruler'} size={13} />
+            {accState === 'busy' && <span>Контроль точности файла…</span>}
+            {accState === 'skip' && (
+              <span>Объектов слишком много ({dxfShapes.length}) — контроль точности пропущен.</span>
+            )}
+            {accState !== 'busy' && accState !== 'skip' && (acc ? (
+              <span>
+                Контроль точности: {dxfShapes.length} объ., отклонение до <b>{acc.maxDeviationMm.toFixed(4)} мм</b>,
+                габарит <b>{acc.bboxDeviationMm.toFixed(4)} мм</b>, длина контуров <b>{acc.lengthDeviationPct.toFixed(3)}%</b>
+                {' — '}
+                {acc.ok ? 'в допуске' : 'вне допуска'}
+              </span>
+            ) : (
+              <span>Контроль точности не выполнен.</span>
+            ))}
+          </div>
         </div>
       )}
     </Modal>

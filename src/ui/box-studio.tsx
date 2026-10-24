@@ -48,11 +48,14 @@ export function BoxStudio({
   onApply,
   onClose,
   onMsg,
+  applyLabel = 'Поместить на лист',
 }: {
   doc: LaserDoc;
   onApply: (p: BoxApplyPayload) => void;
   onClose: () => void;
   onMsg: (m: { text: string; ok: boolean }) => void;
+  /** Подпись кнопки переноса раскладки: в отдельном окне — «Перенести в рисовалку». */
+  applyLabel?: string;
 }) {
   const [typeId, setTypeId] = useState<string>(BOX_TYPES[0].id);
   const [family, setFamily] = useState<BoxFamily | 'all'>('all');
@@ -264,8 +267,9 @@ export function BoxStudio({
           <button type="button" className="btn" onClick={saveDxf} title="Точный DXF: контур, отверстия, биговка, подписи по слоям">
             <Ic n="gerber" size={14} /> DXF
           </button>
-          <button type="button" className="btn primary" onClick={apply} disabled={!layout.shapes.length}>
-            <Ic n="check" size={14} /> Поместить на лист
+          <button type="button" className="btn primary" onClick={apply} disabled={!layout.shapes.length}
+            title="Передать раскладку деталей в редактор чертежей">
+            <Ic n="check" size={14} /> {applyLabel}
           </button>
         </>
       }

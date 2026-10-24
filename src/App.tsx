@@ -57,6 +57,10 @@ const BoardPreviewDialog = lazy(() => import('./ui/board-preview').then((m) => (
 // Лазерный редактор развёрток (векторное ядро + Clipper) открывается не всегда —
 // поэтому тоже подгружается по запросу, отдельным чанком.
 const LaserEditor = lazy(() => import('./ui/laser').then((m) => ({ default: m.LaserEditor })));
+// Генератор коробок — самостоятельное окно: открывается из шапки в любом режиме
+// и грузится отдельно, чтобы каталог и расчёт шип-паза не тянулись в главный чанк.
+const BoxWindow = lazy(() => import('./ui/box-window').then((m) => ({ default: m.BoxWindow })));
+import type { BoxApplyPayload } from './ui/box-studio';
 // Переключение режимов рабочего пространства: платы / лазерный станок / 3D.
 import { ModeSwitcher, loadWorkspaceMode, saveWorkspaceMode, type WorkspaceMode } from './ui/mode-switcher';
 import { Modeling3DView } from './ui/modeling-3d';
@@ -4209,6 +4213,13 @@ export default function App({ cloudUser, onLogout }: { cloudUser?: CloudUser; on
         </div>
         {/* режимы рабочего пространства: платы / лазерный станок / 3D */}
         <ModeSwitcher mode={mode} onChange={setMode} />
+        <div className="tb-group" aria-label="Генератор коробок">
+          <button className="tb-btn" type="button" data-learn="tb-boxes"
+            title="Генератор коробок: 28 типов шип-паз, 3D-сборка, раскладка на листе и точный DXF"
+            onClick={() => setBoxWindow(true)}>
+            <Ic n="cube" size={17} /><span>Коробки</span>
+          </button>
+        </div>
         {order.map((id) => (
           <Fragment key={id}>
             {groups[id]}
@@ -4637,11 +4648,31 @@ export default function App({ cloudUser, onLogout }: { cloudUser?: CloudUser; on
     });
   }, [cloudUser, prefs.newW, prefs.newH, prefs.newName, fit, resetBoardViewFlags]);
 
+  // ---------------- генератор коробок: самостоятельное окно ----------------
+
+  const [boxWindow, setBoxWindow] = useState(false);
+  const [boxPayload, setBoxPayload] = useState<BoxApplyPayload | null>(null);
+
+  // Раскладка из окна коробок уходит в редактор чертежей: если он не открыт,
+  // переключаем режим — редактор подхватит детали сразу после монтирования.
+  const placeBox = useCallback((p: BoxApplyPayload) => {
+    setBoxPayload(p);
+    setBoxWindow(false);
+    if (modeRef.current !== 'laser') setMode('laser');
+  }, [setMode]);
+
+  const boxWindowNode = boxWindow ? (
+    <Suspense fallback={null}>
+      <BoxWindow onPlace={placeBox} onClose={() => setBoxWindow(false)} />
+    </Suspense>
+  ) : null;
+
   // ---------------- другие режимы рабочего пространства ----------------
   // Плата остаётся в памяти (и в черновике браузера), поэтому возврат в режим
   // «Платы» мгновенный: ни документ, ни история правок не теряются.
   if (mode === 'laser') {
     return (
+      <>
       <Suspense fallback={<div className="mode-loading">
         <ProgressBar label="Загружаем лазерный редактор…" indeterminate live
           meta="векторное ядро, генератор развёрток и CAM-экспорт подгружаются отдельным чанком" />
@@ -4653,8 +4684,13 @@ export default function App({ cloudUser, onLogout }: { cloudUser?: CloudUser; on
           setTheme={setTheme}
           onCloseApp={closeApplication}
           cloudUser={cloudUser ? { id: cloudUser.id, email: cloudUser.email } : null}
+          onOpenBoxes={() => setBoxWindow(true)}
+          boxPayload={boxPayload}
+          onBoxApplied={() => setBoxPayload(null)}
         />
       </Suspense>
+      {boxWindowNode}
+      </>
     );
   }
   if (mode === '3d') {
@@ -4882,6 +4918,7 @@ export default function App({ cloudUser, onLogout }: { cloudUser?: CloudUser; on
           }}
         />
       )}
+      {boxWindowNode}
       {dialog === 'colors' && (
         <ColorsDialog
           colors={colors} theme={theme} setColors={setColors}

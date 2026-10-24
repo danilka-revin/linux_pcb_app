@@ -2628,8 +2628,56 @@ html[data-compact='1'] .set-head { padding: 5px 8px 5px 10px; }
 .laser-export-summary span { color: var(--muted); }
 .laser-export-summary b { color: var(--text); font-variant-numeric: tabular-nums; }
 .laser-export-layers { display: flex; flex-direction: column; gap: 3px; }
+/* ---------- окно генератора коробок: плашка сообщений ---------- */
+.box-win-msg {
+  position: fixed; left: 50%; bottom: 26px; transform: translateX(-50%); z-index: 130;
+  max-width: min(720px, 90vw); padding: 8px 14px; border-radius: 10px;
+  background: var(--surface-2); border: 1px solid var(--line); color: var(--text);
+  box-shadow: var(--shadow); font-size: 12.5px; line-height: 1.4;
+}
+.box-win-msg.bad { background: var(--danger-bg); border-color: var(--danger); color: var(--danger-ink); }
+
 .laser-gcode-opts { margin-top: 12px; padding: 10px 12px; background: var(--surface-2); border-radius: 10px; }
 .laser-gcode-opts h3 { margin-top: 0; }
+.laser-dxf-opts { margin-top: 12px; padding: 10px 12px; background: var(--surface-2); border-radius: 10px; }
+.laser-dxf-opts h3 { margin-top: 0; }
+.laser-dxf-opts > .sub { margin: 0 0 10px; }
+.laser-dxf-opts .laser-grid2 .field label { flex-basis: 104px; font-size: 11.5px; }
+.laser-split { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 7px; }
+.laser-split-btn {
+  display: flex; align-items: center; gap: 8px; cursor: pointer; padding: 8px 10px; border-radius: 9px;
+  background: var(--surface); border: 1px solid var(--line); color: var(--text-2);
+}
+.laser-split-btn:hover { border-color: var(--accent-line); color: var(--text); }
+.laser-split-btn.active { background: var(--accent-soft); border-color: var(--accent); color: var(--text); }
+.laser-split-btn svg { flex: none; color: var(--accent-text); }
+.laser-split-btn span { flex: 1; min-width: 0; text-align: left; font-size: 12px; font-weight: 600; }
+.laser-split-btn em {
+  flex: none; font-style: normal; font-size: 10.5px; color: var(--muted);
+  font-variant-numeric: tabular-nums;
+}
+.laser-dxf-checks { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 0 14px; margin-top: 2px; }
+.laser-dxf-checks .laser-check { margin-top: 7px; }
+.laser-dxf-plan { display: flex; flex-direction: column; gap: 3px; margin-top: 12px; }
+.laser-dxf-plan h4 {
+  margin: 0 0 2px; font-size: 10.5px; letter-spacing: .05em; text-transform: uppercase; color: var(--muted);
+}
+.laser-dxf-row {
+  display: flex; align-items: center; gap: 8px; padding: 3px 8px; border-radius: 7px;
+  background: var(--surface); font-size: 11.5px; color: var(--text-2);
+}
+.laser-dxf-row svg { flex: none; color: var(--accent-text); }
+.laser-dxf-row b { flex: 1; min-width: 0; font-weight: 600; color: var(--text); font-variant-numeric: tabular-nums; }
+.laser-dxf-row span { flex: none; color: var(--muted); font-variant-numeric: tabular-nums; }
+.laser-dxf-acc {
+  display: flex; align-items: flex-start; gap: 7px; margin-top: 10px; padding: 7px 9px;
+  border: 1px solid var(--line); border-radius: 8px;
+  background: var(--ok-bg); font-size: 11.5px; line-height: 1.45; color: var(--text-2);
+}
+.laser-dxf-acc svg { flex: none; margin-top: 1px; color: var(--ok-ink); }
+.laser-dxf-acc b { color: var(--text); font-variant-numeric: tabular-nums; }
+.laser-dxf-acc.bad { background: var(--danger-bg); }
+.laser-dxf-acc.bad svg { color: var(--danger-ink); }
 
 /* ---------- студия коробок: каталог генераторов шип-паз ---------- */
 .box-studio { width: min(1280px, 97vw); height: min(880px, 94vh); display: flex; flex-direction: column; }
