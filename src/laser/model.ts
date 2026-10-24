@@ -1035,6 +1035,23 @@ export function polylineLength(pts: Pt[]): number {
 }
 
 /**
+ * Суммарная длина видимых контуров документа в миллиметрах.
+ *
+ * Считает только то, что реально попадёт в чертёж: скрытые объекты и объекты
+ * выключенных слоёв пропускаются. Используется там, где нужна оценка длины реза
+ * без станочных режимов — в статус-баре редактора и в диалоге экспорта.
+ */
+export function docContourLength(doc: LaserDoc): number {
+  let total = 0;
+  for (const s of doc.shapes) {
+    if (s.hidden) continue;
+    if (!doc.layers[s.layer]?.visible) continue;
+    for (const pl of shapeToPolylines(s)) total += polylineLength(pl);
+  }
+  return total;
+}
+
+/**
  * Разбиение полилинии на штрихи: dashLen режем, gapLen пропускаем.
  * offset — фаза (сколько миллиметров первого штриха уже «пройдено»).
  */

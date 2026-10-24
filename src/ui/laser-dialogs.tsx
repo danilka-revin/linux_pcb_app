@@ -1,5 +1,7 @@
-// Диалоги лазерного редактора: новый лист/размер стола, экспорт на станок,
-// симуляция обработки и векторизация изображения (аналог PowerTRACE).
+// Диалоги редактора чертежей: новый лист и его размер, экспорт чертежа
+// (параметры DXF, план файла, контроль точности, разбивка по слоям),
+// симуляция обработки (станочная часть, под флагом MACHINE_UI) и векторизация
+// изображения (аналог PowerTRACE).
 
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { Modal, NI, SI, TI } from './widgets';
@@ -18,18 +20,20 @@ import {
 import {
   LASER_LAYER_ORDER,
   MATERIAL_PRESETS,
+  docContourLength,
   luid,
   type LaserDoc,
   type LaserLayerId,
   type LaserShape,
   type Pt,
 } from '../laser/model';
+import { MACHINE_UI } from '../laser/features';
 import { toScreen, type LaserView } from '../laser/render';
 import { facesToPolys, traceImage, type BitmapImage, type TraceResult } from '../pcb/imagetrace';
 
 export type LaserExportFormat = 'gcode' | 'svg' | 'dxf' | 'png' | 'project';
 
-/** Как отдавать DXF: одним файлом или отдельными файлами по слоям станка (архивом ZIP). */
+/** Как отдавать DXF: одним файлом или отдельными файлами по слоям (архивом ZIP). */
 export type LaserDxfSplit = 'single' | 'layers';
 
 /** Порог числа объектов, выше которого живая проверка точности в диалоге не гоняется. */
@@ -106,24 +110,29 @@ export function LaserSheetDialog({
           placeholder="Например: Корпус прибора 120×80"
         />
       </div>
-      <SI label="Стол станка" value={preset} on={applyPreset}
+      <SI label={MACHINE_UI ? 'Стол станка' : 'Формат листа'} value={preset} on={applyPreset}
         options={SHEET_PRESETS.map((p) => [p.id, p.name] as [string, string])} />
       <div className="laser-grid2">
         <NI label="Ширина X, мм" value={w} min={20} max={3000} step={1} on={setW} />
         <NI label="Глубина Y, мм" value={h} min={20} max={3000} step={1} on={setH} />
       </div>
-      <SI label="Материал" value={materialId} on={setMaterialId}
-        options={MATERIAL_PRESETS.map((m) => [m.id, `${m.name} (${m.thicknessMm} мм)`] as [string, string])} />
+      {MACHINE_UI && (
+        <SI label="Материал" value={materialId} on={setMaterialId}
+          options={MATERIAL_PRESETS.map((m) => [m.id, `${m.name} (${m.thicknessMm} мм)`] as [string, string])} />
+      )}
       <NI label="Толщина, мм" value={thickness} min={0.1} max={50} step={0.1} on={setThickness} />
       <p className="sub">
-        Размер стола задаёт рабочее поле: объекты за его пределами станок не обработает.
-        Толщина материала используется генератором развёрток (шип-паз, клапаны, зазоры посадки).
+        {MACHINE_UI
+          ? 'Размер стола задаёт рабочее поле: объекты за его пределами станок не обработает. '
+            + 'Толщина материала используется генератором развёрток (шип-паз, клапаны, зазоры посадки).'
+          : 'Размер листа задаёт границы чертежа: объекты за его пределами не попадут в раскладку. '
+            + 'Толщина материала используется генератором развёрток и коробок (шип-паз, клапаны, зазоры посадки).'}
       </p>
     </Modal>
   );
 }
 
-// ---------------- экспорт на станок ----------------
+// ---------------- экспорт чертежа ----------------
 
 export function LaserExportDialog({
   doc,
@@ -148,7 +157,8 @@ export function LaserExportDialog({
   onExport: (format: LaserExportFormat) => void;
   onClose: () => void;
 }) {
-  const [format, setFormat] = useState<LaserExportFormat>('gcode');
+  const [format, setFormat] = useState<LaserExportFormat>(MACHINE_UI ? 'gcode' : 'dxf');
+  const contourMm = useMemo(() => docContourLength(doc), [doc]);
   const perLayer = useMemo(
     () =>
       LASER_LAYER_ORDER.map((id) => ({
@@ -164,7 +174,7 @@ export function LaserExportDialog({
   const dxfOpts = useMemo(() => normalizeDxfOptions(dxf), [dxf]);
   const dxfShapes = useMemo(() => visibleShapes(doc, dxfOpts), [doc, dxfOpts]);
   const dxfPlan = useMemo(() => dxfLayerPlan(doc, dxfOpts, dxfShapes), [doc, dxfOpts, dxfShapes]);
-  /** Слои станка, которые станут отдельными файлами архива. */
+  /** Слои, которые станут отдельными файлами архива. */
   const dxfFiles = useMemo(
     () =>
       LASER_LAYER_ORDER
@@ -239,23 +249,27 @@ export function LaserExportDialog({
     },
   ];
 
+  // G-Code и PNG-чертёж — станочные форматы: в составе «рисовалки» их нет.
+  const shown = MACHINE_UI ? formats : formats.filter((f) => f.id !== 'gcode' && f.id !== 'png');
+  const active = shown.find((f) => f.id === format) ?? shown[0];
+
   return (
     <Modal
-      title="Экспорт развёртки на лазерный станок"
+      title={MACHINE_UI ? 'Экспорт развёртки на лазерный станок' : 'Экспорт чертежа'}
       onClose={onClose}
       className="laser-export-dialog"
       foot={
         <>
           <button type="button" className="btn" onClick={onClose}>Закрыть</button>
-          <button type="button" className="btn primary" onClick={() => onExport(format)}>
+          <button type="button" className="btn primary" onClick={() => onExport(active.id)}>
             <Ic n="gerber" size={15} />
-            <span>Скачать {formats.find((f) => f.id === format)?.ext}</span>
+            <span>Скачать {active.ext}</span>
           </button>
         </>
       }
     >
       <div className="laser-export-formats">
-        {formats.map((f) => (
+        {shown.map((f) => (
           <button
             key={f.id}
             type="button"
@@ -268,15 +282,21 @@ export function LaserExportDialog({
           </button>
         ))}
       </div>
-      <p className="sub">{formats.find((f) => f.id === format)?.desc}</p>
+      <p className="sub">{active.desc}</p>
 
       <div className="laser-export-summary">
         <div><span>Проект</span><b>{doc.name}</b></div>
         <div><span>Лист</span><b>{doc.w} × {doc.h} мм</b></div>
-        <div><span>Материал</span><b>{doc.materialThickness} мм</b></div>
+        <div><span>Толщина</span><b>{doc.materialThickness} мм</b></div>
         <div><span>Объектов</span><b>{doc.shapes.filter((s) => !s.hidden).length}</b></div>
-        <div><span>Длина реза</span><b>{sim ? `${sim.cutLengthMm.toFixed(1)} мм` : 'не рассчитано'}</b></div>
-        <div><span>Время</span><b>{sim ? `${Math.round(sim.totalTimeSec)} с` : 'не рассчитано'}</b></div>
+        {MACHINE_UI ? (
+          <>
+            <div><span>Длина реза</span><b>{sim ? `${sim.cutLengthMm.toFixed(1)} мм` : 'не рассчитано'}</b></div>
+            <div><span>Время</span><b>{sim ? `${Math.round(sim.totalTimeSec)} с` : 'не рассчитано'}</b></div>
+          </>
+        ) : (
+          <div><span>Длина контуров</span><b>{contourMm.toFixed(1)} мм</b></div>
+        )}
       </div>
 
       <div className="laser-export-layers">
@@ -285,15 +305,19 @@ export function LaserExportDialog({
             <span className="laser-layer-swatch" style={{ background: r.cfg.color }} />
             <span className="laser-job-layer-name">{r.cfg.short}</span>
             <span>{r.count} объ.</span>
-            <span>{r.cfg.power}% / {r.cfg.speed} мм/с</span>
-            <span>{r.cfg.passes} прох.</span>
-            {r.cfg.kerf > 0 && <span>керф {r.cfg.kerf}</span>}
+            {MACHINE_UI && (
+              <>
+                <span>{r.cfg.power}% / {r.cfg.speed} мм/с</span>
+                <span>{r.cfg.passes} прох.</span>
+                {r.cfg.kerf > 0 && <span>керф {r.cfg.kerf}</span>}
+              </>
+            )}
           </div>
         ))}
         {!perLayer.length && <div className="hint">На листе нет видимых объектов — экспорт будет пустым.</div>}
       </div>
 
-      {format === 'gcode' && (
+      {MACHINE_UI && format === 'gcode' && (
         <div className="props laser-gcode-opts">
           <h3>Параметры G-Code</h3>
           <SI
@@ -349,8 +373,8 @@ export function LaserExportDialog({
           </div>
           <p className="sub">
             {dxfSplit === 'layers'
-              ? 'Каждый слой станка — отдельный DXF внутри архива: в RDWorks и CypCut файлы заводятся по одному, режимы резки назначаются сразу и ничего не теряется при импорте.'
-              : 'Все слои в одном файле: слои станка CUT, INNER, FOLD, SCORE, ENGRAVE становятся слоями DXF со своими цветами и типами линий.'}
+              ? 'Каждый слой чертежа — отдельный DXF внутри архива: в RDWorks и CypCut файлы заводятся по одному, режимы назначаются сразу и ничего не теряется при импорте.'
+              : 'Все слои в одном файле: слои CUT, INNER, FOLD, SCORE, ENGRAVE становятся слоями DXF со своими цветами и типами линий.'}
           </p>
 
           <div className="laser-grid2">
@@ -385,7 +409,7 @@ export function LaserExportDialog({
               value={dxf.origin}
               on={(v) => onDxfChange({ origin: v as DxfOptions['origin'] })}
               options={[
-                ['sheet', 'Угол листа — как на столе станка'],
+                ['sheet', 'Угол листа — (0;0) чертежа'],
                 ['bbox', 'Левый нижний угол деталей'],
                 ['center', 'Центр габарита деталей'],
                 ['zero', 'Координаты чертежа без сдвига'],
@@ -396,7 +420,7 @@ export function LaserExportDialog({
               value={dxf.layers}
               on={(v) => onDxfChange({ layers: v as DxfOptions['layers'] })}
               options={[
-                ['laser', 'Слои станка (CUT, INNER, FOLD…)'],
+                ['laser', 'Слои чертежа (CUT, INNER, FOLD…)'],
                 ['single', 'Один слой для всего'],
                 ['objects', 'Слой на каждый объект'],
               ]}

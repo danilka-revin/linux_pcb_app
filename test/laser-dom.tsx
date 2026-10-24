@@ -144,9 +144,14 @@ await settle();
   for (const t of ['Развёртка', 'Слои', 'Объекты']) assert(leftTabs.includes(t), `вкладка «${t}»`);
   assert(win.document.querySelector('.laser-unfold'), 'панель генератора развёрток открыта');
   assert(status().includes('300×200 мм'), `лист по умолчанию в строке состояния: ${status()}`);
-  assert(text().includes('Задание на станок'), 'панель задания на станок');
-  assert(text().includes('Материал и толщина'), 'панель материала');
+  assert(text().includes('Лист и чертёж'), 'панель листа и чертежа');
+  assert(text().includes('Длина контуров'), 'в сводке листа длина контуров чертежа');
   assert(text().includes('Сетка и привязка'), 'панель сетки');
+  // станочная часть интерфейса скрыта (см. src/laser/features.ts)
+  assert(!text().includes('Задание на станок'), 'панель задания на станок скрыта');
+  assert(!text().includes('Материал и толщина'), 'таблица материалов скрыта');
+  assert(!buttons().some((b) => (b.getAttribute('title') ?? '').includes('Симуляция')),
+    'кнопка симуляции обработки скрыта');
   assert.equal(objRows().length, 0, 'лист пуст');
 }
 
@@ -199,15 +204,20 @@ await settle();
 {
   await clickTab('Слои');
   const layers = [...win.document.querySelectorAll('.laser-layer')];
-  assert.equal(layers.length, 6, `слоёв станка: ${layers.length}`);
+  assert.equal(layers.length, 6, `слоёв чертежа: ${layers.length}`);
+  assert(text().includes('Слои чертежа'), 'панель слоёв чертежа');
   const names = layers.map((l) => l.textContent ?? '').join('|');
   for (const n of ['Резка', 'Внутр. рез', 'Сгиб', 'Разметка', 'Гравировка', 'Размеры']) {
     assert(names.includes(n), `слой «${n}»`);
   }
   await click(layers.find((l) => l.textContent?.includes('Сгиб'))!.querySelector('.laser-layer-main')!);
-  assert(text().includes('Параметры лазера · Сгиб'), 'параметры активного слоя');
+  assert(text().includes('Слой · Сгиб'), 'свойства активного слоя');
   assert(text().includes('Штрих, мм'), 'у биговки есть длина штриха перфорации');
-  assert(text().includes('Обдув воздухом'), 'настройка обдува');
+  assert(text().includes('Назначение'), 'назначение слоя определяет имя и тип линии в DXF');
+  // мощность, скорость, проходы, керф и обдув — станочные параметры, они скрыты
+  for (const gone of ['Параметры лазера', 'Мощность, %', 'Скорость, мм/с', 'Проходов', 'Керф, мм', 'Обдув воздухом']) {
+    assert(!text().includes(gone), `станочный параметр слоя «${gone}» скрыт`);
+  }
 
   // скрытый слой не обрабатывается: проверяем по сообщению и состоянию кнопки
   const eye = layers.find((l) => l.textContent?.includes('Размеры'))!.querySelector('.obj-eye') as HTMLButtonElement;
@@ -215,15 +225,15 @@ await settle();
   await clickTab('Развёртка');
 }
 
-// ---------------- материал ----------------
+// ---------------- толщина материала ----------------
 {
-  const sel = [...win.document.querySelectorAll('select')].find((s) =>
-    [...s.options].some((o) => o.textContent?.includes('Акрил'))) as HTMLSelectElement;
-  assert(sel, 'выбор материала');
-  await changeSelect(sel, 'acrylic-3');
-  await settle();
-  assert(status().includes('Материал: Акрил'), `материал применён: ${status()}`);
-  assert(text().includes('Таблица режимов резки'), 'кнопка таблицы режимов');
+  // Пресеты режимов резки скрыты, но толщина нужна генераторам развёрток и коробок.
+  const th = [...win.document.querySelectorAll('.field')].find((f) =>
+    f.querySelector('label')?.textContent?.trim() === 'Толщина, мм');
+  assert(th, 'поле толщины материала в панели «Лист и чертёж»');
+  const input = th!.querySelector('input') as HTMLInputElement;
+  assert.ok(Number(input.value) > 0, `толщина материала задана: ${input.value}`);
+  assert(!text().includes('Таблица режимов резки'), 'таблица режимов резки скрыта');
 }
 
 // ---------------- выделение, раскладка, отмена ----------------
@@ -647,20 +657,23 @@ await settle();
   await settle();
 }
 
-// ---------------- экспорт и симуляция ----------------
+// ---------------- экспорт чертежа ----------------
 {
-  await clickTitle('Экспорт на станок');
+  await clickTitle('Экспорт чертежа');
   await settle();
+  assert(text().includes('Экспорт чертежа'), 'диалог экспорта чертежа');
   const formats = [...win.document.querySelectorAll('.laser-format')] as HTMLButtonElement[];
-  assert.equal(formats.length, 5, `форматов экспорта: ${formats.length}`);
+  assert.equal(formats.length, 3, `форматов экспорта: ${formats.length}`);
   const labels = formats.map((f) => f.textContent ?? '').join('|');
-  for (const l of ['G-Code', 'DXF', 'SVG', 'PNG', 'PSBees Laser']) assert(labels.includes(l), `формат ${l}`);
-  assert(text().includes('Параметры G-Code'), 'настройки G-Code для активного формата');
-  assert(text().includes('M4 — динамическая мощность'), 'режим лазера M4/M3');
-  assert(text().includes('Возврат в начало координат'), 'опция возврата в ноль');
+  for (const l of ['DXF', 'SVG', 'PSBees Laser']) assert(labels.includes(l), `формат ${l}`);
+  // станочные форматы из диалога убраны
+  assert(!labels.includes('G-Code'), 'G-Code скрыт');
+  assert(!labels.includes('PNG'), 'PNG-чертёж скрыт');
+  assert(!text().includes('Параметры G-Code'), 'настроек G-Code в диалоге нет');
+  assert(text().includes('Длина контуров'), 'в сводке экспорта длина контуров, а не время обработки');
+  assert(!text().includes('Время'), 'станочное время в сводке не показывается');
 
-  // DXF — основной формат вывода: настройки, план файла и контроль точности
-  await click(formats.find((f) => f.textContent?.includes('DXF'))!);
+  // DXF — основной формат вывода и открыт по умолчанию: настройки, план, контроль
   await settle();
   assert(text().includes('Параметры DXF'), 'панель настроек DXF в диалоге экспорта');
   const splits = [...win.document.querySelectorAll('[data-dxf-split]')] as HTMLButtonElement[];
@@ -691,8 +704,8 @@ await settle();
   await settle();
   assert(downloads.some((d) => d.endsWith('.dxf')), `DXF скачан: ${downloads.join(', ')}`);
 
-  // тот же чертёж отдельными файлами по слоям станка — архивом ZIP
-  await clickTitle('Экспорт на станок');
+  // тот же чертёж отдельными файлами по слоям — архивом ZIP
+  await clickTitle('Экспорт чертежа');
   await settle();
   await click([...win.document.querySelectorAll('.laser-format')].find((f) => f.textContent?.includes('DXF'))!);
   await settle();
@@ -710,47 +723,35 @@ await settle();
   assert(downloads.some((d) => d.endsWith('.zip')), `архив DXF по слоям скачан: ${downloads.join(', ')}`);
   assert(status().includes('DXF по слоям'), `сообщение о разбивке: ${status()}`);
   // возвращаем режим «один файл», чтобы следующие проверки скачивали именно .dxf
-  await clickTitle('Экспорт на станок');
+  await clickTitle('Экспорт чертежа');
   await settle();
   await click([...win.document.querySelectorAll('.laser-format')].find((f) => f.textContent?.includes('DXF'))!);
   await click(win.document.querySelector('[data-dxf-split="single"]')!);
   await settle();
   assert.equal(footBtn().textContent?.trim(), 'Скачать .dxf', 'режим одного файла возвращён');
 
-  await clickTitle('Экспорт на станок');
+  await clickTitle('Экспорт чертежа');
   await settle();
-  await click([...win.document.querySelectorAll('.laser-format')].find((f) => f.textContent?.includes('G-Code'))!);
-  await click(byText('Скачать .gcode / .nc'));
+  await click([...win.document.querySelectorAll('.laser-format')].find((f) => f.textContent?.includes('SVG'))!);
   await settle();
-  assert(downloads.some((d) => d.endsWith('.gcode')), 'G-Code скачан');
+  assert(!text().includes('Параметры DXF'), 'панель настроек DXF показана только для DXF');
+  await click(byText('Скачать .svg'));
+  await settle();
+  assert(downloads.some((d) => d.endsWith('.svg')), `SVG скачан: ${downloads.join(', ')}`);
 
-  await clickTitle('Экспорт на станок');
+  await clickTitle('Экспорт чертежа');
   await settle();
   await click([...win.document.querySelectorAll('.laser-format')].find((f) => f.textContent?.includes('Проект'))!);
   await click(byText('Скачать .pslaser'));
   await settle();
   assert(downloads.some((d) => d.endsWith('.pslaser')), 'проект скачан');
-  await clickTitle('Экспорт на станок'); // закрыть через «Закрыть»
+  await clickTitle('Экспорт чертежа'); // закрыть через «Закрыть»
   await clickText('Закрыть');
   await settle();
 
-  // симуляция обработки
-  await clickTitle('Симуляция обработки');
-  await settle(200);
-  assert(text().includes('Симуляция обработки на станке'), 'окно симуляции');
-  assert(win.document.querySelector('.laser-sim-canvas'), 'холст симуляции');
-  assert(text().includes('Ускорение:'), 'выбор ускорения');
-  const legend = win.document.querySelector('.laser-sim-legend');
-  assert(legend && legend.textContent?.includes('Резка'), `легенда слоёв: ${legend?.textContent}`);
-  await clickText('Пауза');
-  await click(byText('×64'));
-  await clickText('Пуск');
-  await settle(120);
-  await clickText('С начала');
-  await settle(60);
-  await clickText('Закрыть');
-  await settle();
-  assert(!text().includes('Симуляция обработки на станке'), 'окно симуляции закрыто');
+  // станочная симуляция в интерфейс не выводится
+  assert(!buttons().some((b) => (b.getAttribute('title') ?? '').includes('Симуляция обработки')),
+    'кнопки симуляции обработки нет');
 }
 
 // ---------------- черновик в хранилище ----------------
@@ -766,16 +767,17 @@ await settle();
 
 // ---------------- размер листа и очистка ----------------
 {
-  await click(byTextLike('Размер стола и материал'));
+  await click(byTextLike('Размер листа и название'));
   await settle();
-  assert(text().includes('Стол станка'), 'диалог размера листа');
+  assert(text().includes('Формат листа'), 'диалог размера листа');
+  assert(!text().includes('Материал'), 'выбор станочного материала в диалоге скрыт');
   const preset = [...win.document.querySelectorAll('select')].find((s) =>
     [...s.options].some((o) => o.textContent?.includes('6040'))) as HTMLSelectElement;
   await changeSelect(preset, '6040');
   await settle();
   await clickText('Применить');
   await settle();
-  assert(status().includes('600×400 мм'), `новый размер стола: ${status()}`);
+  assert(status().includes('600×400 мм'), `новый размер листа: ${status()}`);
 
   await click(byTextLike('Очистить лист'));
   await settle();
@@ -888,6 +890,48 @@ await settle();
   await settle(120);
 }
 
+// ---------------- генератор коробок в отдельном окне ----------------
+{
+  // Окно открывается из шапки программы и работает со своим листом: коробку
+  // можно собрать и забрать в DXF, не заходя в редактор чертежей. Закрывает
+  // окно и принимает раскладку хозяин (App), поэтому проверяем его вызовы.
+  const { BoxWindow } = await import('../src/ui/box-window');
+  const host = win.document.createElement('div');
+  win.document.body.appendChild(host);
+  const boxRoot = createRoot(host);
+  const placed: { shapes: unknown[]; title: string }[] = [];
+  let closeCalls = 0;
+  await act(async () => boxRoot.render(React.createElement(BoxWindow, {
+    onPlace: (p: { shapes: unknown[]; title: string }) => { placed.push(p); },
+    onClose: () => { closeCalls += 1; },
+  })));
+  await settle(300);
+  assert(win.document.querySelector('.box-studio'), 'окно генератора коробок открылось');
+  assert.equal([...win.document.querySelectorAll('.bs-card')].length, 28, 'каталог окна: 28 генераторов');
+  const foot = () => [...win.document.querySelectorAll('.box-studio .foot .btn')] as HTMLButtonElement[];
+  assert(foot().some((b) => b.textContent?.includes('Перенести в рисовалку')), 'кнопка переноса в рисовалку');
+
+  downloads.length = 0;
+  await click(foot().find((b) => b.textContent?.trim() === 'DXF')!);
+  await settle(300);
+  assert(downloads.some((d) => d.endsWith('.dxf')), `DXF из отдельного окна: ${downloads.join(', ')}`);
+  assert(win.document.querySelector('.box-win-msg'), 'сообщение окна показано своей плашкой');
+
+  await click(foot().find((b) => b.textContent?.includes('Перенести в рисовалку'))!);
+  await settle(250);
+  assert.equal(placed.length, 1, 'раскладка передана хозяину окна');
+  assert(placed[0].shapes.length > 0, 'в раскладке есть детали');
+  assert.equal(closeCalls, 1, 'окно просит хозяина закрыться после переноса');
+
+  await click(foot().find((b) => b.textContent?.trim() === 'Закрыть')!);
+  await settle(120);
+  assert.equal(closeCalls, 2, 'кнопка «Закрыть» сообщает хозяину окна');
+
+  await act(async () => boxRoot.unmount());
+  host.remove();
+  assert(!win.document.querySelector('.box-studio'), 'окно убрано из DOM');
+}
+
 // ---------------- экран 3D-моделирования ----------------
 {
   await act(async () => root.render(React.createElement(Modeling3DView, {
@@ -975,7 +1019,8 @@ await settle();
   await click(tabOf('Лазерный'));
   await settle(400);
   assert(text().includes('Генератор развёрток'), 'лазерный редактор открылся из режима плат');
-  assert(text().includes('Задание на станок'), 'панель задания на станок');
+  assert(text().includes('Лист и чертёж'), 'панель листа и чертежа');
+  assert(!text().includes('Задание на станок'), 'станочное задание не показывается');
   assert(!win.document.querySelector('.tool-dock [data-tool-id="track"]'), 'инструменты платы скрыты');
   assert.equal(loadWorkspaceMode(), 'laser', 'выбранный режим запомнен');
 
@@ -1009,11 +1054,12 @@ await act(async () => root.unmount());
 // jsdom держит цикл кадров — без закрытия окна процесс не завершится сам
 dom.window.close();
 process.stdout.write(
-  'LASER DOM OK: режимы, генератор развёрток, слои станка, материал, рисование мышью, '
+  'LASER DOM OK: режимы, генератор развёрток, слои чертежа, толщина материала, рисование мышью, '
   + 'перенос и масштаб маркером, узлы кривой (F10), усечение кривых (X: усечь/продлить/разрезать, '
   + 'границы по выделению, разбивка по пересечениям), отмена, булевы операции, контур, '
   + 'экспорт: настройки DXF в диалоге (версия, сущности, ноль координат), план слоёв файла, '
-  + 'контроль точности, разбивка по слоям в ZIP, G-Code/проект, симуляция, черновик, '
+  + 'контроль точности, разбивка по слоям в ZIP, SVG и проект, черновик, '
+  + 'отдельное окно генератора коробок, '
   + 'размер стола, очистка листа, '
   + 'студия коробок (каталог 28 типов, поиск, 3D-сборка, раскладка, DXF, помещение на лист), '
   + 'экран 3D и переключение режимов из редактора плат\n',

@@ -1,8 +1,11 @@
-// Лазерный редактор PSBees — векторное рисование развёрток в стиле CorelDRAW
-// и подготовка задания на лазерный станок (слои с режимами, керф, биговка,
-// симуляция обработки, экспорт DXF / SVG / G-Code).
+// Редактор чертежей PSBees — векторное рисование развёрток и деталей в стиле
+// CorelDRAW с точным выводом в DXF (слои чертежа, биговка, керф, перемычки).
 //
-// Координаты — миллиметры листа станка, Y вверх; (0;0) — левый нижний угол стола.
+// Станочная часть — G-Code, симуляция обработки, задание на станок и режимы
+// резки по слоям — в коде сохранена, но скрыта из интерфейса: её возвращает
+// флаг MACHINE_UI (src/laser/features.ts).
+//
+// Координаты — миллиметры листа, Y вверх; (0;0) — левый нижний угол листа.
 
 import {
   Fragment, useCallback, useEffect, useMemo, useRef, useState,
@@ -28,14 +31,15 @@ import {
   DEFAULT_DXF_OPTIONS, exportDxfPerLayer, type DxfOptions,
 } from '../laser/dxf';
 import { DEFAULT_UNFOLD_PARAMS, UNFOLD_TEMPLATES, generateUnfolding, type UnfoldParams } from '../laser/unfold';
+import { MACHINE_UI } from '../laser/features';
 import { BoxStudio, type BoxApplyPayload } from './box-studio';
 import {
   loadLaserDraft, parseLaserProject, safeFileName, saveLaserDraft, serializeLaserProject,
 } from '../laser/project';
 import {
   LASER_LAYER_ORDER, MATERIAL_PRESETS, alignShapes, arrayShapes, autoNestShapesEx,
-  booleanShapes, filletShapeCorners, hitShape, luid, mirrorShape, newLaserDoc, offsetShape, rotateShape,
-  scaleShape, selectionBBox, shapeBBox, shapeToPath, translateShape,
+  booleanShapes, docContourLength, filletShapeCorners, hitShape, luid, mirrorShape, newLaserDoc, offsetShape,
+  rotateShape, scaleShape, selectionBBox, shapeBBox, shapeToPath, translateShape,
   type AlignMode, type BooleanOp, type LaserDoc, type LaserLayerConfig, type LaserLayerId,
   type LaserShape, type MaterialPreset, type PathNode, type PathShape, type Pt,
 } from '../laser/model';
@@ -203,6 +207,9 @@ export function LaserEditor({
   setTheme,
   onCloseApp,
   cloudUser,
+  onOpenBoxes,
+  boxPayload,
+  onBoxApplied,
 }: {
   mode: WorkspaceMode;
   onModeChange: (next: WorkspaceMode) => void;
@@ -210,6 +217,12 @@ export function LaserEditor({
   setTheme: (next: ThemeId) => void;
   onCloseApp: () => void;
   cloudUser?: { id: string; email?: string } | null;
+  /** Открыть генератор коробок — самостоятельное окно программы. */
+  onOpenBoxes?: () => void;
+  /** Раскладка из окна коробок, которую нужно поместить на лист. */
+  boxPayload?: BoxApplyPayload | null;
+  /** Ответ окну коробок: раскладка принята и помещена на лист. */
+  onBoxApplied?: () => void;
 }) {
   const [doc, setDocState] = useState<LaserDoc>(() => loadLaserDraft(cloudUser?.id) ?? newLaserDoc());
   const docRef = useRef(doc);
@@ -749,7 +762,7 @@ export function LaserEditor({
     }
     const bb = selectionBBox([...picked, ...copies]);
     if (bb && (bb[2] > docRef.current.w + 1 || bb[3] > docRef.current.h + 1)) {
-      setMsg({ text: 'Внимание: массив выходит за пределы листа — часть деталей станок не обработает.', ok: false });
+      setMsg({ text: 'Внимание: массив выходит за пределы листа — часть деталей не попадёт в чертёж.', ok: false });
     }
     commit({ ...docRef.current, shapes: [...docRef.current.shapes, ...copies] },
       `Массив ${rows}×${cols}: добавлено ${copies.length} объектов`);
@@ -765,7 +778,7 @@ export function LaserEditor({
       if (!res.fits) {
         setMsg({
           text: `Раскладка вышла за лист на ${res.overflowMm[0].toFixed(0)} мм по X и ${res.overflowMm[1].toFixed(0)} мм по Y — `
-            + 'увеличьте стол (F2) или уменьшите детали.',
+            + 'увеличьте лист (F2) или уменьшите детали.',
           ok: false,
         });
       }
@@ -829,7 +842,7 @@ export function LaserEditor({
         if (over) {
           setMsg({
             text: `Развёртка (${(bb![2] - bb![0]).toFixed(0)}×${(bb![3] - bb![1]).toFixed(0)} мм) больше листа `
-              + `${docRef.current.w}×${docRef.current.h} мм — увеличьте стол или уменьшите деталь.`,
+              + `${docRef.current.w}×${docRef.current.h} мм — увеличьте лист или уменьшите деталь.`,
             ok: false,
           });
         }
@@ -855,11 +868,30 @@ export function LaserEditor({
     setMsg({
       text: over
         ? `Детали (${(bb![2] - bb![0]).toFixed(0)}×${(bb![3] - bb![1]).toFixed(0)} мм) не влезли на лист `
-          + `${docRef.current.w}×${docRef.current.h} мм — увеличьте стол или подберите лист в студии коробок.`
+          + `${docRef.current.w}×${docRef.current.h} мм — увеличьте лист или подберите лист в окне коробок.`
         : `${p.title} помещены на лист: ${p.shapes.length} объектов, готовы к резке и экспорту в DXF.`,
       ok: !over,
     });
   }, [commit, setSel]);
+
+  // Суммарная длина видимых контуров чертежа: нужна для оценки реза и
+  // показывает итог в статус-баре вместо станочного времени обработки.
+  const cutLengthMm = useMemo(() => docContourLength(doc), [doc]);
+
+  // Раскладка приходит из самостоятельного окна коробок: применяем сразу, как
+  // только редактор смонтирован (окно можно открыть и из режима «Платы»).
+  useEffect(() => {
+    if (!boxPayload) return;
+    applyBox(boxPayload);
+    onBoxApplied?.();
+  }, [boxPayload, applyBox, onBoxApplied]);
+
+  // Генератор коробок — самостоятельное окно программы: если хозяин (шапка
+  // PSBees) умеет его открыть, отдаём туда, иначе показываем внутри редактора.
+  const openBoxes = useCallback(() => {
+    if (onOpenBoxes) onOpenBoxes();
+    else setDialog('boxes');
+  }, [onOpenBoxes]);
 
   // ---------------- файлы ----------------
 
@@ -1527,7 +1559,7 @@ export function LaserEditor({
       if (k === 's') { e.preventDefault(); void runExport('project'); return; }
       if (k === 'o') { e.preventDefault(); fileRef.current?.click(); return; }
       if (k === 'e') { e.preventDefault(); setDialog('export'); return; }
-      if (k === 'b') { e.preventDefault(); setDialog('boxes'); return; }
+      if (k === 'b') { e.preventDefault(); openBoxes(); return; }
       if (k === 'x' && e.shiftKey) { e.preventDefault(); breakApartSel(); return; }
       if (k === 'n') { e.preventDefault(); setDialog('new'); return; }
       if (k === '=' || k === '+') { e.preventDefault(); zoomAt(size.w / 2, size.h / 2, 1.25); return; }
@@ -1948,7 +1980,9 @@ export function LaserEditor({
         {tb('open', 'Открыть проект или импорт SVG/DXF (Ctrl+O)', () => fileRef.current?.click())}
         {tb('save', 'Сохранить проект .pslaser (Ctrl+S)', () => void runExport('project'))}
         {tb('spark', 'Векторизовать изображение (трассировка в контуры)', () => setDialog('trace'))}
-        {tb('gerber', 'Экспорт на станок: G-Code, DXF, SVG, PNG (Ctrl+E)', () => setDialog('export'), { wide: false })}
+        {tb('gerber', MACHINE_UI
+          ? 'Экспорт на станок: G-Code, DXF, SVG, PNG (Ctrl+E)'
+          : 'Экспорт чертежа: DXF, SVG, проект (Ctrl+E)', () => setDialog('export'), { wide: false })}
       </div>
 
       <div className="tb-group" aria-label="Отмена и повтор">
@@ -1991,11 +2025,11 @@ export function LaserEditor({
           () => setGrid((g) => ({ ...g, snap: !g.snap })), { active: grid.snap })}
       </div>
 
-      <div className="tb-group" aria-label="Развёртка и станок">
+      <div className="tb-group" aria-label={MACHINE_UI ? 'Развёртка и станок' : 'Развёртка и коробки'}>
         {tb('unfold', 'Генератор развёрток (панель слева)', () => setLeftTab('unfold'), { active: leftTab === 'unfold' })}
-        {tb('cube', 'Генератор коробок: 28 типов, шип-паз, DXF (Ctrl+B)', () => setDialog('boxes'), { active: dialog === 'boxes' })}
+        {tb('cube', 'Генератор коробок: 28 типов, шип-паз, DXF (Ctrl+B)', openBoxes)}
         {tb('panel', 'Автораскладка деталей на листе', autoNest, { disabled: !doc.shapes.length })}
-        {tb('play', 'Симуляция обработки на станке', runSimulate, { disabled: !doc.shapes.length })}
+        {MACHINE_UI && tb('play', 'Симуляция обработки на станке', runSimulate, { disabled: !doc.shapes.length })}
       </div>
 
       <div style={{ flex: 1 }} />
@@ -2124,30 +2158,53 @@ export function LaserEditor({
             </label>
           </div>
         )}
-        <LaserMaterialPanel
-          doc={doc}
-          onApply={applyMaterial}
-          onThickness={(mm) => commit({ ...docRef.current, materialThickness: mm }, `Толщина материала ${mm} мм`, true)}
-        />
-        <LaserJobPanel
-          doc={doc}
-          sim={sim}
-          busy={simBusy}
-          onSimulate={runSimulate}
-          onExport={() => setDialog('export')}
-          onNest={autoNest}
-        />
+        {MACHINE_UI && (
+          <>
+            <LaserMaterialPanel
+              doc={doc}
+              onApply={applyMaterial}
+              onThickness={(mm) => commit({ ...docRef.current, materialThickness: mm }, `Толщина материала ${mm} мм`, true)}
+            />
+            <LaserJobPanel
+              doc={doc}
+              sim={sim}
+              busy={simBusy}
+              onSimulate={runSimulate}
+              onExport={() => setDialog('export')}
+              onNest={autoNest}
+            />
+          </>
+        )}
         <div className="props">
-          <h3>Лист станка</h3>
+          <h3>{MACHINE_UI ? 'Лист станка' : 'Лист и чертёж'}</h3>
           <div className="laser-job-grid">
             <div><span>Проект</span><b title={doc.name}>{doc.name}</b></div>
-            <div><span>Стол</span><b>{doc.w}×{doc.h} мм</b></div>
+            <div><span>{MACHINE_UI ? 'Стол' : 'Лист'}</span><b>{doc.w}×{doc.h} мм</b></div>
             <div><span>Объектов</span><b>{doc.shapes.length}</b></div>
             <div><span>Групп</span><b>{doc.groups.length}</b></div>
+            {!MACHINE_UI && <div><span>Длина контуров</span><b>{cutLengthMm.toFixed(1)} мм</b></div>}
           </div>
+          {!MACHINE_UI && (
+            <NI label="Толщина, мм" value={doc.materialThickness} min={0.1} max={50} step={0.1}
+              on={(mm) => commit({ ...docRef.current, materialThickness: mm }, `Толщина материала ${mm} мм`, true)} />
+          )}
+          {!MACHINE_UI && (
+            <div className="laser-btnrow">
+              <button type="button" className="btn" disabled={!doc.shapes.length} onClick={autoNest}
+                title="Автоматически разложить детали на листе без пересечений">
+                <Ic n="panel" size={14} />
+                <span>Автораскладка</span>
+              </button>
+              <button type="button" className="btn primary" disabled={!doc.shapes.length} onClick={() => setDialog('export')}
+                title="Экспорт чертежа: DXF, SVG, проект (Ctrl+E)">
+                <Ic n="gerber" size={14} />
+                <span>Экспорт чертежа…</span>
+              </button>
+            </div>
+          )}
           <button type="button" className="btn" onClick={() => setDialog('sheet')}>
             <Ic n="ruler" size={14} />
-            <span>Размер стола и материал…</span>
+            <span>{MACHINE_UI ? 'Размер стола и материал…' : 'Размер листа и название…'}</span>
           </button>
           <button
             type="button"
@@ -2305,9 +2362,14 @@ export function LaserEditor({
             <b>{(selBBox[2] - selBBox[0]).toFixed(2)} × {(selBBox[3] - selBBox[1]).toFixed(2)} мм</b>
           </span>
         )}
-        {sim && (
+        {MACHINE_UI && sim && (
           <span title="Рассчитанное время обработки и длина реза">
             Задание: <b>{Math.round(sim.totalTimeSec)} с</b> · рез <b>{sim.cutLengthMm.toFixed(0)} мм</b>
+          </span>
+        )}
+        {!MACHINE_UI && cutLengthMm > 0 && (
+          <span title="Суммарная длина видимых контуров чертежа">
+            Длина контуров: <b>{cutLengthMm.toFixed(0)} мм</b>
           </span>
         )}
         {msg?.text && (
@@ -2356,7 +2418,7 @@ export function LaserEditor({
       {dialog === 'sheet' && (
         <LaserSheetDialog
           doc={doc}
-          title="Размер стола и материал"
+          title={MACHINE_UI ? 'Размер стола и материал' : 'Размер листа и название'}
           onClose={() => setDialog(null)}
           onOk={(next) => {
             const preset = MATERIAL_PRESETS.find((m) => m.id === next.materialId);
@@ -2396,7 +2458,7 @@ export function LaserEditor({
           onClose={() => setDialog(null)}
         />
       )}
-      {dialog === 'sim' && <LaserSimDialog doc={doc} onClose={() => setDialog(null)} />}
+      {MACHINE_UI && dialog === 'sim' && <LaserSimDialog doc={doc} onClose={() => setDialog(null)} />}
       {dialog === 'trace' && (
         <LaserTraceDialog
           layer={activeLayer === 'guide' ? 'engrave' : activeLayer}

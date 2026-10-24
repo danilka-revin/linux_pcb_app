@@ -2628,6 +2628,15 @@ html[data-compact='1'] .set-head { padding: 5px 8px 5px 10px; }
 .laser-export-summary span { color: var(--muted); }
 .laser-export-summary b { color: var(--text); font-variant-numeric: tabular-nums; }
 .laser-export-layers { display: flex; flex-direction: column; gap: 3px; }
+/* ---------- окно генератора коробок: плашка сообщений ---------- */
+.box-win-msg {
+  position: fixed; left: 50%; bottom: 26px; transform: translateX(-50%); z-index: 130;
+  max-width: min(720px, 90vw); padding: 8px 14px; border-radius: 10px;
+  background: var(--surface-2); border: 1px solid var(--line); color: var(--text);
+  box-shadow: var(--shadow); font-size: 12.5px; line-height: 1.4;
+}
+.box-win-msg.bad { background: var(--danger-bg); border-color: var(--danger); color: var(--danger-ink); }
+
 .laser-gcode-opts { margin-top: 12px; padding: 10px 12px; background: var(--surface-2); border-radius: 10px; }
 .laser-gcode-opts h3 { margin-top: 0; }
 .laser-dxf-opts { margin-top: 12px; padding: 10px 12px; background: var(--surface-2); border-radius: 10px; }

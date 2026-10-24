@@ -1,6 +1,8 @@
-// Панели лазерного редактора: слои и параметры лазера, свойства объекта,
-// дерево объектов, генератор развёрток, материал и сводка задания на станок.
+// Панели редактора чертежей: слои, свойства объекта, дерево объектов,
+// генератор развёрток, материал и сводка задания на станок.
 // Всё в общем стиле PSBees (виджеты NI/TI/SI, классы .props/.field/.btn).
+// Станочные поля (мощность, скорость, проходы, керф, обдув) показываются только
+// при MACHINE_UI — см. src/laser/features.ts.
 
 import { useMemo, useState } from 'react';
 import { NI, SI, TI, TIC } from './widgets';
@@ -18,8 +20,18 @@ import {
   type MaterialPreset,
 } from '../laser/model';
 import { UNFOLD_TEMPLATES, type UnfoldParams } from '../laser/unfold';
+import { MACHINE_UI } from '../laser/features';
 import type { TrimMode } from '../laser/trim';
 import type { LaserSimulation } from '../laser/export';
+
+/** Подсказка назначения слоя — для всплывающего текста в списке слоёв. */
+const LAYER_HINT: Record<LaserLayerConfig['mode'], string> = {
+  cut: 'резка насквозь',
+  fold: 'биговка / сгиб (пунктир)',
+  score: 'надрез / разметка',
+  fill: 'гравировка заливкой',
+  guide: 'служебный, не режется',
+};
 
 /** Названия слоёв для выпадающих списков (берём короткие имена из документа). */
 export function layerOptions(doc: LaserDoc): [string, string][] {
@@ -58,7 +70,7 @@ export function LaserLayersPanel({
 
   return (
     <>
-      <h3>Слои станка</h3>
+      <h3>{MACHINE_UI ? 'Слои станка' : 'Слои чертежа'}</h3>
       <div className="laser-layers">
         {LASER_LAYER_ORDER.map((id) => {
           const l = doc.layers[id];
@@ -69,7 +81,9 @@ export function LaserLayersPanel({
               <button
                 type="button"
                 className="laser-layer-main"
-                title={`${l.name}\nМощность ${l.power}% · ${l.speed} мм/с · проходов: ${l.passes}${l.kerf ? ` · керф ${l.kerf} мм` : ''}`}
+                title={MACHINE_UI
+                  ? `${l.name}\nМощность ${l.power}% · ${l.speed} мм/с · проходов: ${l.passes}${l.kerf ? ` · керф ${l.kerf} мм` : ''}`
+                  : `${l.name}\nСлой чертежа: ${LAYER_HINT[l.mode] ?? l.mode}`}
                 onClick={() => onActive(id)}
               >
                 <span className="laser-layer-swatch" style={{ background: l.color }} />
@@ -103,7 +117,7 @@ export function LaserLayersPanel({
 
       {cfg && (
         <div className="props laser-layer-props">
-          <h3>Параметры лазера · {cfg.short}</h3>
+          <h3>{MACHINE_UI ? `Параметры лазера · ${cfg.short}` : `Слой · ${cfg.short}`}</h3>
           <SI label="Назначение" value={cfg.mode} on={(v) => onPatch(active, { mode: v as LaserLayerConfig['mode'] })}
             options={[
               ['cut', 'Резка насквозь'],
@@ -112,24 +126,38 @@ export function LaserLayersPanel({
               ['fill', 'Гравировка заливкой'],
               ['guide', 'Служебный (не режется)'],
             ]} />
-          <NI label="Мощность, %" value={cfg.power} min={0} max={100} step={1} on={(v) => onPatch(active, { power: v })} />
-          <NI label="Скорость, мм/с" value={cfg.speed} min={1} max={2000} step={1} on={(v) => onPatch(active, { speed: v })} />
-          <NI label="Проходов" value={cfg.passes} min={0} max={20} step={1} on={(v) => onPatch(active, { passes: Math.round(v) })} />
-          <NI label="Керф, мм" value={cfg.kerf} min={0} max={2} step={0.01} on={(v) => onPatch(active, { kerf: v })} />
+          {MACHINE_UI && (
+            <>
+              <NI label="Мощность, %" value={cfg.power} min={0} max={100} step={1} on={(v) => onPatch(active, { power: v })} />
+              <NI label="Скорость, мм/с" value={cfg.speed} min={1} max={2000} step={1} on={(v) => onPatch(active, { speed: v })} />
+              <NI label="Проходов" value={cfg.passes} min={0} max={20} step={1} on={(v) => onPatch(active, { passes: Math.round(v) })} />
+              <NI label="Керф, мм" value={cfg.kerf} min={0} max={2} step={0.01} on={(v) => onPatch(active, { kerf: v })} />
+            </>
+          )}
           {(cfg.mode === 'fold' || cfg.dashLen > 0 || cfg.gapLen > 0) && (
             <>
               <NI label="Штрих, мм" value={cfg.dashLen} min={0} max={200} step={0.5} on={(v) => onPatch(active, { dashLen: v })} />
               <NI label="Пропуск, мм" value={cfg.gapLen} min={0} max={200} step={0.5} on={(v) => onPatch(active, { gapLen: v })} />
             </>
           )}
-          <label className="laser-check">
-            <input type="checkbox" checked={cfg.airAssist} onChange={(e) => onPatch(active, { airAssist: e.target.checked })} />
-            Обдув воздухом (Air Assist, M8/M9)
-          </label>
-          <p className="sub">
-            Керф — диаметр луча: контур реза автоматически смещается наружу на половину диаметра,
-            чтобы деталь получилась точного размера. Для внутренних отверстий смещение идёт внутрь.
-          </p>
+          {MACHINE_UI && (
+            <>
+              <label className="laser-check">
+                <input type="checkbox" checked={cfg.airAssist} onChange={(e) => onPatch(active, { airAssist: e.target.checked })} />
+                Обдув воздухом (Air Assist, M8/M9)
+              </label>
+              <p className="sub">
+                Керф — диаметр луча: контур реза автоматически смещается наружу на половину диаметра,
+                чтобы деталь получилась точного размера. Для внутренних отверстий смещение идёт внутрь.
+              </p>
+            </>
+          )}
+          {!MACHINE_UI && (
+            <p className="sub">
+              Назначение слоя определяет его имя и тип линии в DXF и SVG: резка, биговка (пунктир),
+              разметка, гравировка и служебный слой размеров, который не режется.
+            </p>
+          )}
         </div>
       )}
     </>
