@@ -4,19 +4,54 @@
 import {
   applyTabs,
   dashPolyline,
+  exportLayerIds,
   fmtMm,
   isClosedRing,
   kerfShapes,
-  LASER_LAYER_ORDER,
+  layerOf,
   luid,
   shapeToPath,
   shapeToPolylines,
   type LaserDoc,
+  type LaserLayerConfig,
   type LaserLayerId,
   type LaserShape,
   type PathNode,
   type Pt,
 } from './model';
+
+// Порядок слоёв чертежа в станочном выходе: сначала заливка и разметка, затем
+// штриховые линии, в конце — сплошные контуры.
+const MODE_PRIORITY: Record<LaserLayerConfig['mode'], number> = {
+  fill: 0,
+  score: 1,
+  fold: 2,
+  cut: 3,
+  guide: 4,
+};
+
+// Исторические роли уточняют порядок внутри одного типа линии: внутренние
+// вырезы обрабатываются раньше внешнего контура.
+const ROLE_PRIORITY: Record<string, number> = {
+  engrave: 0,
+  score: 1,
+  fold: 2,
+  inner: 2.5,
+  cut: 3,
+  guide: 4,
+};
+
+/** Приоритет слоя: роль (если историческая) либо тип линии. */
+function layerPriority(doc: LaserDoc, id: string): number {
+  return ROLE_PRIORITY[id] ?? MODE_PRIORITY[layerOf(doc, id).mode];
+}
+
+/** Слои документа в порядке обработки (служебные не выводятся). */
+export function processingOrder(doc: LaserDoc, includeGuide = false): string[] {
+  return exportLayerIds(doc)
+    .filter((id) => includeGuide || layerOf(doc, id).mode !== 'guide')
+    .sort((a, b) => layerPriority(doc, a) - layerPriority(doc, b));
+}
 import { dxfToShapes, exportDxf, type DxfOptions } from './dxf';
 
 // Пунктир и перемычки теперь считаются в model.ts — одном месте для экрана, DXF, SVG
@@ -87,39 +122,35 @@ export function buildLaserSimulation(doc: LaserDoc, rapidSpeedMmSec = 180): Lase
   let rapidLengthMm = 0;
   let totalTimeSec = 0;
 
-  const byLayer: Record<LaserLayerId, { count: number; lengthMm: number; timeSec: number }> = {
-    engrave: { count: 0, lengthMm: 0, timeSec: 0 },
-    score: { count: 0, lengthMm: 0, timeSec: 0 },
-    fold: { count: 0, lengthMm: 0, timeSec: 0 },
-    inner: { count: 0, lengthMm: 0, timeSec: 0 },
-    cut: { count: 0, lengthMm: 0, timeSec: 0 },
-    guide: { count: 0, lengthMm: 0, timeSec: 0 },
-  };
+  // Сводка по слоям: слои у документа свои, поэтому строки создаются для всех
+  // слоёв документа (нулевые — в том числе), а недостающие добавляются по ходу
+  const byLayer: Record<LaserLayerId, { count: number; lengthMm: number; timeSec: number }> = {};
+  const row = (id: LaserLayerId) =>
+    (byLayer[id] ??= { count: 0, lengthMm: 0, timeSec: 0 });
+  for (const id of exportLayerIds(doc)) row(id);
 
   let head: Pt = { x: 0, y: 0 };
 
-  // Порядок слоёв: сначала гравировка и разметка, затем сгибы, затем внутренние отверстия и в самом конце внешний рез
-  const activeOrder: LaserLayerId[] = ['engrave', 'score', 'fold', 'inner', 'cut'];
-
-  for (const layerId of activeOrder) {
-    const cfg = doc.layers[layerId];
-    if (!cfg || !cfg.visible || cfg.passes <= 0) continue;
+  // Порядок слоёв: сначала заливка и разметка, затем штриховые линии, в конце — контуры
+  for (const layerId of processingOrder(doc)) {
+    const cfg = layerOf(doc, layerId);
+    if (!cfg.visible || cfg.passes <= 0) continue;
 
     const layerShapes = doc.shapes.filter((s) => s.layer === layerId && !s.hidden);
     if (!layerShapes.length) continue;
 
     const rawPolylines: Pt[][] = [];
     for (const s of layerShapes) {
-      // Компенсация толщины реза (kerf) для слоёв резки
+      // Компенсация толщины инструмента для сплошных контуров
       const targetShapes =
-        cfg.kerf > 0 && (layerId === 'cut' || layerId === 'inner')
+        cfg.kerf > 0 && cfg.mode === 'cut'
           ? kerfShapes(s, layerId === 'inner' ? -cfg.kerf / 2 : cfg.kerf / 2)
           : [s];
 
       for (const ts of targetShapes) {
         const pls = shapeToPolylines(ts);
         for (const pl of pls) {
-          if (layerId === 'fold' && cfg.dashLen > 0 && cfg.gapLen > 0) {
+          if (cfg.mode === 'fold' && cfg.dashLen > 0 && cfg.gapLen > 0) {
             rawPolylines.push(...dashPolyline(pl, cfg.dashLen, cfg.gapLen));
           } else if (s.tabs && s.tabs > 0) {
             rawPolylines.push(...applyTabs(pl, s.tabs, s.tabWidth ?? 1.8, isClosedRing(pl)));
@@ -173,11 +204,11 @@ export function buildLaserSimulation(doc: LaserDoc, rapidSpeedMmSec = 180): Lase
           });
           cutLengthMm += d;
           totalTimeSec += dt;
-          byLayer[layerId].lengthMm += d;
-          byLayer[layerId].timeSec += dt;
+          row(layerId).lengthMm += d;
+          row(layerId).timeSec += dt;
         }
         head = { ...pl[pl.length - 1] };
-        byLayer[layerId].count += 1;
+        row(layerId).count += 1;
       }
     }
   }
@@ -221,13 +252,12 @@ export function exportLaserGCode(doc: LaserDoc, opts: GCodeExportOptions = DEFAU
   lines.push(`M5 S0 ; Лазер выключен`);
   lines.push('');
 
-  const activeOrder: LaserLayerId[] = ['engrave', 'score', 'fold', 'inner', 'cut'];
   let head: Pt = { x: 0, y: 0 };
   let airOn = false;
 
-  for (const layerId of activeOrder) {
-    const cfg = doc.layers[layerId];
-    if (!cfg || !cfg.visible || cfg.passes <= 0) continue;
+  for (const layerId of processingOrder(doc)) {
+    const cfg = layerOf(doc, layerId);
+    if (!cfg.visible || cfg.passes <= 0) continue;
     const layerShapes = doc.shapes.filter((s) => s.layer === layerId && !s.hidden);
     if (!layerShapes.length) continue;
 
@@ -243,13 +273,13 @@ export function exportLaserGCode(doc: LaserDoc, opts: GCodeExportOptions = DEFAU
     const rawPolylines: Pt[][] = [];
     for (const s of layerShapes) {
       const targetShapes =
-        cfg.kerf > 0 && (layerId === 'cut' || layerId === 'inner')
+        cfg.kerf > 0 && cfg.mode === 'cut'
           ? kerfShapes(s, layerId === 'inner' ? -cfg.kerf / 2 : cfg.kerf / 2)
           : [s];
       for (const ts of targetShapes) {
         const pls = shapeToPolylines(ts);
         for (const pl of pls) {
-          if (layerId === 'fold' && cfg.dashLen > 0 && cfg.gapLen > 0) {
+          if (cfg.mode === 'fold' && cfg.dashLen > 0 && cfg.gapLen > 0) {
             rawPolylines.push(...dashPolyline(pl, cfg.dashLen, cfg.gapLen));
           } else if (s.tabs && s.tabs > 0) {
             rawPolylines.push(...applyTabs(pl, s.tabs, s.tabWidth ?? 1.8, isClosedRing(pl)));
@@ -318,15 +348,14 @@ export function exportLaserSvg(doc: LaserDoc, opts: { strokeWidthMm?: number } =
   out.push(`  <title>${escapeXml(doc.name)}</title>`);
   out.push(`  <desc>PSBees Vector Drawing Editor (${fmtMm(W)}x${fmtMm(H)} mm)</desc>`);
 
-  for (const layerId of LASER_LAYER_ORDER) {
-    if (layerId === 'guide') continue;
-    const cfg = doc.layers[layerId];
-    if (!cfg || !cfg.visible) continue;
+  for (const layerId of exportLayerIds(doc)) {
+    const cfg = layerOf(doc, layerId);
+    if (cfg.mode === 'guide' || !cfg.visible) continue;
     const shapes = doc.shapes.filter((s) => s.layer === layerId && !s.hidden);
     if (!shapes.length) continue;
 
     const dashAttr =
-      layerId === 'fold' && cfg.dashLen > 0 && cfg.gapLen > 0
+      cfg.dashLen > 0 && cfg.gapLen > 0
         ? ` stroke-dasharray="${fmtMm(cfg.dashLen)} ${fmtMm(cfg.gapLen)}"`
         : '';
 
@@ -336,7 +365,7 @@ export function exportLaserSvg(doc: LaserDoc, opts: { strokeWidthMm?: number } =
 
     for (const s of shapes) {
       const fillAttr =
-        ('filled' in s && s.filled) || layerId === 'engrave'
+        ('filled' in s && s.filled) || cfg.mode === 'fill'
           ? ` fill="${cfg.color}" fill-opacity="0.25"`
           : '';
       const pls = shapeToPolylines(s);
@@ -747,7 +776,7 @@ function parseSvgContent(svg: string, docH: number): LaserShape[] {
   };
   /**
    * Слой, заданный явно: id="layer-fold", data-layer="fold" или пунктир
-   * stroke-dasharray (биговка). null — слой не указан, берём у группы выше.
+   * stroke-dasharray (штриховая линия). null — слой не указан, берём у группы выше.
    */
   const layerOf = (attrs: string): LaserLayerId | null => {
     const id = attr(attrs, 'id').toLowerCase();
@@ -758,18 +787,41 @@ function parseSvgContent(svg: string, docH: number): LaserShape[] {
     if (attr(attrs, 'stroke-dasharray')) return 'fold';
     return null;
   };
+  /**
+   * Имя слоя из файла: data-layer-name (наш SVG), inkscape:label (Inkscape) или
+   * id группы (CorelDRAW/Illustrator кладут имя слоя в id). По нему редактор
+   * создаёт свой слой с тем же именем.
+   */
+  const layerNameOf = (attrs: string, isGroup: boolean): string | null => {
+    const dn = attr(attrs, 'data-layer-name').trim();
+    if (dn) return dn.slice(0, 60);
+    const label = attr(attrs, 'inkscape:label').trim();
+    if (label) return label.slice(0, 60);
+    if (!isGroup) return null;
+    const id = attr(attrs, 'id').trim();
+    if (!id || /^layer-(cut|inner|fold|score|engrave|guide)$/i.test(id)) return null;
+    if (/^(path|rect|circle|ellipse|polygon|polyline|line|text|image|use|g|layer|group|svg)[-_]?\d*$/i.test(id)) return null;
+    return id.slice(0, 60);
+  };
   const flipH = svgHeightMm(svg, docH);
 
-  // Стек групп: фигура берёт слой и матрицу ближайших групп, где они заданы
+  // Стек групп: фигура берёт слой, имя слоя и матрицу ближайших групп
   const layerStack: (LaserLayerId | null)[] = [];
+  const nameStack: (string | null)[] = [];
   const matStack: SvgMat[] = [];
+  /** Имя слоя для фигур текущего тега — пишется в объект при добавлении. */
+  let curLayerName: string | null = null;
+  const pushShape = (sh: LaserShape): void => {
+    if (curLayerName) sh.layerName = curLayerName;
+    shapes.push(sh);
+  };
   const tagRe = /<(\/?)(g|rect|circle|ellipse|line|polyline|polygon|path)\b([^>]*?)(\/?)>/gi;
   let m: RegExpExecArray | null;
 
   /** Кривая из узлов SVG-пространства: матрица, переворот Y, слой и имя. */
   const emit = (nodes: PathNode[], closed: boolean, mat: SvgMat, layer: LaserLayerId, name: string, dataName: string) => {
     if (nodes.length < 2) return;
-    shapes.push({
+    pushShape({
       id: luid('svg'),
       kind: 'path',
       layer,
@@ -788,9 +840,11 @@ function parseSvgContent(svg: string, docH: number): LaserShape[] {
     if (tag === 'g') {
       if (closing) {
         layerStack.pop();
+        nameStack.pop();
         matStack.pop();
       } else {
         layerStack.push(layerOf(attrs));
+        nameStack.push(layerNameOf(attrs, true));
         const parent = matStack[matStack.length - 1] ?? SVG_IDENTITY;
         matStack.push(mulMat(parent, parseSvgTransform(attr(attrs, 'transform'))));
       }
@@ -801,6 +855,8 @@ function parseSvgContent(svg: string, docH: number): LaserShape[] {
     const own = layerOf(attrs);
     const inherited = [...layerStack].reverse().find((x) => x !== null && x !== undefined) ?? null;
     const layer: LaserLayerId = own ?? inherited ?? 'cut';
+    const ownName = layerNameOf(attrs, false);
+    curLayerName = ownName ?? [...nameStack].reverse().find((x) => !!x) ?? null;
     const parentMat = matStack[matStack.length - 1] ?? SVG_IDENTITY;
     const mat = mulMat(parentMat, parseSvgTransform(attr(attrs, 'transform')));
     const dataName = attr(attrs, 'data-name');
@@ -813,7 +869,7 @@ function parseSvgContent(svg: string, docH: number): LaserShape[] {
       const y = numAttr(attrs, 'y');
       if (isTranslate(mat)) {
         // простой перенос: оставляем редактируемый прямоугольник
-        shapes.push({
+        pushShape({
           id: luid('svg'), kind: 'rect', layer,
           name: dataName || 'Импорт прямоугольник',
           x: x + mat[4], y: flipH - (y + mat[5]) - h, w, h,
@@ -836,7 +892,7 @@ function parseSvgContent(svg: string, docH: number): LaserShape[] {
       const cx = numAttr(attrs, 'cx');
       const cy = numAttr(attrs, 'cy');
       if (isTranslate(mat)) {
-        shapes.push({
+        pushShape({
           id: luid('svg'), kind: 'ellipse', layer,
           name: dataName || 'Импорт окружность',
           cx: cx + mat[4], cy: flipH - (cy + mat[5]), rx, ry,

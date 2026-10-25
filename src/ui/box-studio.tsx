@@ -12,7 +12,10 @@ import {
   BOX_FAMILIES, BOX_TYPES, boxThumbnail, buildBox, defaultBoxParams, layoutBoxParts,
   projectAssembly, type BoxFamily, type BoxParamDef, type BoxParamValues,
 } from '../laser/boxes';
-import { newLaserDoc, shapeToPolylines, type LaserDoc, type LaserGroup, type LaserShape } from '../laser/model';
+import {
+  adoptShapes, layerIds, layerOf, newLaserDoc, shapeToPolylines,
+  type LaserDoc, type LaserGroup, type LaserShape,
+} from '../laser/model';
 import { exportLaserDxf, exportLaserSvg } from '../laser/export';
 import { safeFileName } from '../laser/project';
 import { download } from '../pcb/zip';
@@ -112,11 +115,20 @@ export function BoxStudio({
     onMsg({ text: `Параметры «${def.name}» сброшены`, ok: true });
   }, [def, onMsg]);
 
-  /** Временный документ для экспорта: тот же набор слоёв, что и в редакторе. */
+  /**
+   * Временный документ для экспорта: детали коробки раскладываются по слоям
+   * чертежа (свои слои окна или редактора, недостающие создаются).
+   */
   const tempDoc = useCallback((): LaserDoc => {
-    const d = newLaserDoc(sheetW, sheetH, `${def.name} — PSBees`);
-    return { ...d, layers: doc.layers, shapes: layout.shapes, groups: layout.groups, materialThickness: thickness };
-  }, [sheetW, sheetH, def.name, doc.layers, layout, thickness]);
+    const base: LaserDoc = {
+      ...newLaserDoc(sheetW, sheetH, `${def.name} — PSBees`),
+      layers: { ...doc.layers },
+      layerOrder: layerIds(doc),
+      materialThickness: thickness,
+    };
+    const grown = adoptShapes(base, layout.shapes);
+    return { ...grown.doc, shapes: grown.shapes, groups: layout.groups };
+  }, [sheetW, sheetH, def.name, doc, layout, thickness]);
 
   const saveDxf = useCallback(() => {
     try {
@@ -264,7 +276,7 @@ export function BoxStudio({
           <button type="button" className="btn" onClick={saveSvg} title="SVG в масштабе 1:1 мм">
             <Ic n="png" size={14} /> SVG
           </button>
-          <button type="button" className="btn" onClick={saveDxf} title="Точный DXF: контур, отверстия, биговка, подписи по слоям">
+          <button type="button" className="btn" onClick={saveDxf} title="Точный DXF: контур, отверстия, линии сгиба и подписи — по слоям">
             <Ic n="gerber" size={14} /> DXF
           </button>
           <button type="button" className="btn primary" onClick={apply} disabled={!layout.shapes.length}
@@ -376,7 +388,7 @@ export function BoxStudio({
                     <polyline
                       key={`${s.id}:${i}`}
                       points={pts.map((q) => `${q.x.toFixed(2)},${q.y.toFixed(2)}`).join(' ')}
-                      stroke={doc.layers[s.layer]?.color ?? '#ffc233'}
+                      stroke={layerOf(doc, s.layer).color}
                       fill="none"
                       strokeWidth={1.2}
                       vectorEffect="non-scaling-stroke"

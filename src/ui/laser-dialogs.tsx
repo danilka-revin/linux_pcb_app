@@ -18,9 +18,10 @@ import {
   type DxfAccuracy, type DxfOptions,
 } from '../laser/dxf';
 import {
-  LASER_LAYER_ORDER,
   MATERIAL_PRESETS,
   docContourLength,
+  exportLayerIds,
+  layerOf,
   luid,
   type LaserDoc,
   type LaserLayerId,
@@ -28,7 +29,7 @@ import {
   type Pt,
 } from '../laser/model';
 import { MACHINE_UI } from '../laser/features';
-import { DEFAULT_VECTOR_OPTIONS, PLT_PENS, type VectorExportOptions } from '../laser/corel';
+import { DEFAULT_VECTOR_OPTIONS, PLT_PENS, vectorLayerFileName, type VectorExportOptions } from '../laser/corel';
 import { toScreen, type LaserView } from '../laser/render';
 import { facesToPolys, traceImage, type BitmapImage, type TraceResult } from '../pcb/imagetrace';
 
@@ -40,15 +41,32 @@ export type LaserDxfSplit = 'single' | 'layers';
 /** Порог числа объектов, выше которого живая проверка точности в диалоге не гоняется. */
 const DXF_ACCURACY_LIMIT = 4000;
 
+/** Форматы чертежа: листы ISO A и ходовые размеры в миллиметрах. */
 const SHEET_PRESETS: { id: string; name: string; w: number; h: number }[] = [
+  { id: 'a4', name: 'A4 альбомный (297×210 мм)', w: 297, h: 210 },
+  { id: 'a3', name: 'A3 альбомный (420×297 мм)', w: 420, h: 297 },
+  { id: 'a2', name: 'A2 (594×420 мм)', w: 594, h: 420 },
+  { id: 'a1', name: 'A1 (841×594 мм)', w: 841, h: 594 },
+  { id: '300x200', name: '300×200 мм', w: 300, h: 200 },
+  { id: '600x400', name: '600×400 мм', w: 600, h: 400 },
+  { id: '1000x700', name: '1000×700 мм', w: 1000, h: 700 },
+  { id: 'custom', name: 'Свой размер листа', w: 0, h: 0 },
+];
+
+/** Рабочие поля станков — только для станочного интерфейса. */
+const MACHINE_SHEET_PRESETS: { id: string; name: string; w: number; h: number }[] = [
   { id: 'k40', name: 'K40 CO₂ (320×220 мм)', w: 320, h: 220 },
   { id: '6040', name: '6040 CO₂ (600×400 мм)', w: 600, h: 400 },
   { id: '9060', name: '9060 CO₂ (900×600 мм)', w: 900, h: 600 },
   { id: '1390', name: '1390 CO₂ (1300×900 мм)', w: 1300, h: 900 },
   { id: 'diode-a4', name: 'Диодный A4 (300×200 мм)', w: 300, h: 200 },
   { id: 'diode-a3', name: 'Диодный A3 (420×300 мм)', w: 420, h: 300 },
-  { id: 'custom', name: 'Свой размер листа', w: 0, h: 0 },
+  { id: 'custom', name: 'Свой размер стола', w: 0, h: 0 },
 ];
+
+/** Список форматов под текущий состав интерфейса. */
+const sheetPresets = (): { id: string; name: string; w: number; h: number }[] =>
+  MACHINE_UI ? MACHINE_SHEET_PRESETS : SHEET_PRESETS;
 
 // ---------------- новый лист / размер стола ----------------
 
@@ -65,7 +83,7 @@ export function LaserSheetDialog({
 }) {
   const [name, setName] = useState(doc.name);
   const [preset, setPreset] = useState(
-    SHEET_PRESETS.find((p) => p.w === doc.w && p.h === doc.h)?.id ?? 'custom'
+    sheetPresets().find((p) => p.w === doc.w && p.h === doc.h)?.id ?? 'custom'
   );
   const [w, setW] = useState(doc.w);
   const [h, setH] = useState(doc.h);
@@ -112,7 +130,7 @@ export function LaserSheetDialog({
         />
       </div>
       <SI label={MACHINE_UI ? 'Стол станка' : 'Формат листа'} value={preset} on={applyPreset}
-        options={SHEET_PRESETS.map((p) => [p.id, p.name] as [string, string])} />
+        options={sheetPresets().map((p) => [p.id, p.name] as [string, string])} />
       <div className="laser-grid2">
         <NI label="Ширина X, мм" value={w} min={20} max={3000} step={1} on={setW} />
         <NI label="Глубина Y, мм" value={h} min={20} max={3000} step={1} on={setH} />
@@ -166,12 +184,12 @@ export function LaserExportDialog({
   const contourMm = useMemo(() => docContourLength(doc), [doc]);
   const perLayer = useMemo(
     () =>
-      LASER_LAYER_ORDER.map((id) => ({
+      exportLayerIds(doc).map((id) => ({
         id,
-        cfg: doc.layers[id],
+        cfg: layerOf(doc, id),
         count: doc.shapes.filter((s) => s.layer === id && !s.hidden).length,
       })).filter((r) => r.count > 0),
-    [doc.shapes, doc.layers]
+    [doc]
   );
 
   // ---------------- DXF: план файла и живая проверка точности ----------------
@@ -182,11 +200,15 @@ export function LaserExportDialog({
   /** Слои, которые станут отдельными файлами архива. */
   const dxfFiles = useMemo(
     () =>
-      LASER_LAYER_ORDER
-        .filter((id) => (id !== 'guide' || dxfOpts.includeGuide))
+      exportLayerIds(doc)
+        .filter((id) => (layerOf(doc, id).mode !== 'guide' || dxfOpts.includeGuide))
         .filter((id) => dxfShapes.some((s) => s.layer === id))
-        .map((id) => ({ id, name: `${DXF_LAYER_NAMES[id]}.dxf`, count: dxfShapes.filter((s) => s.layer === id).length })),
-    [dxfShapes, dxfOpts.includeGuide]
+        .map((id) => ({
+          id,
+          name: `${vectorLayerFileName(doc, id)}.dxf`,
+          count: dxfShapes.filter((s) => s.layer === id).length,
+        })),
+    [doc, dxfShapes, dxfOpts.includeGuide]
   );
   const [acc, setAcc] = useState<DxfAccuracy | null>(null);
   const [accState, setAccState] = useState<'idle' | 'busy' | 'skip'>('idle');
@@ -243,28 +265,28 @@ export function LaserExportDialog({
       name: 'EPS / PostScript',
       ext: '.eps',
       icon: 'bezier',
-      desc: 'EPS 3.0 для CorelDRAW и Illustrator: точные кривые, цвета и пунктир слоёв, %%BoundingBox по размеру листа. Слои помечены комментарием %PSBeesLayer — по нему же обратный импорт возвращает объекты на свои слои.',
+      desc: 'EPS 3.0 для CorelDRAW и Illustrator: точные кривые, цвета и типы линий слоёв, %%BoundingBox по размеру листа. Слои помечены комментарием %PSBeesLayer — по нему же обратный импорт возвращает объекты на свои слои.',
     },
     {
       id: 'plt',
       name: 'PLT (HPGL/2)',
       ext: '.plt',
       icon: 'grid',
-      desc: 'Формат плоттеров: 40 юнитов на миллиметр (1 юнит = 0.025 мм), своё перо на каждый слой, пунктир биговки — настоящими пропусками пера. CorelDRAW и Illustrator открывают PLT как кривые, перья превращаются в слои.',
+      desc: 'Формат плоттеров: 40 юнитов на миллиметр (1 юнит = 0.025 мм), своё перо на каждый слой, штриховые линии — настоящими пропусками пера. CorelDRAW и Illustrator открывают PLT как кривые, перья превращаются в слои.',
     },
     {
       id: 'svg',
       name: 'SVG 1:1 мм',
       ext: '.svg',
       icon: 'png',
-      desc: 'Масштаб 1:1 в миллиметрах, группы по слоям, пунктир биговки. Для CorelDRAW, Inkscape, Illustrator и просмотра в браузере.',
+      desc: 'Масштаб 1:1 в миллиметрах, группы по слоям, штриховые линии свойством stroke-dasharray. Для CorelDRAW, Inkscape, Illustrator и просмотра в браузере.',
     },
     {
       id: 'png',
       name: 'PNG-чертёж',
       ext: '.png',
       icon: 'png',
-      desc: 'Растровый чертёж развёртки в масштабе (для документации, согласования и печати на бумаге 1:1).',
+      desc: 'Растровый чертёж в масштабе (для документации, согласования и печати на бумаге 1:1).',
     },
     {
       id: 'project',
@@ -384,12 +406,12 @@ export function LaserExportDialog({
           </div>
           <p className="sub">
             {format === 'pdf'
-              ? 'Масштаб 1:1: 1 мм листа = 2.8346 пункта PDF, ось Y вверх, как в чертеже. Слои CUT, INNER, FOLD, SCORE, ENGRAVE становятся слоями PDF — в CorelDRAW и Acrobat их можно включать и выключать по отдельности.'
+              ? 'Масштаб 1:1: 1 мм листа = 2.8346 пункта PDF, ось Y вверх, как в чертеже. Слои чертежа становятся слоями PDF (OCG) — в CorelDRAW и Acrobat их можно включать и выключать по отдельности.'
               : format === 'eps'
                 ? 'Масштаб 1:1 в пунктах PostScript, начало координат — левый нижний угол листа. Каждый слой помечен комментарием %PSBeesLayer, поэтому обратный импорт возвращает объекты на свои слои.'
                 : format === 'plt'
-                  ? `Масштаб 1:1: 40 юнитов HPGL на миллиметр. Перья: ${PLT_PENS.cut} — CUT, ${PLT_PENS.inner} — INNER, ${PLT_PENS.fold} — FOLD, ${PLT_PENS.score} — SCORE, ${PLT_PENS.engrave} — ENGRAVE, ${PLT_PENS.guide} — GUIDE. Кривые раскладываются полилинией с заданным допуском: HPGL не знает Безье.`
-                  : 'Масштаб 1:1 в миллиметрах, группы по слоям, пунктир биговки свойством stroke-dasharray.'}
+                  ? `Масштаб 1:1: 40 юнитов HPGL на миллиметр. Каждому слою чертежа — своё перо по порядку (${PLT_PENS.cut}, ${PLT_PENS.inner}, ${PLT_PENS.fold}, …). Кривые раскладываются полилинией с заданным допуском: HPGL не знает Безье.`
+                  : 'Масштаб 1:1 в миллиметрах, группы по слоям, штриховые линии свойством stroke-dasharray.'}
           </p>
         </div>
       )}
@@ -484,7 +506,7 @@ export function LaserExportDialog({
           <p className="sub">
             {dxfSplit === 'layers'
               ? 'Каждый слой чертежа — отдельный DXF внутри архива: в CorelDRAW и CAD-программах файлы заводятся по одному, цвета и типы линий сохраняются, ничего не теряется при импорте.'
-              : 'Все слои в одном файле: слои CUT, INNER, FOLD, SCORE, ENGRAVE становятся слоями DXF со своими цветами и типами линий.'}
+              : 'Все слои в одном файле: слои чертежа становятся слоями DXF со своими именами, цветами и типами линий.'}
           </p>
 
           <div className="laser-grid2">
@@ -570,16 +592,20 @@ export function LaserExportDialog({
           </div>
 
           <div className="laser-dxf-checks">
-            <label className="laser-check">
-              <input type="checkbox" checked={dxf.kerf}
-                onChange={(e) => onDxfChange({ kerf: e.target.checked })} />
-              Компенсация толщины инструмента (керф): контур смещается на половину толщины
-            </label>
-            <label className="laser-check">
-              <input type="checkbox" checked={dxf.tabs}
-                onChange={(e) => onDxfChange({ tabs: e.target.checked })} />
-              Удерживающие перемычки (разрывы контура)
-            </label>
+            {MACHINE_UI && (
+              <>
+                <label className="laser-check">
+                  <input type="checkbox" checked={dxf.kerf}
+                    onChange={(e) => onDxfChange({ kerf: e.target.checked })} />
+                  Компенсация толщины инструмента (керф): контур смещается на половину толщины
+                </label>
+                <label className="laser-check">
+                  <input type="checkbox" checked={dxf.tabs}
+                    onChange={(e) => onDxfChange({ tabs: e.target.checked })} />
+                  Удерживающие перемычки (разрывы контура)
+                </label>
+              </>
+            )}
             <label className="laser-check">
               <input type="checkbox" checked={dxf.flipY}
                 onChange={(e) => onDxfChange({ flipY: e.target.checked })} />
@@ -933,10 +959,10 @@ export function LaserSimDialog({
             <canvas ref={cvRef} className="laser-sim-canvas" />
           </div>
           <div className="laser-sim-legend">
-            {LASER_LAYER_ORDER.map((id: LaserLayerId) => {
-              const cfg = doc.layers[id];
+            {exportLayerIds(doc).map((id: LaserLayerId) => {
+              const cfg = layerOf(doc, id);
               const row = sim.byLayer[id];
-              if (!cfg || (!row.count && !row.lengthMm)) return null;
+              if (!row || (!row.count && !row.lengthMm)) return null;
               return (
                 <span key={id} className="laser-sim-legend-item">
                   <span className="laser-layer-swatch" style={{ background: cfg.color }} />

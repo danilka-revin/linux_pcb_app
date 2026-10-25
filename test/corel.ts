@@ -7,7 +7,8 @@
 import assert from 'node:assert/strict';
 import { deflateSync } from 'node:zlib';
 import {
-  newLaserDoc, polylineLength, selectionBBox, shapeToPolylines,
+  addLaserLayer, adoptShapes, layerIds, newLaserDoc, newMachineDoc,
+  polylineLength, selectionBBox, shapeToPolylines,
   type LaserDoc, type LaserShape,
 } from '../src/laser/model';
 import { exportLaserDxf } from '../src/laser/export';
@@ -33,7 +34,7 @@ function totalLength(shapes: LaserShape[]): number {
 
 /** Документ со всеми содержательными слоями: контур, отверстие, сгиб, заливка, размеры. */
 function sampleDoc(): LaserDoc {
-  const doc = newLaserDoc(300, 200, 'Коробка 120×80');
+  const doc = newMachineDoc(300, 200, 'Коробка 120×80');
   doc.shapes = [
     {
       id: 'panel', kind: 'rect', layer: 'cut', name: 'Панель',
@@ -143,7 +144,7 @@ const enc = new TextEncoder();
   assert.ok(near(bb[2], 140, 1e-9) && near(bb[3], 100, 1e-9), 'габарит заканчивается панелью');
 
   // дырки остаются отдельными подпутями — для even-odd заливки
-  const donut: LaserDoc = newLaserDoc(100, 100, 'Пончик');
+  const donut: LaserDoc = newMachineDoc(100, 100, 'Пончик');
   donut.shapes = [{
     id: 'd', kind: 'path', layer: 'cut', name: 'Пончик',
     nodes: [{ x: 0, y: 0 }, { x: 40, y: 0 }, { x: 40, y: 40 }, { x: 0, y: 40 }],
@@ -242,7 +243,7 @@ const enc = new TextEncoder();
   assert.ok(flat.includes('%%EOF'), 'файл по-прежнему завершён');
 
   // пустой лист не роняет экспорт
-  const empty = exportVectorPdf(newLaserDoc(50, 50, 'Пусто'));
+  const empty = exportVectorPdf(newMachineDoc(50, 50, 'Пусто'));
   assert.ok(empty.startsWith('%PDF-1.7') && empty.includes('%%EOF'), 'пустой документ даёт валидный PDF');
 }
 
@@ -414,7 +415,7 @@ const enc = new TextEncoder();
   assert.equal((eps.match(/^grestore$/gm) ?? []).length, 4, 'каждый слой закрыт grestore');
 
   // геометрия вне листа расширяет габарит
-  const wide = newLaserDoc(100, 100, 'Вылет');
+  const wide = newMachineDoc(100, 100, 'Вылет');
   wide.shapes = [{
     id: 'out', kind: 'path', layer: 'cut', name: 'Вылет',
     nodes: [{ x: -20, y: -10 }, { x: 150, y: 120 }], closed: false, filled: false,

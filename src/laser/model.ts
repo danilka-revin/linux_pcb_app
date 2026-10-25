@@ -9,7 +9,30 @@ export interface Pt {
   y: number;
 }
 
-export type LaserLayerId = 'cut' | 'inner' | 'fold' | 'score' | 'engrave' | 'guide';
+/**
+ * Идентификатор слоя. Слои в редакторе чертежей свои: пользователь добавляет
+ * «Слой 1», «Слой 2», … и переименовывает их как угодно. Исторические
+ * идентификаторы ролей (cut/inner/fold/score/engrave/guide) остались в ядре —
+ * их используют генераторы коробок и развёрток, а редактор раскладывает такие
+ * объекты по своим слоям через `adoptShapes`.
+ */
+export type LaserLayerId = string;
+
+/** Роли линий, которые понимают генераторы и импорт файлов. */
+export type LaserLayerRole = 'cut' | 'inner' | 'fold' | 'score' | 'engrave' | 'guide';
+
+/** Все роли по порядку — он же порядок слоёв в старых документах. */
+export const LAYER_ROLES: LaserLayerRole[] = ['cut', 'inner', 'fold', 'score', 'engrave', 'guide'];
+
+/** Режим линии по роли: сплошная, штриховая, тонкая, заливка, служебная. */
+export const LAYER_ROLE_MODE: Record<LaserLayerRole, 'cut' | 'fold' | 'score' | 'fill' | 'guide'> = {
+  cut: 'cut',
+  inner: 'cut',
+  fold: 'fold',
+  score: 'score',
+  engrave: 'fill',
+  guide: 'guide',
+};
 
 export interface LaserLayerConfig {
   id: LaserLayerId;
@@ -35,7 +58,7 @@ export interface LaserLayerConfig {
   locked: boolean;
 }
 
-export const DEFAULT_LASER_LAYERS: Record<LaserLayerId, LaserLayerConfig> = {
+export const DEFAULT_LASER_LAYERS: Record<string, LaserLayerConfig> = {
   cut: {
     id: 'cut',
     name: 'Основной контур (внешний)',
@@ -135,6 +158,188 @@ export const DEFAULT_LASER_LAYERS: Record<LaserLayerId, LaserLayerConfig> = {
 };
 
 export const LASER_LAYER_ORDER: LaserLayerId[] = ['engrave', 'score', 'fold', 'inner', 'cut', 'guide'];
+
+// ---------------- свои слои чертежа ----------------
+
+/** Палитра цветов для новых слоёв (золото PSBees — первым). */
+export const LAYER_PALETTE = [
+  '#ffc233', '#38bdf8', '#22c55e', '#c084fc', '#ff453a', '#f472b6', '#facc15', '#94a3b8',
+];
+
+/**
+ * Новый слой чертежа: имя задаёт пользователь, станочные параметры берутся
+ * нейтральные (в интерфейсе чертежей они не показываются).
+ */
+export function makeLaserLayer(
+  id: string,
+  name: string,
+  color = LAYER_PALETTE[0],
+  mode: LaserLayerConfig['mode'] = 'cut'
+): LaserLayerConfig {
+  const clean = (name || '').trim().slice(0, 60) || `Слой`;
+  return {
+    id,
+    name: clean,
+    short: clean,
+    color,
+    mode,
+    power: mode === 'guide' ? 0 : 85,
+    speed: mode === 'fill' ? 240 : mode === 'score' ? 100 : mode === 'fold' ? 45 : 15,
+    passes: mode === 'guide' ? 0 : 1,
+    kerf: 0,
+    dashLen: mode === 'fold' ? 4 : 0,
+    gapLen: mode === 'fold' ? 2 : 0,
+    airAssist: false,
+    visible: true,
+    locked: false,
+  };
+}
+
+/**
+ * Порядок слоёв документа: сначала свой список документа, затем исторические
+ * роли (старые проекты и черновики), затем всё остальное.
+ */
+export function layerIds(doc: LaserDoc): string[] {
+  const out: string[] = [];
+  const push = (id: string) => {
+    if (id && doc.layers[id] && !out.includes(id)) out.push(id);
+  };
+  for (const id of doc.layerOrder ?? []) push(id);
+  for (const id of LAYER_ROLES) push(id);
+  for (const id of Object.keys(doc.layers)) push(id);
+  return out;
+}
+
+/**
+ * Порядок слоёв для записи в файлы. У документов со своим списком слоёв он
+ * совпадает с порядком в панели; у старых — исторический (сначала заливка и
+ * разметка, контур в конце).
+ */
+export function exportLayerIds(doc: LaserDoc): string[] {
+  if (doc.layerOrder?.length) return layerIds(doc);
+  return LASER_LAYER_ORDER.filter((id) => doc.layers[id]);
+}
+
+/**
+ * Конфигурация слоя с безопасным запасом: объект на неизвестном слое (старый
+ * проект, файл генератора) не теряется при показе и экспорте.
+ */
+export function layerOf(doc: LaserDoc, id: string): LaserLayerConfig {
+  const own = doc.layers[id];
+  if (own) return own;
+  const legacy = DEFAULT_LASER_LAYERS[id];
+  if (legacy) return legacy;
+  const first = layerIds(doc)[0];
+  return (first && doc.layers[first]) || DEFAULT_LASER_LAYERS.cut;
+}
+
+/** Свободный идентификатор слоя: l1, l2, … */
+export function uniqueLayerId(doc: LaserDoc, prefix = 'l'): string {
+  let n = 1;
+  while (doc.layers[`${prefix}${n}`]) n++;
+  return `${prefix}${n}`;
+}
+
+/** Имя нового слоя — «Слой N» без повторов с уже существующими. */
+export function nextLayerName(doc: LaserDoc): string {
+  const ids = layerIds(doc);
+  const used = new Set(ids.map((id) => (doc.layers[id].short || '').trim().toLowerCase()));
+  let n = ids.length + 1;
+  while (used.has(`слой ${n}`)) n++;
+  return `Слой ${n}`;
+}
+
+/** Добавить слой в документ; возвращает новый документ и идентификатор слоя. */
+export function addLaserLayer(
+  doc: LaserDoc,
+  name?: string,
+  opts?: { mode?: LaserLayerConfig['mode']; color?: string }
+): { doc: LaserDoc; id: string } {
+  const ids = layerIds(doc);
+  const id = uniqueLayerId(doc);
+  const color = opts?.color ?? LAYER_PALETTE[ids.length % LAYER_PALETTE.length];
+  const layer = makeLaserLayer(id, (name ?? '').trim() || nextLayerName(doc), color, opts?.mode ?? 'cut');
+  return {
+    doc: { ...doc, layers: { ...doc.layers, [id]: layer }, layerOrder: [...ids, id] },
+    id,
+  };
+}
+
+/** Удалить слой: его объекты переходят на первый оставшийся. */
+export function removeLaserLayer(doc: LaserDoc, id: string): LaserDoc {
+  const ids = layerIds(doc);
+  if (ids.length <= 1 || !doc.layers[id]) return doc;
+  const rest = ids.filter((x) => x !== id);
+  const target = rest[0];
+  const layers = { ...doc.layers };
+  delete layers[id];
+  return {
+    ...doc,
+    layers,
+    layerOrder: rest,
+    shapes: doc.shapes.map((s) => (s.layer === id ? { ...s, layer: target } : s)),
+  };
+}
+
+/** Слой нужного режима: берём существующий или создаём свой. */
+export function ensureModeLayer(
+  doc: LaserDoc,
+  mode: LaserLayerConfig['mode'],
+  name?: string
+): { doc: LaserDoc; id: string } {
+  const hit = layerIds(doc).find((x) => doc.layers[x].mode === mode);
+  if (hit) return { doc, id: hit };
+  return addLaserLayer(doc, name, { mode });
+}
+
+/** Слой под роль линии генератора (контур, сгиб, заливка, размеры). */
+export function ensureRoleLayer(doc: LaserDoc, role: LaserLayerRole): { doc: LaserDoc; id: string } {
+  return ensureModeLayer(doc, LAYER_ROLE_MODE[role], role === 'guide' ? 'Размеры' : undefined);
+}
+
+/**
+ * Раскладка «чужих» объектов по своим слоям документа.
+ *
+ * Генераторы (коробки, развёртки) и импорт файлов отдают объекты с ролями
+ * cut/inner/fold/score/engrave/guide и, если файл содержал имена слоёв, с
+ * полем `layerName`. Здесь роли и имена превращаются в слои чертежа: слой с
+ * таким именем ищется или создаётся, иначе объект уходит на слой с подходящим
+ * режимом линии. Поле `layerName` после этого снимается — в проекте оно не
+ * хранится.
+ */
+export function adoptShapes(doc: LaserDoc, shapes: LaserShape[]): { doc: LaserDoc; shapes: LaserShape[] } {
+  let d = doc;
+  const byKey = new Map<string, string>();
+  const out: LaserShape[] = [];
+  for (const s of shapes) {
+    const srcName = (s.layerName ?? '').trim().slice(0, 60);
+    const role = (LAYER_ROLES as string[]).includes(s.layer) ? (s.layer as LaserLayerRole) : null;
+    const key = srcName ? `n:${srcName.toLowerCase()}` : `r:${role ?? s.layer}`;
+    let id = byKey.get(key);
+    if (!id) {
+      if (srcName) {
+        const hit = layerIds(d).find((x) => (d.layers[x].short || '').trim().toLowerCase() === srcName.toLowerCase());
+        if (hit) {
+          id = hit;
+        } else {
+          const res = addLaserLayer(d, srcName, { mode: LAYER_ROLE_MODE[role ?? 'cut'] });
+          d = res.doc;
+          id = res.id;
+        }
+      } else {
+        const res = ensureRoleLayer(d, role ?? 'cut');
+        d = res.doc;
+        id = res.id;
+      }
+      byKey.set(key, id);
+    }
+    const copy = { ...s, layer: id } as LaserShape;
+    delete (copy as { layerName?: string }).layerName;
+    out.push(copy);
+  }
+  return { doc: d, shapes: out };
+}
+
 
 export interface MaterialPreset {
   id: string;
@@ -254,6 +459,11 @@ interface BaseShape {
   groupId?: string;
   locked?: boolean;
   hidden?: boolean;
+  /**
+   * Имя слоя из исходного файла (DXF, SVG, PDF, EPS). Ставится только при
+   * импорте: `adoptShapes` создаёт по нему свой слой и снимает поле.
+   */
+  layerName?: string;
   /** Число перемычек (holding tabs) на контуре, чтобы деталь не выпадала */
   tabs?: number;
   /** Ширина перемычки, мм */
@@ -352,6 +562,8 @@ export interface LaserDoc {
   materialThickness: number;
   materialPresetId: string;
   layers: Record<LaserLayerId, LaserLayerConfig>;
+  /** Порядок слоёв в панели и в файлах; у старых документов может отсутствовать */
+  layerOrder?: string[];
   shapes: LaserShape[];
   groups: LaserGroup[];
 }
@@ -367,15 +579,35 @@ export function fmtMm(v: number, digits = 2): string {
   return String(Object.is(r, -0) ? 0 : r);
 }
 
+/**
+ * Новый документ чертежа: чистый лист и один свой слой «Слой 1».
+ * Остальные слои пользователь добавляет сам (кнопка «+ Слой» в панели слева),
+ * а генераторы коробок и развёрток создают нужные слои автоматически.
+ */
 export function newLaserDoc(w = 300, h = 200, name = 'Новый чертёж'): LaserDoc {
-  const layers: Record<LaserLayerId, LaserLayerConfig> = {
-    cut: { ...DEFAULT_LASER_LAYERS.cut },
-    inner: { ...DEFAULT_LASER_LAYERS.inner },
-    fold: { ...DEFAULT_LASER_LAYERS.fold },
-    score: { ...DEFAULT_LASER_LAYERS.score },
-    engrave: { ...DEFAULT_LASER_LAYERS.engrave },
-    guide: { ...DEFAULT_LASER_LAYERS.guide },
+  const id = 'l1';
+  return {
+    name,
+    w,
+    h,
+    materialThickness: 3.0,
+    materialPresetId: 'plywood-3',
+    layers: { [id]: makeLaserLayer(id, 'Слой 1', LAYER_PALETTE[0], 'cut') },
+    layerOrder: [id],
+    shapes: [],
+    groups: [],
   };
+}
+
+/**
+ * Документ с полным набором исторических слоёв — для станочного интерфейса и
+ * проверок CAM. Свой порядок слоёв (`layerOrder`) здесь намеренно не задан:
+ * тогда в файлы слои пишутся в историческом порядке (заливка и разметка
+ * первыми, внешний контур в конце), а в панели — в удобном для чтения.
+ */
+export function newMachineDoc(w = 300, h = 200, name = 'Новый чертёж'): LaserDoc {
+  const layers: Record<string, LaserLayerConfig> = {};
+  for (const id of LAYER_ROLES) layers[id] = { ...DEFAULT_LASER_LAYERS[id] };
   return {
     name,
     w,

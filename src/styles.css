@@ -2524,6 +2524,39 @@ html[data-compact='1'] .set-head { padding: 5px 8px 5px 10px; }
 .laser-layer-name { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 12px; }
 .laser-layer-n { color: var(--muted); font-size: 10.5px; font-variant-numeric: tabular-nums; flex: none; }
 .laser-layer-props { border-top: 1px solid var(--line); }
+
+/* свои слои чертежа: цвет, редактируемое имя, удаление слоя */
+.laser-layer { padding: 2px 4px 2px 2px; }
+.laser-layer-color {
+  width: 20px; height: 20px; flex: none; padding: 0; margin-left: 4px;
+  border: 1px solid var(--sw-line); border-radius: 6px; background: none; cursor: pointer;
+}
+.laser-layer-color::-webkit-color-swatch-wrapper { padding: 1px; }
+.laser-layer-color::-webkit-color-swatch { border: none; border-radius: 4px; }
+input.laser-layer-name {
+  flex: 1; min-width: 0; padding: 4px 6px; font-size: 12px; color: var(--text);
+  background: transparent; border: 1px solid transparent; border-radius: 6px;
+}
+input.laser-layer-name:hover { border-color: var(--line); }
+input.laser-layer-name:focus { border-color: var(--accent); background: var(--surface); outline: none; }
+.obj-del { width: 20px; height: 20px; flex: none; opacity: .55; }
+.obj-del:hover { opacity: 1; color: var(--danger-ink); background: var(--danger-bg); }
+.obj-del:disabled { opacity: .2; }
+.laser-palette { display: flex; flex-wrap: wrap; gap: 5px; margin-top: 4px; }
+.laser-swatch {
+  width: 20px; height: 20px; border-radius: 6px; cursor: pointer;
+  border: 1px solid var(--sw-line); box-shadow: 0 0 0 1px var(--surface-2) inset;
+}
+.laser-swatch:hover { transform: translateY(-1px); }
+.laser-swatch.on { border-color: var(--accent); box-shadow: 0 0 0 2px var(--accent-soft); }
+
+/* подписанная кнопка тулбара (генераторы коробок и развёрток) */
+.tb-btn.labeled {
+  width: auto; height: 26px; padding: 0 9px; gap: 6px;
+  font-size: 11.5px; font-weight: 600; color: var(--text-2);
+}
+.tb-btn.labeled:hover { color: var(--accent-text); border-color: var(--accent-line); }
+.tb-btn.labeled svg { width: 15px; height: 15px; }
 .laser-check {
   display: flex; align-items: center; gap: 7px; margin-top: 9px;
   color: var(--text-2); font-size: 12px; cursor: pointer;
@@ -2689,6 +2722,33 @@ html[data-compact='1'] .set-head { padding: 5px 8px 5px 10px; }
 .laser-dxf-acc b { color: var(--text); font-variant-numeric: tabular-nums; }
 .laser-dxf-acc.bad { background: var(--danger-bg); }
 .laser-dxf-acc.bad svg { color: var(--danger-ink); }
+
+/* ---------- генератор развёрток: отдельное окно ---------- */
+.unfold-win { width: min(1020px, 96vw); max-height: 92vh; display: flex; flex-direction: column; }
+.unfold-win-body {
+  display: grid; grid-template-columns: minmax(0, 340px) minmax(0, 1fr);
+  gap: 14px; flex: 1; min-height: 0; margin-top: 8px;
+}
+.unfold-win-params { min-height: 0; overflow: auto; padding-right: 10px; border-right: 1px solid var(--line); }
+.unfold-win-params .props { border: none; padding: 0; }
+.unfold-win-preview { display: flex; flex-direction: column; min-height: 0; }
+.unfold-win-preview h3 { margin: 0 0 8px; font-size: 12px; color: var(--muted); text-transform: uppercase; letter-spacing: .05em; }
+.unfold-win-svg {
+  flex: 1; min-height: 220px; width: 100%; border-radius: 10px;
+  background: var(--surface-2); border: 1px solid var(--line);
+}
+.unfold-win-stats { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 6px 12px; margin-top: 10px; }
+.unfold-win-stats div {
+  display: flex; align-items: baseline; justify-content: space-between; gap: 8px;
+  padding: 5px 9px; border-radius: 8px; background: var(--surface-2); font-size: 11.5px;
+}
+.unfold-win-stats span { color: var(--muted); }
+.unfold-win-stats b { color: var(--text); font-variant-numeric: tabular-nums; }
+.unfold-win-hint { flex: 1; min-width: 0; color: var(--muted); font-size: 11.5px; }
+@media (max-width: 900px) {
+  .unfold-win-body { grid-template-columns: minmax(0, 1fr); }
+  .unfold-win-params { border-right: none; border-bottom: 1px solid var(--line); padding: 0 0 10px; }
+}
 
 /* ---------- студия коробок: каталог генераторов шип-паз ---------- */
 .box-studio { width: min(1280px, 97vw); height: min(880px, 94vh); display: flex; flex-direction: column; }

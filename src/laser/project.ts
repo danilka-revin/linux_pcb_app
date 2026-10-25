@@ -3,8 +3,10 @@
 
 import {
   DEFAULT_LASER_LAYERS,
-  LASER_LAYER_ORDER,
+  LAYER_PALETTE,
+  LAYER_ROLES,
   MATERIAL_PRESETS,
+  makeLaserLayer,
   newLaserDoc,
   type LaserDoc,
   type LaserLayerConfig,
@@ -33,7 +35,8 @@ export function safeFileName(name: string): string {
 
 /**
  * Приведение загруженного проекта к рабочей структуре: старые файлы, ручные
- * правки JSON и неполные слои не должны ронять редактор.
+ * правки JSON и неполные слои не должны ронять редактор. Слои у документа
+ * свои — сохраняются все, что есть в файле, вместе с их порядком.
  */
 export function normalizeLaserDoc(raw: unknown): LaserDoc | null {
   if (!raw || typeof raw !== 'object') return null;
@@ -41,21 +44,47 @@ export function normalizeLaserDoc(raw: unknown): LaserDoc | null {
   if (!Array.isArray(d.shapes)) return null;
   const base = newLaserDoc();
 
-  const layers = { ...base.layers };
+  const layers: Record<string, LaserLayerConfig> = {};
+  const found: string[] = [];
   if (d.layers && typeof d.layers === 'object') {
     const saved = d.layers as Record<string, Partial<LaserLayerConfig>>;
-    for (const id of LASER_LAYER_ORDER) {
-      const l = saved[id];
-      if (l && typeof l === 'object') layers[id] = { ...DEFAULT_LASER_LAYERS[id], ...l, id };
+    for (const [id, l] of Object.entries(saved)) {
+      if (!id || !l || typeof l !== 'object') continue;
+      const fallback =
+        DEFAULT_LASER_LAYERS[id] ??
+        makeLaserLayer(
+          id,
+          typeof l.short === 'string' && l.short.trim() ? l.short : `Слой ${found.length + 1}`,
+          LAYER_PALETTE[found.length % LAYER_PALETTE.length],
+          l.mode ?? 'cut'
+        );
+      layers[id] = { ...fallback, ...l, id };
+      found.push(id);
     }
+  }
+
+  // Порядок: свой список из файла, затем исторические роли, затем остальные.
+  const savedOrder = Array.isArray(d.layerOrder)
+    ? (d.layerOrder as unknown[]).filter((x): x is string => typeof x === 'string' && !!layers[x])
+    : [];
+  const layerOrder = [
+    ...savedOrder,
+    ...LAYER_ROLES.filter((id) => layers[id] && !savedOrder.includes(id)),
+    ...found.filter((id) => !savedOrder.includes(id)),
+  ];
+  if (!layerOrder.length) {
+    layers[base.layerOrder![0]] = base.layers[base.layerOrder![0]];
+    layerOrder.push(base.layerOrder![0]);
   }
 
   const w = Number(d.w);
   const h = Number(d.h);
   const thickness = Number(d.materialThickness);
-  const shapes = (d.shapes as LaserDoc['shapes']).filter(
-    (s) => !!s && typeof s === 'object' && typeof s.id === 'string' && typeof s.kind === 'string'
-  );
+  const first = layerOrder[0];
+  const shapes = (d.shapes as LaserDoc['shapes'])
+    .filter((s) => !!s && typeof s === 'object' && typeof s.id === 'string' && typeof s.kind === 'string')
+    // объект на отсутствующем слое не теряется — переносим на первый существующий
+    .map((s) => (layers[s.layer] ? s : { ...s, layer: first }));
 
   return {
     name: typeof d.name === 'string' && d.name.trim() ? d.name.slice(0, 120) : base.name,
@@ -67,6 +96,7 @@ export function normalizeLaserDoc(raw: unknown): LaserDoc | null {
         ? d.materialPresetId
         : base.materialPresetId,
     layers,
+    layerOrder,
     shapes,
     groups: Array.isArray(d.groups) ? (d.groups as LaserDoc['groups']) : [],
   };

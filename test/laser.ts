@@ -2,10 +2,11 @@
 // развёрток, CAM-экспорт (G-Code/DXF/SVG), симуляция и файл проекта.
 import assert from 'node:assert/strict';
 import {
-  DEFAULT_LASER_LAYERS, LASER_LAYER_ORDER, MATERIAL_PRESETS, alignShapes, arrayShapes, autoNestShapes,
-  booleanShapes, filletShapeCorners, fmtMm, hitShape, luid, mirrorShape, newLaserDoc, nodesToPts,
-  offsetShape, rotateShape, rotPt, scaleShape, selectionBBox, shapeBBox, shapeToPath, shapeToPolylines,
-  translateShape,
+  DEFAULT_LASER_LAYERS, LASER_LAYER_ORDER, MATERIAL_PRESETS, addLaserLayer, adoptShapes, alignShapes,
+  arrayShapes, autoNestShapes, booleanShapes, ensureRoleLayer, filletShapeCorners, fmtMm, hitShape,
+  layerIds, layerOf, luid, mirrorShape, newLaserDoc, newMachineDoc, nodesToPts,
+  offsetShape, removeLaserLayer, rotateShape, rotPt, scaleShape, selectionBBox, shapeBBox, shapeToPath,
+  shapeToPolylines, translateShape,
   type LaserDoc, type LaserShape, type PathShape, type Pt,
 } from '../src/laser/model';
 import {
@@ -43,19 +44,78 @@ const pathArea = (s: PathShape) => {
   assert.equal(doc.name, 'Тестовый лист');
   assert.equal(doc.shapes.length, 0);
   assert.equal(doc.materialThickness, 3.0);
+
+  // Новый чертёж начинается с одного своего слоя
+  assert.deepEqual(layerIds(doc), ['l1'], 'у нового чертежа один слой');
+  assert.equal(doc.layers.l1.short, 'Слой 1');
+  assert.equal(doc.layers.l1.mode, 'cut', 'по умолчанию сплошная линия');
+  assert.equal(doc.layers.l1.visible, true);
+  assert.equal(doc.layers.l1.locked, false);
+
+  // Свои слои добавляются, переименовываются и удаляются
+  const grown = addLaserLayer(doc);
+  assert.deepEqual(layerIds(grown.doc), ['l1', grown.id], 'новый слой добавлен в конец');
+  assert.equal(grown.doc.layers[grown.id].short, 'Слой 2', 'имя следующего слоя');
+  assert.notEqual(grown.doc.layers[grown.id].color, doc.layers.l1.color, 'цвет нового слоя отличается');
+  const renamed = addLaserLayer(grown.doc, 'Оси');
+  assert.equal(renamed.doc.layers[renamed.id].short, 'Оси', 'своё имя слоя');
+  assert.deepEqual(layerIds(removeLaserLayer(renamed.doc, renamed.id)), ['l1', grown.id], 'слой удалён');
+  assert.equal(layerIds(removeLaserLayer(doc, 'l1')).length, 1, 'последний слой не удаляется');
+
+  // Объекты удалённого слоя переходят на оставшийся
+  const withShapes: LaserDoc = {
+    ...grown.doc,
+    shapes: [{ id: 's1', kind: 'rect', layer: grown.id, name: 'Деталь', x: 0, y: 0, w: 5, h: 5, rx: 0, rot: 0, filled: false }],
+  };
+  const afterDelete = removeLaserLayer(withShapes, grown.id);
+  assert.equal(afterDelete.shapes[0].layer, 'l1', 'объект перенесён на оставшийся слой');
+
+  // Тип линии слоя: сплошная, штриховая, заливка, служебная
+  const dashed = addLaserLayer(doc, 'Штрихи', { mode: 'fold' });
+  assert(dashed.doc.layers[dashed.id].dashLen > 0 && dashed.doc.layers[dashed.id].gapLen > 0,
+    'у штриховой линии есть штрих и пропуск');
+  const guide = ensureRoleLayer(doc, 'guide');
+  assert.equal(guide.doc.layers[guide.id].mode, 'guide', 'служебный слой для размеров');
+  assert.equal(ensureRoleLayer(guide.doc, 'guide').id, guide.id, 'второй служебный слой не создаётся');
+
+  // Объекты генераторов раскладываются по своим слоям чертежа
+  const adopted = adoptShapes(doc, [
+    { id: 'a', kind: 'rect', layer: 'cut', name: 'Контур', x: 0, y: 0, w: 10, h: 10, rx: 0, rot: 0, filled: false },
+    { id: 'b', kind: 'path', layer: 'fold', name: 'Сгиб', nodes: [{ x: 0, y: 0 }, { x: 5, y: 0 }], closed: false, filled: false },
+    { id: 'c', kind: 'rect', layer: 'inner', name: 'Отверстие', x: 1, y: 1, w: 2, h: 2, rx: 0, rot: 0, filled: false },
+  ] as LaserShape[]);
+  assert.equal(adopted.shapes[0].layer, adopted.shapes[2].layer, 'сплошные контуры на одном слое');
+  assert.notEqual(adopted.shapes[0].layer, adopted.shapes[1].layer, 'штриховые линии на своём слое');
+  assert.equal(layerIds(adopted.doc).length, 2, 'слоев ровно столько, сколько нужно');
+  assert(adopted.shapes.every((s) => !!adopted.doc.layers[s.layer]), 'каждый объект на существующем слое');
+
+  // Имя слоя из файла становится слоем чертежа
+  const byName = adoptShapes(doc, [
+    { id: 'x', kind: 'rect', layer: 'cut', layerName: 'OUTLINE', name: 'Контур', x: 0, y: 0, w: 4, h: 4, rx: 0, rot: 0, filled: false },
+    { id: 'y', kind: 'rect', layer: 'cut', layerName: 'OUTLINE', name: 'Контур 2', x: 6, y: 0, w: 4, h: 4, rx: 0, rot: 0, filled: false },
+  ] as LaserShape[]);
+  const names = layerIds(byName.doc).map((id) => byName.doc.layers[id].short);
+  assert(names.includes('OUTLINE'), `слой из файла создан: ${names}`);
+  assert.equal(byName.shapes[0].layer, byName.shapes[1].layer, 'одно имя файла — один слой');
+  assert.equal((byName.shapes[0] as { layerName?: string }).layerName, undefined, 'служебное имя слоя снято');
+
+  // Объект на неизвестном слое не теряется: конфигурация берётся с запасом
+  assert.equal(layerOf(doc, 'несуществующий').mode, 'cut', 'запасной слой для неизвестного');
+
+  // Станочный набор слоёв сохранён целиком (нужен при MACHINE_UI)
   assert.deepEqual(LASER_LAYER_ORDER, ['engrave', 'score', 'fold', 'inner', 'cut', 'guide']);
+  const machine = newMachineDoc(400, 300, 'Станок');
   for (const id of LASER_LAYER_ORDER) {
-    const cfg = doc.layers[id];
+    const cfg = machine.layers[id];
     assert(cfg, `слой ${id} отсутствует`);
     assert.equal(cfg.id, id);
     assert.equal(cfg.visible, true);
     assert.equal(cfg.locked, false);
   }
-  // Режимы резки: внешний контур режется мощнее и медленнее биговки
-  assert(doc.layers.cut.power > doc.layers.fold.power, 'мощность резки больше биговки');
-  assert(doc.layers.cut.speed < doc.layers.fold.speed, 'резка медленнее биговки');
-  assert.equal(doc.layers.guide.passes, 0, 'слой размеров не режется');
-  assert(doc.layers.fold.dashLen > 0 && doc.layers.fold.gapLen > 0, 'биговка — перфорация');
+  assert(machine.layers.cut.power > machine.layers.fold.power, 'мощность контура больше сгиба');
+  assert(machine.layers.cut.speed < machine.layers.fold.speed, 'контур медленнее сгиба');
+  assert.equal(machine.layers.guide.passes, 0, 'служебный слой не обрабатывается');
+  assert(machine.layers.fold.dashLen > 0 && machine.layers.fold.gapLen > 0, 'сгиб — перфорация');
   assert(MATERIAL_PRESETS.length >= 6, 'набор материалов');
   assert(MATERIAL_PRESETS.every((m) => m.cutSpeed > 0 && m.cutPower > 0), 'режимы материалов заполнены');
   assert.equal(fmtMm(1.006, 2), '1.01');
@@ -676,7 +736,7 @@ const pathArea = (s: PathShape) => {
 
 // ---------------- CAM: пунктир, траектория, G-Code ----------------
 {
-  const doc = newLaserDoc(300, 200, 'CAM тест');
+  const doc = newMachineDoc(300, 200, 'CAM тест');
   doc.materialThickness = 3;
   const panel: LaserShape = {
     id: 'panel', kind: 'rect', layer: 'cut', name: 'Панель',
@@ -807,7 +867,7 @@ const pathArea = (s: PathShape) => {
 
 // ---------------- импорт векторных файлов ----------------
 {
-  const doc = newLaserDoc(200, 150, 'Импорт');
+  const doc = newMachineDoc(200, 150, 'Импорт');
   doc.shapes = [
     {
       id: 'r1', kind: 'rect', layer: 'cut', name: 'Прямоугольник',
@@ -976,7 +1036,7 @@ const pathArea = (s: PathShape) => {
 
 // ---------------- файл проекта и черновик ----------------
 {
-  const doc = newLaserDoc(250, 180, 'Корпус прибора');
+  const doc = newMachineDoc(250, 180, 'Корпус прибора');
   doc.shapes = [{
     id: 'p', kind: 'rect', layer: 'cut', name: 'Панель',
     x: 5, y: 5, w: 100, h: 60, rx: 3, rot: 0, filled: false, tabs: 4, tabWidth: 2,

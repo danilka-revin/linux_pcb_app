@@ -8,8 +8,8 @@
 // вырождаются в ломаные: после усечения форма оставшихся кусков не меняется.
 
 import {
-  luid, sampleBezierSegment, shapeBBox, shapeToPath, shapeToPolylines,
-  type LaserShape, type PathNode, type PathShape, type Pt,
+  layerOf, luid, sampleBezierSegment, shapeBBox, shapeToPath, shapeToPolylines,
+  type LaserDoc, type LaserShape, type PathNode, type PathShape, type Pt,
 } from './model';
 
 /** Шаг аппроксимации сегмента Безье при поиске пересечений. */
@@ -604,6 +604,11 @@ export interface TrimOptions {
   tol?: number;
   /** Габарит стола (мм): контур листа тоже считается границей реза и добора. */
   sheet?: { w: number; h: number };
+  /**
+   * Документ чертежа: по нему определяется служебный слой. Слои свои, с любыми
+   * именами, поэтому «служебность» узнаётся по типу линии слоя, а не по его id.
+   */
+  doc?: LaserDoc;
 }
 
 export interface TrimEdit {
@@ -617,17 +622,22 @@ export interface TrimEdit {
 
 const noEdit = (message: string): TrimEdit => ({ ok: false, message, remove: [], add: [] });
 
+/** Служебный слой: с документом — по типу линии слоя, без него — по роли. */
+function isGuideLayer(s: LaserShape, doc?: LaserDoc): boolean {
+  return doc ? layerOf(doc, s.layer).mode === 'guide' : s.layer === 'guide';
+}
+
 /** Объект годится как граница реза: видимый, не заблокированный, не служебный. */
-export function isBoundaryShape(s: LaserShape): boolean {
+export function isBoundaryShape(s: LaserShape, doc?: LaserDoc): boolean {
   if (s.hidden || s.locked) return false;
   if (s.kind === 'dim') return false;
-  if (s.layer === 'guide') return false;
+  if (isGuideLayer(s, doc)) return false;
   return true;
 }
 
 /** Объект можно резать: кривая или примитив, который в неё превращается. */
-export function trimmable(s: LaserShape): boolean {
-  return isBoundaryShape(s) && s.kind !== 'text';
+export function trimmable(s: LaserShape, doc?: LaserDoc): boolean {
+  return isBoundaryShape(s, doc) && s.kind !== 'text';
 }
 
 function toPath(shape: LaserShape): PathShape[] {
@@ -641,7 +651,7 @@ function boundaryPolylines(shapes: LaserShape[], targetId: string, opts: TrimOpt
   const out: Pt[][] = [];
   for (const s of shapes) {
     if (s.id === targetId) continue;
-    if (!isBoundaryShape(s)) continue;
+    if (!isBoundaryShape(s, opts.doc)) continue;
     if (opts.boundaryIds && opts.boundaryIds.size && !opts.boundaryIds.has(s.id)) continue;
     for (const pl of shapeToPolylines(s)) if (pl.length >= 2) out.push(pl);
   }
@@ -733,7 +743,9 @@ function pickPiece(pieces: CurvePiece[], s: number, total: number): number {
 export function trimCurve(shapes: LaserShape[], targetId: string, at: Pt, opts: TrimOptions = {}): TrimEdit {
   const shape = shapes.find((s) => s.id === targetId);
   if (!shape) return noEdit('Объект не найден.');
-  if (!trimmable(shape)) return noEdit('Этот объект нельзя усекать (текст, размер или заблокированный слой).');
+  if (!trimmable(shape, opts.doc)) {
+    return noEdit('Этот объект нельзя усекать (текст, размер или заблокированный слой).');
+  }
   const picked = pickTarget(shapes, targetId, at, opts.tol ?? 1.5);
   if (!picked) return noEdit('Клик мимо кривой.');
 
@@ -779,7 +791,7 @@ function pieceLen(piece: CurvePiece): string {
 export function breakCurve(shapes: LaserShape[], targetId: string, at: Pt, opts: TrimOptions = {}): TrimEdit {
   const shape = shapes.find((s) => s.id === targetId);
   if (!shape) return noEdit('Объект не найден.');
-  if (!trimmable(shape)) return noEdit('Этот объект нельзя разрезать.');
+  if (!trimmable(shape, opts.doc)) return noEdit('Этот объект нельзя разрезать.');
   const picked = pickTarget(shapes, targetId, at, opts.tol ?? 1.5);
   if (!picked) return noEdit('Клик мимо кривой.');
   const target = picked.paths[picked.nearest];
@@ -809,7 +821,7 @@ export function breakCurve(shapes: LaserShape[], targetId: string, at: Pt, opts:
 export function extendCurve(shapes: LaserShape[], targetId: string, at: Pt, opts: TrimOptions = {}): TrimEdit {
   const shape = shapes.find((s) => s.id === targetId);
   if (!shape) return noEdit('Объект не найден.');
-  if (!trimmable(shape)) return noEdit('Этот объект нельзя продлить.');
+  if (!trimmable(shape, opts.doc)) return noEdit('Этот объект нельзя продлить.');
   const picked = pickTarget(shapes, targetId, at, opts.tol ?? 2.5);
   if (!picked) return noEdit('Клик мимо кривой.');
   const target = picked.paths[picked.nearest];
@@ -884,7 +896,7 @@ export function breakApartAtIntersections(
   ids?: Set<string>,
   opts: TrimOptions = {}
 ): { shapes: LaserShape[]; added: number; split: number } {
-  const list = shapes.filter((s) => trimmable(s) && (!ids || !ids.size || ids.has(s.id)));
+  const list = shapes.filter((s) => trimmable(s, opts.doc) && (!ids || !ids.size || ids.has(s.id)));
   if (!list.length) return { shapes, added: 0, split: 0 };
   const replacements = new Map<string, LaserShape[]>();
   let added = 0;
@@ -899,7 +911,7 @@ export function breakApartAtIntersections(
       const boundaries: Pt[][] = [];
       for (const other of shapes) {
         if (other.id === target.id) continue;
-        if (!isBoundaryShape(other)) continue;
+        if (!isBoundaryShape(other, opts.doc)) continue;
         if (opts.boundaryIds && opts.boundaryIds.size && !opts.boundaryIds.has(other.id) && !ids?.has(other.id)) continue;
         for (const pl of shapeToPolylines(other)) if (pl.length >= 2) boundaries.push(pl);
       }

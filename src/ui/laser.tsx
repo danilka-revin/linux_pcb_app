@@ -1,6 +1,7 @@
 // Редактор чертежей PSBees — векторное рисование чертежей, развёрток и деталей
-// в стиле CorelDRAW: точный вывод в DXF, PDF, EPS, PLT и SVG (слои чертежа,
-// биговка, керф, перемычки) и импорт из тех же форматов.
+// в стиле CorelDRAW: точный вывод в DXF, PDF, EPS, PLT и SVG и импорт из тех же
+// форматов. Слои у чертежа свои: пользователь добавляет «Слой 1», «Слой 2», …
+// и задаёт им имя, цвет и тип линии (сплошная, штриховая, заливка, служебная).
 //
 // Станочная часть — G-Code, симуляция обработки, задание на станок и режимы
 // обработки по слоям — в коде сохранена, но скрыта из интерфейса: её возвращает
@@ -17,8 +18,9 @@ import { ConfirmDialog, NI, SI } from './widgets';
 import { ModeSwitcher, type WorkspaceMode } from './mode-switcher';
 import {
   LaserJobPanel, LaserLayersPanel, LaserMaterialPanel, LaserObjectsPanel, LaserPropsPanel,
-  UnfoldPanel, type PropsActions,
+  type PropsActions,
 } from './laser-panels';
+import { UnfoldWindow, type UnfoldApplyPayload } from './unfold-window';
 import {
   LaserExportDialog, LaserSheetDialog, LaserSimDialog, LaserTraceDialog,
   type LaserDxfSplit, type LaserExportFormat,
@@ -35,17 +37,17 @@ import {
   type VectorExportOptions,
 } from '../laser/corel';
 import { importVectorData } from '../laser/corel-parse';
-import { DEFAULT_UNFOLD_PARAMS, UNFOLD_TEMPLATES, generateUnfolding, type UnfoldParams } from '../laser/unfold';
 import { MACHINE_UI } from '../laser/features';
 import { BoxStudio, type BoxApplyPayload } from './box-studio';
 import {
   loadLaserDraft, parseLaserProject, safeFileName, saveLaserDraft, serializeLaserProject,
 } from '../laser/project';
 import {
-  LASER_LAYER_ORDER, MATERIAL_PRESETS, alignShapes, arrayShapes, autoNestShapesEx,
-  booleanShapes, docContourLength, filletShapeCorners, hitShape, luid, mirrorShape, newLaserDoc, offsetShape,
+  MATERIAL_PRESETS, addLaserLayer, adoptShapes, alignShapes, arrayShapes, autoNestShapesEx,
+  booleanShapes, docContourLength, ensureRoleLayer, filletShapeCorners, hitShape, layerIds, layerOf,
+  luid, mirrorShape, newLaserDoc, offsetShape, removeLaserLayer,
   rotateShape, scaleShape, selectionBBox, shapeBBox, shapeToPath, translateShape,
-  type AlignMode, type BooleanOp, type LaserDoc, type LaserLayerConfig, type LaserLayerId,
+  type AlignMode, type BooleanOp, type LaserDoc, type LaserGroup, type LaserLayerConfig, type LaserLayerId,
   type LaserShape, type MaterialPreset, type PathNode, type PathShape, type Pt,
 } from '../laser/model';
 import {
@@ -249,18 +251,18 @@ export function LaserEditor({
   }, []);
 
   const [tool, setTool] = useState<LaserToolId>('select');
-  const [activeLayer, setActiveLayer] = useState<LaserLayerId>('cut');
+  // активный слой — первый слой чертежа; эффект ниже следит, чтобы он существовал
+  const [activeLayer, setActiveLayer] = useState<LaserLayerId>(() => layerIds(doc)[0] ?? 'l1');
   const [view, setView] = useState<LaserView>({ s: 3, ox: 80, oy: 80 });
   const [size, setSize] = useState({ w: 900, h: 600 });
   const [grid, setGrid] = useState<LaserGridConf & { snap: boolean }>({
     step: 1, major: 10, on: true, style: 'lines', snap: true,
   });
-  const [leftTab, setLeftTab] = useState<'unfold' | 'layers' | 'objects'>('unfold');
+  // слева по умолчанию дерево объектов, слои — вторая вкладка
+  const [leftTab, setLeftTab] = useState<'objects' | 'layers'>('objects');
   const [objFilter, setObjFilter] = useState('');
-  const [unfoldParams, setUnfoldParams] = useState<UnfoldParams>({ ...DEFAULT_UNFOLD_PARAMS });
-  const [unfoldBusy, setUnfoldBusy] = useState(false);
   const [msg, setMsg] = useState<{ text: string; ok: boolean | null } | null>(null);
-  const [dialog, setDialog] = useState<'sheet' | 'new' | 'export' | 'sim' | 'trace' | 'boxes' | null>(null);
+  const [dialog, setDialog] = useState<'sheet' | 'new' | 'export' | 'sim' | 'trace' | 'boxes' | 'unfold' | null>(null);
   const [confirmAsk, setConfirmAsk] = useState<{ title: string; text: string; ok: string; onOk: () => void } | null>(null);
   const [sim, setSim] = useState<LaserSimulation | null>(null);
   const [simBusy, setSimBusy] = useState(false);
@@ -280,11 +282,22 @@ export function LaserEditor({
   const [mouse, setMouse] = useState({ px: -100, py: -100, wx: 0, wy: 0 });
   const [snapMark, setSnapMark] = useState<Pt | null>(null);
   const [arrayState, setArrayState] = useState({ rows: 2, cols: 2, gapX: 5, gapY: 5 });
-  const [contourState, setContourState] = useState<{ delta: number; layer: LaserLayerId }>({ delta: 1, layer: 'cut' });
+  const [contourState, setContourState] = useState<{ delta: number; layer: LaserLayerId }>(
+    () => ({ delta: 1, layer: layerIds(doc)[0] ?? 'l1' })
+  );
   const [polygonSides, setPolygonSides] = useState(6);
   const [polygonStar, setPolygonStar] = useState(false);
   const [spaceDown, setSpaceDown] = useState(false);
   const [savedTick, setSavedTick] = useState(0);
+
+  // Активный слой всегда существует: после нового проекта, открытия файла или
+  // удаления слоя переключаемся на первый доступный.
+  useEffect(() => {
+    if (doc.layers[activeLayer]) return;
+    const first = layerIds(doc)[0];
+    setActiveLayer(first ?? 'l1');
+    setContourState((c) => (doc.layers[c.layer] ? c : { ...c, layer: first ?? 'l1' }));
+  }, [doc, activeLayer]);
 
   const wrapRef = useRef<HTMLDivElement>(null);
   const baseRef = useRef<HTMLCanvasElement>(null);
@@ -652,6 +665,8 @@ export function LaserEditor({
     self: true,
     tol: Math.max(0.8, 8 / Math.max(view.s, 0.001)),
     sheet: { w: docRef.current.w, h: docRef.current.h },
+    // служебный слой узнаётся по типу линии своего слоя, а не по его имени
+    doc: docRef.current,
   }), [trimOnlySel, view.s]);
 
   /** Правка документа после инструмента: старые объекты уходят, новые встают на их место. */
@@ -693,7 +708,7 @@ export function LaserEditor({
   /** Разбить кривые по всем взаимным пересечениям (выделение или весь лист). */
   const breakApartSel = useCallback(() => {
     const ids = new Set(docRef.current.shapes.filter((s) => selRef.current.has(s.id)).map((s) => s.id));
-    const res = breakApartAtIntersections(docRef.current.shapes, ids);
+    const res = breakApartAtIntersections(docRef.current.shapes, ids, { doc: docRef.current });
     if (!res.split) {
       setMsg({ text: 'Пересечений не найдено: разбивать нечего.', ok: false });
       return;
@@ -706,7 +721,7 @@ export function LaserEditor({
   /** Что подсветить под курсором инструмента «Усечь кривую». */
   const updateTrimHover = useCallback((raw: Pt) => {
     const hit = pickShape(raw);
-    const id = hit && trimmable(hit) ? hit.id : null;
+    const id = hit && trimmable(hit, docRef.current) ? hit.id : null;
     const prev = trimHoverAt.current;
     const moved = Math.hypot(prev.x - raw.x, prev.y - raw.y) > 0.05;
     if (prev.id === id && (!moved || !id)) {
@@ -799,6 +814,7 @@ export function LaserEditor({
   const applyMaterial = useCallback((preset: MaterialPreset) => {
     const layers = { ...docRef.current.layers };
     const patch = (id: LaserLayerId, p: Partial<LaserLayerConfig>) => {
+      if (!layers[id]) return; // своих слоёв с такими именами может не быть
       layers[id] = { ...layers[id], ...p };
     };
     patch('cut', {
@@ -826,52 +842,39 @@ export function LaserEditor({
 
   // ---------------- генератор развёрток ----------------
 
-  const generateUnfold = useCallback(() => {
-    setUnfoldBusy(true);
-    window.setTimeout(() => {
-      try {
-        const params: UnfoldParams = {
-          ...unfoldParams,
-          thickness: docRef.current.materialThickness || unfoldParams.thickness,
-        };
-        const { shapes, groups } = generateUnfolding(params, 12, 12, docRef.current.w, docRef.current.h);
-        if (!shapes.length) {
-          setMsg({ text: 'Развёртка не построена: проверьте размеры.', ok: false });
-          return;
-        }
-        const bb = selectionBBox(shapes);
-        const over = bb && (bb[2] > docRef.current.w + 0.5 || bb[3] > docRef.current.h + 0.5);
-        commit({
-          ...docRef.current,
-          shapes: [...docRef.current.shapes, ...shapes],
-          groups: [...docRef.current.groups, ...groups],
-        }, `Развёртка: ${UNFOLD_TEMPLATES.find((t) => t.id === params.template)?.name ?? params.template} (${shapes.length} объектов)`);
-        setSel(new Set(shapes.map((s) => s.id)));
-        if (over) {
-          setMsg({
-            text: `Развёртка (${(bb![2] - bb![0]).toFixed(0)}×${(bb![3] - bb![1]).toFixed(0)} мм) больше листа `
-              + `${docRef.current.w}×${docRef.current.h} мм — увеличьте лист или уменьшите деталь.`,
-            ok: false,
-          });
-        }
-      } catch (e) {
-        setMsg({ text: e instanceof Error ? e.message : 'Ошибка генератора развёрток.', ok: false });
-      } finally {
-        setUnfoldBusy(false);
-      }
-    }, 20);
-  }, [unfoldParams, commit, setSel]);
+  /** Раскладка из окна развёрток: объекты раскладываются по своим слоям чертежа. */
+  const applyUnfold = useCallback((p: UnfoldApplyPayload) => {
+    const grown = adoptShapes(docRef.current, p.shapes);
+    const bb = selectionBBox(grown.shapes);
+    const over = bb && (bb[2] - bb[0] > docRef.current.w + 0.5 || bb[3] - bb[1] > docRef.current.h + 0.5);
+    commit({
+      ...grown.doc,
+      shapes: [...grown.doc.shapes, ...grown.shapes],
+      groups: [...grown.doc.groups, ...p.groups],
+    }, `Развёртка: ${p.title} (${grown.shapes.length} объектов)`);
+    setSel(new Set(grown.shapes.map((s) => s.id)));
+    setMsg({
+      text: over
+        ? `Развёртка (${(bb![2] - bb![0]).toFixed(0)}×${(bb![3] - bb![1]).toFixed(0)} мм) больше листа `
+          + `${docRef.current.w}×${docRef.current.h} мм — увеличьте лист или уменьшите деталь.`
+        : `Развёртка «${p.title}» помещена на лист: ${grown.shapes.length} объектов, готовы к правке и экспорту.`,
+      ok: !over,
+    });
+  }, [commit, setSel]);
 
   // ---------------- генератор коробок ----------------
 
   const applyBox = useCallback((p: BoxApplyPayload) => {
-    const bb = selectionBBox(p.shapes);
+    // детали коробки раскладываются по слоям чертежа: контуры на сплошной слой,
+    // линии сгиба — на штриховой, маркировка — на слой с заливкой
+    const grown = adoptShapes(docRef.current, p.shapes);
+    const bb = selectionBBox(grown.shapes);
     commit({
-      ...docRef.current,
-      shapes: [...docRef.current.shapes, ...p.shapes],
-      groups: [...docRef.current.groups, ...p.groups],
+      ...grown.doc,
+      shapes: [...grown.doc.shapes, ...grown.shapes],
+      groups: [...grown.doc.groups, ...p.groups],
     }, `Коробка: ${p.title}`);
-    setSel(new Set(p.shapes.map((s) => s.id)));
+    setSel(new Set(grown.shapes.map((s) => s.id)));
     const over = bb && (bb[2] > docRef.current.w + 0.5 || bb[3] > docRef.current.h + 0.5);
     setMsg({
       text: over
@@ -1023,11 +1026,13 @@ export function LaserEditor({
         const dy = 5 - bb[1];
         placed = res.shapes.map((s) => translateShape(s, dx, dy));
       }
-      commit({ ...docRef.current, shapes: [...docRef.current.shapes, ...placed] },
-        `Импорт ${file.name}: ${placed.length} объектов`);
-      setSel(new Set(placed.map((s) => s.id)));
+      // слои из файла (DXF, PDF/OCG, EPS, SVG) становятся слоями чертежа
+      const grown = adoptShapes(docRef.current, placed);
+      commit({ ...grown.doc, shapes: [...grown.doc.shapes, ...grown.shapes] },
+        `Импорт ${file.name}: ${grown.shapes.length} объектов`);
+      setSel(new Set(grown.shapes.map((s) => s.id)));
       setMsg({
-        text: `Импорт ${file.name}: ${placed.length} объектов`
+        text: `Импорт ${file.name}: ${grown.shapes.length} объектов`
           + (res.pages > 1 ? `, страница 1 из ${res.pages}` : '')
           + (res.notes.length ? `. ${res.notes.join(' ')}` : '.'),
         ok: true,
@@ -1125,7 +1130,7 @@ export function LaserEditor({
         setMsg({ text: 'Кликните по кривой, которую нужно усекать (границы — другие объекты листа).', ok: false });
         return;
       }
-      if (!trimmable(hit)) {
+      if (!trimmable(hit, docRef.current)) {
         setMsg({ text: 'Текст, размерные линии, скрытые и заблокированные объекты не усекаются.', ok: false });
         return;
       }
@@ -1162,11 +1167,14 @@ export function LaserEditor({
       return;
     }
     if (tool === 'text') {
-      const layer: LaserLayerId = activeLayer === 'guide' ? 'engrave' : activeLayer;
+      const ids = layerIds(docRef.current);
+      const layer: LaserLayerId = layerOf(docRef.current, activeLayer).mode === 'guide'
+        ? (ids.find((x) => layerOf(docRef.current, x).mode !== 'guide') ?? activeLayer)
+        : activeLayer;
       const shape: LaserShape = {
         id: luid('text'), kind: 'text', layer, name: 'Надпись',
         x: p.x, y: p.y, text: 'Текст', size: 6, strokeWidth: 0.4, rot: 0, mirror: false,
-        filled: layer === 'engrave',
+        filled: layerOf(docRef.current, layer).mode === 'fill',
       };
       commit({ ...docRef.current, shapes: [...docRef.current.shapes, shape] }, 'Добавлена надпись');
       setSel(new Set([shape.id]));
@@ -1281,13 +1289,15 @@ export function LaserEditor({
       return;
     }
     const off = d.c ? perpOffset(d.a, d.b, d.c) : 8;
+    // размеры живут на служебном слое — создаём его, если такого слоя ещё нет
+    const grown = ensureRoleLayer(docRef.current, 'guide');
     const shape: LaserShape = {
-      id: luid('dim'), kind: 'dim', layer: 'guide', name: `Размер ${len.toFixed(1)} мм`,
+      id: luid('dim'), kind: 'dim', layer: grown.id, name: `Размер ${len.toFixed(1)} мм`,
       x1: d.a.x, y1: d.a.y, x2: d.b.x, y2: d.b.y,
       offset: Math.abs(off) < 2 ? (off < 0 ? -2 : 2) : off,
       label: `${len.toFixed(2)} мм`,
     };
-    commit({ ...docRef.current, shapes: [...docRef.current.shapes, shape] }, `Добавлен размер ${len.toFixed(2)} мм`);
+    commit({ ...grown.doc, shapes: [...grown.doc.shapes, shape] }, `Добавлен размер ${len.toFixed(2)} мм`);
     setSel(new Set([shape.id]));
     setDraft(null);
     setTool('select');
@@ -1983,10 +1993,38 @@ export function LaserEditor({
 
   const showAllLayers = useCallback(() => {
     const layers = { ...docRef.current.layers };
-    for (const id of LASER_LAYER_ORDER) layers[id] = { ...layers[id], visible: true };
+    for (const id of layerIds(docRef.current)) layers[id] = { ...layers[id], visible: true };
     commit({ ...docRef.current, layers }, 'Все слои показаны', true);
     setSel(new Set());
   }, [commit, setSel]);
+
+  /** Добавить свой слой («Слой 2», «Слой 3», …) и сделать его активным. */
+  const addLayer = useCallback(() => {
+    const grown = addLaserLayer(docRef.current);
+    commit(grown.doc, `Добавлен слой «${grown.doc.layers[grown.id].short}»`, true);
+    setActiveLayer(grown.id);
+    setLeftTab('layers');
+  }, [commit]);
+
+  /** Удалить слой: его объекты переходят на первый оставшийся. */
+  const deleteLayer = useCallback((id: LaserLayerId) => {
+    const d = docRef.current;
+    if (layerIds(d).length <= 1) {
+      setMsg({ text: 'Слой нельзя удалить: он последний.', ok: false });
+      return;
+    }
+    const name = d.layers[id]?.short ?? id;
+    const moved = d.shapes.filter((s) => s.layer === id).length;
+    const next = removeLaserLayer(d, id);
+    commit(next, `Слой «${name}» удалён${moved ? `: объектов перенесено ${moved}` : ''}`);
+    const target = moved ? (next.layers[layerIds(next)[0]]?.short ?? '') : '';
+    setMsg({
+      text: moved
+        ? `Слой «${name}» удалён: ${moved} объектов перенесено на слой «${target}».`
+        : `Слой «${name}» удалён.`,
+      ok: true,
+    });
+  }, [commit]);
 
   const cursor = useMemo(() => {
     if (spaceDown || tool === 'pan') return drag.current?.mode === 'pan' ? 'grabbing' : 'grab';
@@ -2015,7 +2053,7 @@ export function LaserEditor({
         <span className="brandmark"><img src="/logo.png" alt="" width={32} height={32} draggable={false} /></span>
         <span className="brandtext">
           <b>PS<em>Bees</em></b>
-          <small>LASER · РАЗВЁРТКА · CORELDRAW STYLE</small>
+          <small>ЧЕРТЕЖИ · DXF · CORELDRAW STYLE</small>
         </span>
       </div>
 
@@ -2071,9 +2109,32 @@ export function LaserEditor({
           () => setGrid((g) => ({ ...g, snap: !g.snap })), { active: grid.snap })}
       </div>
 
-      <div className="tb-group" aria-label={MACHINE_UI ? 'Развёртка и станок' : 'Развёртка и коробки'}>
-        {tb('unfold', 'Генератор развёрток (панель слева)', () => setLeftTab('unfold'), { active: leftTab === 'unfold' })}
-        {tb('cube', 'Генератор коробок: 28 типов, шип-паз, DXF (Ctrl+B)', openBoxes)}
+      <div className="tb-group" aria-label="Генератор коробок">
+        <button
+          type="button"
+          className="tb-btn labeled"
+          data-action="boxes"
+          title="Генератор коробок: 28 типов, шип-паз, раскладка и точный DXF — отдельное окно (Ctrl+B)"
+          aria-label="Генератор коробок"
+          onClick={openBoxes}
+        >
+          <Ic n="cube" />
+          <span>Коробки</span>
+        </button>
+      </div>
+
+      <div className="tb-group" aria-label={MACHINE_UI ? 'Развёртка и станок' : 'Развёртка и раскладка'}>
+        <button
+          type="button"
+          className="tb-btn labeled"
+          data-action="unfold"
+          title="Генератор развёрток: коробка, лоток, цилиндр, передняя панель, шестерня — отдельное окно"
+          aria-label="Генератор развёрток"
+          onClick={() => setDialog('unfold')}
+        >
+          <Ic n="unfold" />
+          <span>Развёртка</span>
+        </button>
         {tb('panel', 'Автораскладка деталей на листе', autoNest, { disabled: !doc.shapes.length })}
         {MACHINE_UI && tb('play', 'Симуляция обработки на станке', runSimulate, { disabled: !doc.shapes.length })}
       </div>
@@ -2104,21 +2165,14 @@ export function LaserEditor({
     <div className="side" style={{ width: 300 }}>
       <div className="pane-full">
         <div className="tabs">
-          <button type="button" className={leftTab === 'unfold' ? 'on' : ''} onClick={() => setLeftTab('unfold')}>Развёртка</button>
-          <button type="button" className={leftTab === 'layers' ? 'on' : ''} onClick={() => setLeftTab('layers')}>Слои</button>
           <button type="button" className={leftTab === 'objects' ? 'on' : ''} onClick={() => setLeftTab('objects')}>
             Объекты{doc.shapes.length ? ` (${doc.shapes.length})` : ''}
           </button>
+          <button type="button" className={leftTab === 'layers' ? 'on' : ''} onClick={() => setLeftTab('layers')}>
+            Слои{layerIds(doc).length ? ` (${layerIds(doc).length})` : ''}
+          </button>
         </div>
         <div className="pane-scroll">
-          {leftTab === 'unfold' && (
-            <UnfoldPanel
-              params={unfoldParams}
-              onParams={(patch) => setUnfoldParams((p) => ({ ...p, ...patch }))}
-              onGenerate={generateUnfold}
-              busy={unfoldBusy}
-            />
-          )}
           {leftTab === 'layers' && (
             <LaserLayersPanel
               doc={doc}
@@ -2128,6 +2182,8 @@ export function LaserEditor({
               onToggleVisible={toggleLayerVisible}
               onToggleLock={toggleLayerLock}
               onShowAll={showAllLayers}
+              onAdd={addLayer}
+              onDelete={deleteLayer}
             />
           )}
           {leftTab === 'objects' && (
@@ -2257,7 +2313,7 @@ export function LaserEditor({
             className="btn danger"
             onClick={() => setConfirmAsk({
               title: 'Очистить лист?',
-              text: 'Все объекты развёртки будут удалены. Действие можно отменить (Ctrl+Z).',
+              text: 'Все объекты чертежа будут удалены. Действие можно отменить (Ctrl+Z).',
               ok: 'Очистить лист',
               onOk: () => {
                 commit({ ...docRef.current, shapes: [], groups: [] }, 'Лист очищен');
@@ -2385,11 +2441,12 @@ export function LaserEditor({
         <span>X <b>{mouse.wx.toFixed(2)}</b></span>
         <span>Y <b>{mouse.wy.toFixed(2)}</b></span>
         <span>Лист: <b>{doc.w}×{doc.h} мм</b></span>
-        <span>
-          Слой: <b style={{ color: doc.layers[activeLayer]?.color }}>{doc.layers[activeLayer]?.short}</b>
+        <span title="Активный слой: новые объекты рисуются на нём">
+          Слой: <b style={{ color: layerOf(doc, activeLayer).color }}>{layerOf(doc, activeLayer).short}</b>
           {' · '}
-          <b>{doc.layers[activeLayer]?.power}%</b> / {doc.layers[activeLayer]?.speed} мм/с
-          {doc.layers[activeLayer]?.passes > 1 ? ` · ${doc.layers[activeLayer]?.passes} прох.` : ''}
+          <b>{doc.shapes.filter((s) => s.layer === activeLayer && !s.hidden).length}</b> объ.
+          {' · '}
+          слоёв <b>{layerIds(doc).length}</b>
         </span>
         <span>
           Сетка: <b>{grid.on ? `${grid.step} мм` : 'выкл.'}</b>
@@ -2421,7 +2478,7 @@ export function LaserEditor({
         {msg?.text && (
           <span className={msg.ok === false ? 'status-alert' : 'status-note'} title={msg.text}>{msg.text}</span>
         )}
-        <span className="lg" title="Черновик развёртки сохраняется в этом браузере автоматически">
+        <span className="lg" title="Черновик чертежа сохраняется в этом браузере автоматически">
           <span className="pulse" />
           {cloudUser ? 'черновик в сеансе' : 'черновик в браузере'}
           {savedTick ? ` · ${new Date(savedTick).toLocaleTimeString('ru-RU')}` : ''}
@@ -2432,23 +2489,26 @@ export function LaserEditor({
         <BoxStudio doc={doc} onApply={applyBox} onClose={() => setDialog(null)} onMsg={(m) => setMsg({ text: m.text, ok: m.ok })} />
       )}
 
+      {dialog === 'unfold' && (
+        <UnfoldWindow
+          doc={doc}
+          onApply={applyUnfold}
+          onClose={() => setDialog(null)}
+          onMsg={(m) => setMsg({ text: m.text, ok: m.ok })}
+        />
+      )}
+
       {dialog === 'new' && (
         <LaserSheetDialog
-          doc={newLaserDoc(doc.w, doc.h, 'Новая развёртка')}
-          title="Новый проект развёртки"
+          doc={newLaserDoc(doc.w, doc.h, 'Новый чертёж')}
+          title="Новый чертёж"
           onClose={() => setDialog(null)}
           onOk={(next) => {
             const preset = MATERIAL_PRESETS.find((m) => m.id === next.materialId);
             const fresh = newLaserDoc(next.w, next.h, next.name);
             fresh.materialThickness = next.thickness;
             fresh.materialPresetId = next.materialId;
-            if (preset) {
-              fresh.layers.cut = { ...fresh.layers.cut, power: preset.cutPower, speed: preset.cutSpeed, passes: preset.cutPasses, kerf: preset.kerf };
-              fresh.layers.inner = { ...fresh.layers.inner, power: preset.cutPower, speed: preset.cutSpeed, passes: preset.cutPasses, kerf: preset.kerf };
-              fresh.layers.fold = { ...fresh.layers.fold, power: preset.foldPower, speed: preset.foldSpeed };
-              fresh.layers.score = { ...fresh.layers.score, power: preset.scorePower, speed: preset.scoreSpeed };
-              fresh.layers.engrave = { ...fresh.layers.engrave, power: preset.engravePower, speed: preset.engraveSpeed };
-            }
+            fresh.layers = applyPresetToLayers(fresh.layers, preset);
             past.current = [...past.current, { doc: docRef.current, label: 'Новый проект' }].slice(-HISTORY_LIMIT);
             future.current = [];
             setDoc(fresh);
@@ -2475,15 +2535,7 @@ export function LaserEditor({
               h: next.h,
               materialThickness: next.thickness,
               materialPresetId: next.materialId,
-              layers: preset ? (() => {
-                const layers = { ...docRef.current.layers };
-                layers.cut = { ...layers.cut, power: preset.cutPower, speed: preset.cutSpeed, passes: preset.cutPasses, kerf: preset.kerf };
-                layers.inner = { ...layers.inner, power: preset.cutPower, speed: preset.cutSpeed, passes: preset.cutPasses, kerf: preset.kerf };
-                layers.fold = { ...layers.fold, power: preset.foldPower, speed: preset.foldSpeed };
-                layers.score = { ...layers.score, power: preset.scorePower, speed: preset.scoreSpeed };
-                layers.engrave = { ...layers.engrave, power: preset.engravePower, speed: preset.engraveSpeed };
-                return layers;
-              })() : docRef.current.layers,
+              layers: applyPresetToLayers({ ...docRef.current.layers }, preset),
             }, `Лист ${next.w}×${next.h} мм, толщина ${next.thickness} мм`);
             setDialog(null);
             setTimeout(() => fit(), 40);
@@ -2538,6 +2590,28 @@ export function LaserEditor({
 // Обёртка группы кнопок дока — нужен Fragment с key
 function ToolGroup({ children }: { children: ReactNode }) {
   return <Fragment>{children}</Fragment>;
+}
+
+/**
+ * Станочные режимы из пресета материала — только для слоёв с историческими
+ * именами: у чертежа свои слои, и им эти параметры не нужны (в интерфейсе они
+ * показываются только при MACHINE_UI).
+ */
+function applyPresetToLayers(
+  layers: Record<string, LaserLayerConfig>,
+  preset: MaterialPreset | undefined
+): Record<string, LaserLayerConfig> {
+  if (!preset) return layers;
+  const out = { ...layers };
+  const patch = (id: string, p: Partial<LaserLayerConfig>) => {
+    if (out[id]) out[id] = { ...out[id], ...p };
+  };
+  patch('cut', { power: preset.cutPower, speed: preset.cutSpeed, passes: preset.cutPasses, kerf: preset.kerf });
+  patch('inner', { power: preset.cutPower, speed: preset.cutSpeed, passes: preset.cutPasses, kerf: preset.kerf });
+  patch('fold', { power: preset.foldPower, speed: preset.foldSpeed });
+  patch('score', { power: preset.scorePower, speed: preset.scoreSpeed });
+  patch('engrave', { power: preset.engravePower, speed: preset.engraveSpeed });
+  return out;
 }
 
 /** Компактная панель сетки и привязки редактора чертежей. */

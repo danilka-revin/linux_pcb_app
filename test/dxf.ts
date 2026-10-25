@@ -3,7 +3,8 @@
 // отклонений геометрии и круговой обмен с внешними CAD-файлами.
 import assert from 'node:assert/strict';
 import {
-  newLaserDoc, selectionBBox, shapeBBox, type LaserDoc, type LaserLayerId, type LaserShape,
+  addLaserLayer, adoptShapes, layerIds, newLaserDoc, newMachineDoc, selectionBBox, shapeBBox,
+  type LaserDoc, type LaserLayerId, type LaserShape,
 } from '../src/laser/model';
 import { exportLaserDxf, importVectorFile } from '../src/laser/export';
 import {
@@ -42,7 +43,7 @@ function pairValue(text: string, code: number, variable?: string): string | null
 
 // ---------------- тестовый документ ----------------
 function sampleDoc(): LaserDoc {
-  const doc = newLaserDoc(300, 200, 'DXF точность');
+  const doc = newMachineDoc(300, 200, 'DXF точность');
   const rect: LaserShape = {
     id: 'r', kind: 'rect', layer: 'cut', name: 'Панель',
     x: 20, y: 20, w: 100, h: 60, rx: 5, rot: 0, filled: false,
@@ -535,7 +536,7 @@ function sampleDoc(): LaserDoc {
     `внешний контур больше на толщину луча: ${(b[2] - b[0]).toFixed(4)} vs ${(a[2] - a[0]).toFixed(4)}`);
   // Верх документа занимает гравировка (на неё керф не действует), поэтому
   // высоту проверяем на отдельной детали только со слоем резки.
-  const kDoc = newLaserDoc(200, 200, 'Керф');
+  const kDoc = newMachineDoc(200, 200, 'Керф');
   kDoc.shapes = [
     { id: 'o', kind: 'rect', layer: 'cut', name: 'Внешнее', x: 40, y: 40, w: 100, h: 60, rx: 0, rot: 0, filled: false },
     { id: 'i', kind: 'ellipse', layer: 'inner', name: 'Отверстие', cx: 90, cy: 70, rx: 10, ry: 10, rot: 0, startAngle: 0, endAngle: 360, filled: false },
@@ -570,7 +571,7 @@ function sampleDoc(): LaserDoc {
   assert.ok(withTabs.openContours > noTabs.openContours, `перемычки разрывают контур: ${withTabs.openContours} > ${noTabs.openContours}`);
 
   // склейка дублирующихся точек
-  const dupDoc = newLaserDoc(100, 100, 'Дубли');
+  const dupDoc = newMachineDoc(100, 100, 'Дубли');
   dupDoc.shapes = [{
     id: 'd', kind: 'path', layer: 'cut', name: 'Дубли',
     nodes: [{ x: 10, y: 10 }, { x: 10.0001, y: 10.0001 }, { x: 50, y: 10 }, { x: 50, y: 50 }],
@@ -584,7 +585,7 @@ function sampleDoc(): LaserDoc {
 
 // ---------------- блоки повторяющихся деталей ----------------
 {
-  const doc = newLaserDoc(300, 200, 'Блоки');
+  const doc = newMachineDoc(300, 200, 'Блоки');
   const part = (id: string, x: number, y: number): LaserShape => ({
     id, kind: 'rect', layer: 'cut', name: 'Деталь', x, y, w: 40, h: 30, rx: 3, rot: 0, filled: false,
   });
@@ -675,7 +676,7 @@ function sampleDoc(): LaserDoc {
   assert.ok(byColor.length > 0 && byColor.some((s) => s.layer === 'cut'), 'слой определён по цвету ACI');
 
   // окружность импортируется окружностью (не ломаной)
-  const circleDoc = newLaserDoc(100, 100, 'Круг');
+  const circleDoc = newMachineDoc(100, 100, 'Круг');
   circleDoc.shapes = [{ id: 'c', kind: 'ellipse', layer: 'cut', name: 'Круг', cx: 50, cy: 50, rx: 20, ry: 20, rot: 0, startAngle: 0, endAngle: 360, filled: false }];
   const cBack = dxfToShapes(exportDxf(circleDoc));
   assert.equal(cBack.length, 1, `один объект: ${cBack.length}`);
@@ -689,7 +690,7 @@ function sampleDoc(): LaserDoc {
 
   // развёртка коробки: десятки деталей, точность сохраняется
   const box = generateUnfolding({ ...DEFAULT_UNFOLD_PARAMS, template: 'finger-box' }, 12, 12);
-  const boxDoc = newLaserDoc(400, 300, 'Коробка');
+  const boxDoc = newMachineDoc(400, 300, 'Коробка');
   boxDoc.shapes = box.shapes;
   const boxDxf = exportDxf(boxDoc);
   const boxRep = analyzeDxf(boxDxf);
