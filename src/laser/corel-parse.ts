@@ -296,6 +296,9 @@ export function runPsTokens(toks: Tok[], out: LaserShape[], opts: PsRunOptions):
   const defs = new Map<string, Tok>();
   const states: GState[] = [{ ctm: MAT_ID, stroke: [0, 0, 0], fill: [0, 0, 0], dash: [], width: 1 }];
   const layerMarks: (LaserLayerId | null)[] = [];
+  // имена слоёв из файла (OCG в PDF, %%BeginLayer / %PSBeesLayer в EPS):
+  // по ним редактор создаёт свои слои с теми же именами
+  const layerNames: (string | null)[] = [];
   let gs: GState = states[0];
   let subs: Subpath[] = [];
   let cur: Pt | null = null;              // текущая точка в пользовательских единицах
@@ -337,6 +340,14 @@ export function runPsTokens(toks: Tok[], out: LaserShape[], opts: PsRunOptions):
     return layerByColor(color) ?? 'cut';
   };
 
+  /** Имя слоя из файла: самый внутренний помеченный слой. */
+  const currentLayerName = (): string | null => {
+    for (let k = layerNames.length - 1; k >= 0; k--) {
+      if (layerNames[k]) return layerNames[k];
+    }
+    return null;
+  };
+
   const emit = (fill: boolean, stroke: boolean) => {
     const list = subs.filter((s) => s.nodes.length >= 2);
     subs = [];
@@ -344,6 +355,7 @@ export function runPsTokens(toks: Tok[], out: LaserShape[], opts: PsRunOptions):
     subStart = null;
     if (!list.length) return;
     const layer = currentLayer(fill ? gs.fill : gs.stroke);
+    const lname = currentLayerName();
     const conv = (nodes: PathNode[]): PathNode[] => nodes.map((nd) => {
       const p = toMm({ x: nd.x, y: nd.y });
       const res: PathNode = { x: p.x, y: p.y };
@@ -363,6 +375,7 @@ export function runPsTokens(toks: Tok[], out: LaserShape[], opts: PsRunOptions):
       id: luid(label.toLowerCase()),
       kind: 'path',
       layer,
+      layerName: lname ?? undefined,
       name: `${label} Контур`,
       nodes,
       holes: holes.length ? holes : undefined,
@@ -510,7 +523,11 @@ export function runPsTokens(toks: Tok[], out: LaserShape[], opts: PsRunOptions):
         case 'layer':
           if (tok.v === null) {
             if (layerMarks.length) layerMarks.pop();
-          } else layerMarks.push(layerByName(tok.v));
+            if (layerNames.length) layerNames.pop();
+          } else {
+            layerMarks.push(layerByName(tok.v));
+            layerNames.push(String(tok.v).trim().slice(0, 60) || null);
+          }
           break;
         case 'op':
           runOp(tok.v);
@@ -795,19 +812,28 @@ export function runPsTokens(toks: Tok[], out: LaserShape[], opts: PsRunOptions):
         const tag = stack.pop();
         const tagName = tag && typeof tag === 'object' && (tag as Tok).t === 'name' ? (tag as Tok & { t: 'name' }).v : '';
         let mark: LaserLayerId | null = null;
+        let markName: string | null = null;
         if (tagName === 'OC' && props && typeof props === 'object') {
           const p = props as Tok;
-          if (p.t === 'name' && opts.props) mark = layerByName(opts.props[p.v]);
-          else if (p.t === 'dict') {
+          if (p.t === 'name' && opts.props) {
+            const nm = opts.props[p.v];
+            mark = layerByName(nm);
+            markName = (nm || '').trim().slice(0, 60) || null;
+          } else if (p.t === 'dict') {
             const name = dictString(p.items, 'Name');
-            if (name) mark = layerByName(name);
+            if (name) {
+              mark = layerByName(name);
+              markName = name.trim().slice(0, 60) || null;
+            }
           }
         }
         layerMarks.push(mark);
+        layerNames.push(markName);
         return;
       }
       case 'EMC':
         if (layerMarks.length) layerMarks.pop();
+        if (layerNames.length) layerNames.pop();
         return;
       case 'Do': {
         const nm = topName();

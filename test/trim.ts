@@ -3,7 +3,7 @@
 // и предпросмотр. Всё считается по настоящей кривой, а не по хордам между узлами.
 import assert from 'node:assert/strict';
 import {
-  newLaserDoc, shapeToPath, shapeToPolylines,
+  addLaserLayer, newLaserDoc, shapeToPath, shapeToPolylines,
   type LaserDoc, type LaserShape, type PathShape,
 } from '../src/laser/model';
 import {
@@ -251,6 +251,17 @@ const polyLen = (s: LaserShape): number => {
   // заблокированная цель не режется
   const locked = trimCurve([{ ...shapes[0], locked: true }, shapes[1]], 'r1', { x: 65, y: 50 }, { tol: 2 });
   assert.equal(locked.ok, false, 'заблокированный объект не усекать');
+
+  // свои слои чертежа: служебность узнаётся по типу линии слоя, а не по его id
+  const own = addLaserLayer(doc(), 'Оси', { mode: 'guide' });
+  const ownShapes = [rect(50, 50, 100, 60, 'r1'), line(120, 20, 120, 160, 'os1', { layer: own.id })];
+  const axis = ownShapes[1]!;
+  assert.equal(isBoundaryShape(axis), true, 'без документа свой слой не отличить от рабочего');
+  assert.equal(isBoundaryShape(axis, own.doc), false, 'служебный слой своего чертежа не граница');
+  assert.equal(trimmable(ownShapes[0]!, own.doc), true, 'рабочий слой своего чертежа режется');
+  const byAxis = trimCurve(ownShapes, 'r1', { x: 65, y: 50 },
+    { tol: 2, boundaryIds: new Set(['os1']), doc: own.doc });
+  assert.equal(byAxis.ok, false, 'осевая линия служебного слоя не режет контур');
 }
 
 // ---------------- касание концом: резать нечего ----------------

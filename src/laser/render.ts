@@ -5,6 +5,7 @@
 import {
   applyTabs,
   isClosedRing,
+  layerOf,
   shapeToPolylines,
   type LaserDoc,
   type LaserLayerId,
@@ -516,11 +517,15 @@ export function drawSelectionLabel(
   ctx.restore();
 }
 
-/** Цвет слоя для отрисовки (скрытые слои не рисуются) */
+/**
+ * Цвет слоя для отрисовки. Слои свои и их id произвольные, поэтому цвет берётся
+ * через layerOf: он знает и слои чертежа, и роли генераторов, и запасной слой.
+ */
 export function layerColor(doc: LaserDoc, layer: LaserLayerId): string {
-  return doc.layers[layer]?.color ?? '#ffc233';
+  return layerOf(doc, layer).color || '#ffc233';
 }
 
+/** Слой видим на листе (скрытые слои не рисуются). */
 export function isLayerVisible(doc: LaserDoc, layer: LaserLayerId): boolean {
-  return doc.layers[layer]?.visible !== false;
+  return layerOf(doc, layer).visible !== false;
 }

@@ -15,7 +15,9 @@
 // можно проверить круговым тестом (measureDxfAccuracy) прямо в интерфейсе.
 
 import {
-  LASER_LAYER_ORDER,
+  exportLayerIds,
+  layerIds,
+  layerOf,
   applyTabs as applyTabsCore,
   dashPolyline,
   kerfShapes,
@@ -612,9 +614,9 @@ export function applyTabs(pts: Pt[], count: number, width: number): Pt[][] {
 export function visibleShapes(doc: LaserDoc, opts: DxfOptions): LaserShape[] {
   return doc.shapes.filter((s) => {
     if (s.hidden && !opts.includeHidden) return false;
-    const cfg = doc.layers[s.layer];
-    if (!cfg?.visible) return false;
-    if (s.layer === 'guide' && !opts.includeGuide) return false;
+    const cfg = layerOf(doc, s.layer);
+    if (!cfg.visible) return false;
+    if (cfg.mode === 'guide' && !opts.includeGuide) return false;
     return true;
   });
 }
@@ -697,8 +699,19 @@ export interface DxfLayerPlan {
 /** План слоёв файла: какие слои будут в таблице LAYER и в каком порядке. */
 export function dxfLayerPlan(doc: LaserDoc, opts: DxfOptions, shapes: LaserShape[]): DxfLayerPlan[] {
   const plan: DxfLayerPlan[] = [];
+  /**
+   * Имя слоя файла: исторические роли пишутся постоянными именами (CUT, INNER,
+   * FOLD, SCORE, ENGRAVE, GUIDE) — их ждут CAM-программы, а свои слои чертежа
+   * попадают в файл под своим именем (транслитом, как «Слой 1» → SLOY_1).
+   */
+  const fileLayerName = (id: string): string => {
+    const legacy = DXF_LAYER_NAMES[id];
+    if (legacy) return legacy;
+    const own = doc.layers[id];
+    return sanitizeLayerName((own?.short || own?.name || id).trim() || String(id));
+  };
   if (opts.layers === 'single') {
-    const color = doc.layers.cut?.color ?? '#ff453a';
+    const color = layerOf(doc, layerIds(doc)[0] ?? 'cut').color;
     plan.push({
       name: sanitizeLayerName(opts.singleLayer || 'LASER'),
       id: null,
@@ -718,8 +731,8 @@ export function dxfLayerPlan(doc: LaserDoc, opts: DxfOptions, shapes: LaserShape
       if (!seen.has(n)) seen.set(n, s.layer);
     }
     for (const [name, id] of seen) {
-      const cfg = doc.layers[id];
-      const color = cfg?.color ?? '#ffffff';
+      const cfg = layerOf(doc, id);
+      const color = cfg.color;
       plan.push({
         name,
         id,
@@ -727,7 +740,7 @@ export function dxfLayerPlan(doc: LaserDoc, opts: DxfOptions, shapes: LaserShape
         aci: LAYER_ACI[id] ?? hexToAci(color),
         truecolor: hexToTrueColor(color),
         linetype: 'CONTINUOUS',
-        visible: cfg?.visible ?? true,
+        visible: cfg.visible,
         shapes: shapes.filter((s) => sanitizeLayerName(s.name) === name).length,
       });
     }
@@ -737,19 +750,26 @@ export function dxfLayerPlan(doc: LaserDoc, opts: DxfOptions, shapes: LaserShape
     });
     return plan;
   }
-  for (const id of LASER_LAYER_ORDER) {
-    if (id === 'guide' && !opts.includeGuide) continue;
-    const cfg = doc.layers[id];
-    if (!cfg) continue;
+  // Слои чертежа в порядке документа плюс роли, которые встретились в объектах
+  // (старые проекты и файлы генераторов), — ни один объект не должен потеряться.
+  const ids = exportLayerIds(doc);
+  for (const s of shapes) if (!doc.layers[s.layer] && !ids.includes(s.layer)) ids.push(s.layer);
+  const taken = new Set<string>();
+  for (const id of ids) {
+    const cfg = layerOf(doc, id);
+    if (cfg.mode === 'guide' && !opts.includeGuide) continue;
     const count = shapes.filter((s) => s.layer === id).length;
     if (!count) continue;
+    let name = fileLayerName(id);
+    for (let n = 2; taken.has(name); n++) name = `${fileLayerName(id)}_${n}`;
+    taken.add(name);
     plan.push({
-      name: DXF_LAYER_NAMES[id],
+      name,
       id,
       color: cfg.color,
-      aci: LAYER_ACI[id],
+      aci: LAYER_ACI[id] ?? hexToAci(cfg.color),
       truecolor: hexToTrueColor(cfg.color),
-      linetype: (id === 'fold' || id === 'score') && opts.foldDash === 'linetype' ? 'DASHED' : 'CONTINUOUS',
+      linetype: (cfg.mode === 'fold' || cfg.mode === 'score') && opts.foldDash === 'linetype' ? 'DASHED' : 'CONTINUOUS',
       visible: cfg.visible,
       shapes: count,
     });
@@ -782,10 +802,10 @@ export function collectDxfGeometry(doc: LaserDoc, o: Partial<DxfOptions> = {}): 
 
   const raw: DxfGeom[] = [];
   for (const s of shapes) {
-    const cfg = doc.layers[s.layer];
+    const cfg = layerOf(doc, s.layer);
     let prims: DxfPrim[];
     const kerfDelta =
-      opts.kerf && cfg && cfg.kerf > 0 && (s.layer === 'cut' || s.layer === 'inner')
+      opts.kerf && cfg && cfg.kerf > 0 && cfg.mode === 'cut'
         ? (s.layer === 'inner' ? -cfg.kerf / 2 : cfg.kerf / 2)
         : 0;
     if (Math.abs(kerfDelta) > 1e-4) {
@@ -799,8 +819,8 @@ export function collectDxfGeometry(doc: LaserDoc, o: Partial<DxfOptions> = {}): 
 
     // Перемычки и пунктир работают с ломаными — раскрываем нужные примитивы
     const dash =
-      (s.layer === 'fold' || s.layer === 'score') && opts.foldDash === 'segments' && cfg && cfg.dashLen > 0 && cfg.gapLen > 0;
-    const tabs = opts.tabs && (s.tabs ?? 0) > 0 && (s.layer === 'cut' || s.layer === 'inner');
+      (cfg.mode === 'fold' || cfg.mode === 'score') && opts.foldDash === 'segments' && cfg.dashLen > 0 && cfg.gapLen > 0;
+    const tabs = opts.tabs && (s.tabs ?? 0) > 0 && cfg.mode === 'cut';
     if (dash || tabs) {
       const split: DxfPrim[] = [];
       for (const pr of prims) {
@@ -1523,7 +1543,7 @@ function layerNameFor(g: DxfGeom, layers: DxfLayerPlan[], opts: DxfOptions): str
     const n = sanitizeLayerName(g.name);
     return layers.some((l) => l.name === n) ? n : layers[0]?.name ?? '0';
   }
-  return layers.find((l) => l.id === g.layer)?.name ?? DXF_LAYER_NAMES[g.layer];
+  return layers.find((l) => l.id === g.layer)?.name ?? DXF_LAYER_NAMES[g.layer] ?? sanitizeLayerName(g.layer);
 }
 
 /** Поиск одинаковых деталей для записи блоками (экономит размер файла и время CAM). */
@@ -1653,15 +1673,17 @@ export interface DxfFile {
   text: string;
 }
 
-/** Экспорт отдельными файлами по слоям станка (удобно для RDWorks/CypCut). */
+/** Экспорт отдельными файлами по слоям чертежа. */
 export function exportDxfPerLayer(doc: LaserDoc, o: Partial<DxfOptions> = {}): DxfFile[] {
   const opts = normalizeDxfOptions(o);
   const files: DxfFile[] = [];
-  for (const id of LASER_LAYER_ORDER) {
-    if (id === 'guide' && !opts.includeGuide) continue;
+  for (const id of exportLayerIds(doc)) {
+    const cfg = layerOf(doc, id);
+    if (cfg.mode === 'guide' && !opts.includeGuide) continue;
     const sub: LaserDoc = { ...doc, shapes: doc.shapes.filter((s) => s.layer === id) };
     if (!visibleShapes(sub, opts).length) continue;
-    files.push({ name: `${DXF_LAYER_NAMES[id]}.dxf`, text: exportDxf(sub, opts) });
+    const nm = DXF_LAYER_NAMES[id] ?? sanitizeLayerName((cfg.short || id).trim() || String(id));
+    files.push({ name: `${nm}.dxf`, text: exportDxf(sub, opts) });
   }
   return files;
 }
@@ -2235,11 +2257,13 @@ export function dxfToShapes(text: string): LaserShape[] {
   for (const g of groups) {
     const aci = colors.get(g.layer.toUpperCase());
     const layer = layerIdFromName(g.layer, aci);
+    // Имя слоя из файла: редактор создаст по нему свой слой (adoptShapes)
+    const layerName = g.layer.trim().slice(0, 60);
     for (const pr of g.prims) {
       if (pr.t === 'text') continue;
       if (pr.t === 'circle') {
         shapes.push({
-          id: dxfId(), kind: 'ellipse', layer, name: 'DXF Окружность',
+          id: dxfId(), kind: 'ellipse', layer, layerName, name: 'DXF Окружность',
           cx: pr.c.x * us, cy: pr.c.y * us, rx: pr.r * us, ry: pr.r * us,
           rot: 0, startAngle: 0, endAngle: 360, filled: false,
         });
@@ -2248,7 +2272,7 @@ export function dxfToShapes(text: string): LaserShape[] {
       const isFullEllipse = pr.t === 'ellipse' && Math.abs(Math.abs(pr.a1 - pr.a0) - 360) < 1e-6;
       if (isFullEllipse && pr.t === 'ellipse') {
         shapes.push({
-          id: dxfId(), kind: 'ellipse', layer, name: 'DXF Эллипс',
+          id: dxfId(), kind: 'ellipse', layer, layerName, name: 'DXF Эллипс',
           cx: pr.c.x * us, cy: pr.c.y * us, rx: pr.rx * us, ry: pr.ry * us,
           rot: pr.rot, startAngle: 0, endAngle: 360, filled: false,
         });
@@ -2262,7 +2286,7 @@ export function dxfToShapes(text: string): LaserShape[] {
       for (const pl of primToPolylines(pr, 0.02)) {
         if (pl.pts.length < 2) continue;
         const nodes: PathNode[] = pl.pts.map((p) => ({ x: p.x * us, y: p.y * us }));
-        shapes.push({ id: dxfId(), kind: 'path', layer, name, nodes, closed: pl.closed, filled: false });
+        shapes.push({ id: dxfId(), kind: 'path', layer, layerName, name, nodes, closed: pl.closed, filled: false });
       }
     }
   }

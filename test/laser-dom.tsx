@@ -141,8 +141,26 @@ await settle();
   assert(!win.document.querySelector('.laser-trimbar'), 'панель режимов усечения показывается только с инструментом');
 
   const leftTabs = [...win.document.querySelectorAll('.tabs button')].map((b) => b.textContent?.trim());
-  for (const t of ['Развёртка', 'Слои', 'Объекты']) assert(leftTabs.includes(t), `вкладка «${t}»`);
-  assert(win.document.querySelector('.laser-unfold'), 'панель генератора развёрток открыта');
+  // у вкладок может быть счётчик: «Слои (1)» — сравниваем имена без него
+  assert.deepEqual(leftTabs.map((t) => (t ?? '').split(' (')[0]), ['Объекты', 'Слои'],
+    `вкладки левой панели: ${leftTabs}`);
+  assert(win.document.querySelector('.obj-tree'), 'по умолчанию открыта вкладка «Объекты»');
+  // генератор развёрток вынесен из левой панели в отдельное окно тулбара
+  assert(!win.document.querySelector('.laser-unfold'), 'панели развёрток в левой панели нет');
+  const tbTitles = buttons().map((b) => b.getAttribute('title') ?? '');
+  assert(tbTitles.some((t) => t.startsWith('Генератор развёрток')), 'кнопка генератора развёрток в тулбаре');
+  assert(tbTitles.some((t) => t.startsWith('Генератор коробок')), 'кнопка генератора коробок в тулбаре');
+  // генераторы подписаны текстом, а коробки живут в собственной группе тулбара
+  const boxesBtn = buttons().find((b) => b.dataset.action === 'boxes');
+  assert(boxesBtn, 'кнопка коробок помечена data-action="boxes"');
+  assert(boxesBtn!.textContent?.includes('Коробки'), `подпись кнопки коробок: ${boxesBtn!.textContent}`);
+  assert(boxesBtn!.closest('.tb-group')?.getAttribute('aria-label') === 'Генератор коробок',
+    'коробки — отдельная группа тулбара');
+  const unfoldBtn = buttons().find((b) => b.dataset.action === 'unfold');
+  assert(unfoldBtn!.textContent?.includes('Развёртка'), `подпись кнопки развёрток: ${unfoldBtn!.textContent}`);
+  // строка состояния чертёжного редактора: формат, объекты, слой и длина — без станочных чисел
+  assert(status().includes('Слой: Слой 1'), `активный слой в строке состояния: ${status()}`);
+  assert(!status().includes('мм/с'), `в строке состояния нет скорости: ${status()}`);
   assert(status().includes('300×200 мм'), `лист по умолчанию в строке состояния: ${status()}`);
   assert(text().includes('Лист и чертёж'), 'панель листа и чертежа');
   assert(text().includes('Длина контуров'), 'в сводке листа длина контуров чертежа');
@@ -165,8 +183,13 @@ await settle();
   saveWorkspaceMode('pcb');
 }
 
-// ---------------- генератор развёрток ----------------
+// ---------------- генератор развёрток (отдельное окно) ----------------
 {
+  await clickTitle('Генератор развёрток');
+  await settle(150);
+  assert(win.document.querySelector('.unfold-win'), 'окно генератора развёрток открылось');
+  assert(win.document.querySelector('.unfold-win .laser-unfold'), 'параметры развёртки внутри окна');
+
   const tpl = [...win.document.querySelectorAll('.laser-tpl')] as HTMLButtonElement[];
   assert.equal(tpl.length, 7, `шаблонов развёрток: ${tpl.length}`);
   assert(tpl.some((b) => b.textContent?.includes('Складная развёртка коробки')));
@@ -181,9 +204,16 @@ await settle();
 
   await click(tpl.find((b) => b.textContent?.includes('Корпус на шипах'))!);
   await clickText('Построить развёртку на листе');
-  await settle(120);
+  await settle(200);
+  assert(win.document.querySelector('.unfold-win-preview svg'), 'в окне показан предпросмотр развёртки');
+  const statsText = win.document.querySelector('.unfold-win-stats')?.textContent ?? '';
+  assert(statsText.includes('Объектов') && statsText.includes('Длина контуров'),
+    `сводка развёртки в окне: ${statsText}`);
 
-  assert(text().includes('Развёртка:'), `сообщение о развёртке: ${status()}`);
+  await clickText('Перенести на лист');
+  await settle(200);
+  assert(!win.document.querySelector('.unfold-win'), 'окно закрылось после переноса');
+  assert(status().includes('помещена на лист'), `сообщение о развёртке: ${status()}`);
   assert(status().includes('Выделено:'), 'развёртка выделена после постройки');
 
   await clickTab('Объекты');
@@ -200,29 +230,63 @@ await settle();
   assert(names.includes('Отверстие под плату'), 'отверстия под печатную плату');
 }
 
-// ---------------- слои станка ----------------
+// ---------------- свои слои чертежа ----------------
 {
   await clickTab('Слои');
-  const layers = [...win.document.querySelectorAll('.laser-layer')];
-  assert.equal(layers.length, 6, `слоёв чертежа: ${layers.length}`);
   assert(text().includes('Слои чертежа'), 'панель слоёв чертежа');
-  const names = layers.map((l) => l.textContent ?? '').join('|');
-  for (const n of ['Контур', 'Внутренний', 'Сгиб', 'Разметка', 'Заливка', 'Размеры']) {
-    assert(names.includes(n), `слой «${n}»`);
-  }
-  await click(layers.find((l) => l.textContent?.includes('Сгиб'))!.querySelector('.laser-layer-main')!);
-  assert(text().includes('Слой · Сгиб'), 'свойства активного слоя');
-  assert(text().includes('Штрих, мм'), 'у биговки есть длина штриха перфорации');
-  assert(text().includes('Назначение'), 'назначение слоя определяет имя и тип линии в DXF');
+  // имя слоя теперь в редактируемом поле — textContent строки его не содержит
+  const layerName = (l: Element) =>
+    (l.querySelector('input.laser-layer-name') as HTMLInputElement | null)?.value ?? '';
+  const rowsOf = () => [...win.document.querySelectorAll('.laser-layer')];
+  const byName = (n: string) => rowsOf().find((l) => layerName(l) === n);
+
+  assert(rowsOf().length >= 2, `слоёв чертежа: ${rowsOf().length}`);
+  const names = rowsOf().map(layerName).join('|');
+  assert(names.includes('Слой 1'), 'первый слой по умолчанию «Слой 1»');
+  // развёртка принесла свои слои: линии сгиба и подписи легли на новые слои
+  assert(names.includes('Слой 2'), `слой линий сгиба из развёртки: ${names}`);
+  // имя служебного слоя для проверки видимости берём из фактического списка
+  const otherName = layerName(rowsOf()[rowsOf().length - 1]!);
+
+  await click(byName('Слой 1')!);
+  assert(text().includes('Слой · Слой 1'), 'свойства активного слоя');
+  assert(text().includes('Тип линии'), 'тип линии слоя');
+  assert(text().includes('Цвет слоя'), 'палитра цвета слоя');
+  assert(win.document.querySelectorAll('.laser-swatch').length >= 6, 'образцы цвета слоя');
   // мощность, скорость, проходы, керф и обдув — станочные параметры, они скрыты
   for (const gone of ['Параметры лазера', 'Мощность, %', 'Скорость, мм/с', 'Проходов', 'Керф, мм', 'Обдув воздухом']) {
     assert(!text().includes(gone), `станочный параметр слоя «${gone}» скрыт`);
   }
 
-  // скрытый слой не обрабатывается: проверяем по сообщению и состоянию кнопки
-  const eye = layers.find((l) => l.textContent?.includes('Размеры'))!.querySelector('.obj-eye') as HTMLButtonElement;
-  await click(eye);
-  await clickTab('Развёртка');
+  // свой слой: добавить, назвать, удалить
+  const before = rowsOf().length;
+  await click(byText('Слой'));
+  await settle();
+  assert.equal(rowsOf().length, before + 1, 'кнопка «Слой» добавила слой');
+  const added = rowsOf()[rowsOf().length - 1]!;
+  assert.equal(layerName(added), `Слой ${before + 1}`, 'новый слой получил имя по порядку');
+  const nameInput = added.querySelector('input.laser-layer-name') as HTMLInputElement;
+  Object.getOwnPropertyDescriptor(win.HTMLInputElement.prototype, 'value')!.set!.call(nameInput, 'Отверстия');
+  nameInput.dispatchEvent(new win.Event('input', { bubbles: true }));
+  await settle();
+  assert.equal(layerName(rowsOf()[rowsOf().length - 1]!), 'Отверстия', 'свой слой переименован');
+  await click(rowsOf()[rowsOf().length - 1]!.querySelector('.obj-del') as HTMLButtonElement);
+  await settle();
+  assert.equal(rowsOf().length, before, 'свой слой удалён');
+  assert(!rowsOf().map(layerName).includes('Отверстия'), 'удалённого слоя в списке нет');
+  // последний слой удалить нельзя — кнопка неактивна только в этом случае
+  assert(!(rowsOf()[0]!.querySelector('.obj-del') as HTMLButtonElement).disabled,
+    'удаление слоя доступно, пока слоёв больше одного');
+
+  // видимость слоя переключается и видна в списке
+  const eyeOf = () => byName(otherName)!.querySelector('.obj-eye') as HTMLButtonElement;
+  await click(eyeOf());
+  await settle();
+  assert(eyeOf().className.includes('off'), 'скрытый слой помечен в списке');
+  await click(byText('Показать все'));
+  await settle();
+  assert(!eyeOf().className.includes('off'), '«Показать все» вернула видимость слою');
+  await clickTab('Объекты');
 }
 
 // ---------------- толщина материала ----------------
@@ -629,12 +693,14 @@ await settle();
   assert(text().includes('Свойства') || text().includes('Габарит:'), 'панель свойств показывает объект');
   assert(text().includes('Преобразования'), 'блок преобразований');
   assert(text().includes('Булевы операции'), 'блок булевых операций');
-  assert(text().includes('Контур и керф'), 'блок контура и керфа');
+  assert(text().includes('Контур (Contour)'), 'блок контура');
   assert(text().includes('Скругление углов'), 'блок скругления');
   assert(text().includes('Усечь кривую (Trim)'), 'блок инструмента усечения');
   assert(buttons().some((b) => b.textContent?.trim() === 'Разбить по пересечениям'), 'кнопка разбивки по пересечениям');
   assert(text().includes('Размножение массивом'), 'блок массива');
-  assert(text().includes('Перемычек, шт'), 'перемычки (holding tabs)');
+  // удерживающие перемычки и керф — станочные поля, в чертёжном редакторе их нет
+  assert(!text().includes('Перемычек, шт'), 'поле перемычек скрыто');
+  assert(!text().includes('Керф, мм'), 'поле керфа скрыто');
 
   await clickTitle('Контур наружу');
   await settle();
@@ -687,10 +753,10 @@ await settle();
   const planRows = () => [...win.document.querySelectorAll('.laser-dxf-row')]
     .map((r) => (r.querySelector('b')?.textContent ?? '').trim());
   assert.ok(planRows().length >= 1, `план слоёв DXF: ${planRows().length}`);
-  assert.ok(
-    planRows().some((t) => ['CUT', 'INNER', 'FOLD', 'SCORE', 'ENGRAVE'].includes(t)),
-    `в плане слои станка: ${planRows().join(', ')}`
-  );
+  // в плане свои слои чертежа: имена транслитом, как их примет AutoCAD
+  assert.ok(planRows().includes('SLOY_1'), `в плане свой слой чертежа: ${planRows().join(', ')}`);
+  assert.ok(planRows().every((t) => /^[A-Z0-9_]+$/.test(t)),
+    `имена слоёв DXF латиницей и без пробелов: ${planRows().join(', ')}`);
   const dxfField = (label: string) => {
     const f = [...win.document.querySelectorAll('.laser-dxf-opts .field')]
       .find((x) => x.querySelector('label')?.textContent === label);
@@ -818,9 +884,12 @@ await settle();
   await settle();
   assert(text().includes('Формат листа'), 'диалог размера листа');
   assert(!text().includes('Материал'), 'выбор станочного материала в диалоге скрыт');
+  // в чертёжном режиме пресеты — форматы листа (A4…A1 и свои размеры), а не столы станков
   const preset = [...win.document.querySelectorAll('select')].find((s) =>
-    [...s.options].some((o) => o.textContent?.includes('6040'))) as HTMLSelectElement;
-  await changeSelect(preset, '6040');
+    [...s.options].some((o) => o.value === '600x400')) as HTMLSelectElement;
+  assert(preset, 'в диалоге есть выбор формата листа');
+  assert(!text().includes('6040'), 'станочных столов в списке форматов нет');
+  await changeSelect(preset, '600x400');
   await settle();
   await clickText('Применить');
   await settle();
@@ -828,7 +897,7 @@ await settle();
 
   await click(byTextLike('Очистить лист'));
   await settle();
-  assert(text().includes('Все объекты развёртки будут удалены'), 'подтверждение очистки');
+  assert(text().includes('Все объекты чертежа будут удалены'), 'подтверждение очистки');
   const okClean = win.document.querySelector('.confirm-modal .foot .btn.danger') as HTMLButtonElement;
   assert(okClean, 'кнопка подтверждения очистки');
   await click(okClean);
@@ -1065,7 +1134,11 @@ await settle();
   // Платы → Чертежи: векторный редактор подгружается лениво и заменяет рабочее место
   await click(tabOf('Чертежи'));
   await settle(400);
-  assert(text().includes('Генератор развёрток'), 'редактор чертежей открылся из режима плат');
+  // подпись генератора развёрток живёт в подсказке кнопки тулбара: сама панель
+  // вынесена в отдельное окно и в тексте страницы её больше нет
+  assert(buttons().some((b) => (b.getAttribute('title') ?? '').includes('Генератор развёрток')),
+    'редактор чертежей открылся из режима плат');
+  assert(win.document.querySelector('[data-action="unfold"]'), 'кнопка генератора развёрток в тулбаре чертежей');
   assert(text().includes('Лист и чертёж'), 'панель листа и чертежа');
   assert(!text().includes('Задание на станок'), 'станочное задание не показывается');
   assert(!win.document.querySelector('.tool-dock [data-tool-id="track"]'), 'инструменты платы скрыты');
@@ -1093,7 +1166,8 @@ await settle();
   await settle(150);
   await click(byTextLike('Открыть редактор чертежей и развёртки'));
   await settle(300);
-  assert(text().includes('Генератор развёрток'), 'из 3D — сразу в редактор чертежей');
+  assert(buttons().some((b) => (b.getAttribute('title') ?? '').includes('Генератор развёрток')),
+    'из 3D — сразу в редактор чертежей');
 
   // окно коробок открывается из тулбара рисовалки и переносит раскладку на лист
   const boxFoot = () => [...win.document.querySelectorAll('.box-studio .foot .btn')] as HTMLButtonElement[];
@@ -1124,7 +1198,8 @@ await act(async () => root.unmount());
 // jsdom держит цикл кадров — без закрытия окна процесс не завершится сам
 dom.window.close();
 process.stdout.write(
-  'LASER DOM OK: режимы (платы / чертежи / 3D), генератор развёрток, слои чертежа, толщина листа, '
+  'LASER DOM OK: режимы (платы / чертежи / 3D), отдельные окна генераторов развёрток и коробок, '
+  + 'свои слои чертежа (добавить, назвать, удалить, видимость, цвет), толщина листа, '
   + 'рисование мышью, '
   + 'перенос и масштаб маркером, узлы кривой (F10), усечение кривых (X: усечь/продлить/разрезать, '
   + 'границы по выделению, разбивка по пересечениям), отмена, булевы операции, контур, '

@@ -322,6 +322,8 @@ export const ICONS: Record<string, ReactNode> = {
   ),
   // «раздать равномерно»
   distribute: <>{R(3.5, 5, 4, 14, 1)}{R(10, 5, 4, 14, 1)}{R(16.5, 5, 4, 14, 1)}</>,
+  // «добавить» (новый слой, новый объект)
+  plus: <>{P('M12 5v14M5 12h14')}</>,
 };
 
 export function Ic({ n, size = 18 }: { n: string; size?: number }) {

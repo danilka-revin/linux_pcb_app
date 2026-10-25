@@ -19,9 +19,9 @@
 // одного чертежа совпадают до 1e-9 мм. Исключение — PLT: HPGL не знает Безье,
 // там кривая раскладывается полилинией с заданным допуском.
 
-import { DXF_LAYER_NAMES, flattenNodes } from './dxf';
+import { DXF_LAYER_NAMES, flattenNodes, sanitizeLayerName } from './dxf';
 import {
-  LASER_LAYER_ORDER, dashPolyline, shapeToPath,
+  exportLayerIds, layerOf, dashPolyline, shapeToPath,
   type LaserDoc, type LaserLayerId, type PathNode, type Pt,
 } from './model';
 
@@ -36,6 +36,18 @@ export const HPGL_UNITS_PER_MM = 40;
 export const PLT_PENS: Record<LaserLayerId, number> = {
   cut: 1, inner: 2, fold: 3, score: 4, engrave: 5, guide: 6,
 };
+
+/**
+ * Имя слоя в файле (PDF/OCG, EPS, PLT, DXF). Для исторических ролей оно
+ * постоянное — CUT/INNER/FOLD/SCORE/ENGRAVE/GUIDE, его ждут CAM-программы;
+ * свои слои чертежа попадают в файл под своим именем (транслитом, как в DXF).
+ */
+export function vectorLayerFileName(doc: LaserDoc, id: string): string {
+  const legacy = DXF_LAYER_NAMES[id];
+  if (legacy) return legacy;
+  const own = doc.layers[id];
+  return sanitizeLayerName((own?.short || own?.name || id).trim() || String(id));
+}
 
 export interface VectorExportOptions {
   /** Толщина линии в файле, мм (в PDF/EPS переводится в пункты). */
@@ -120,18 +132,21 @@ export function hexToRgb01(hex: string): [number, number, number] {
 }
 
 /**
- * Геометрия чертежа по слоям в порядке LASER_LAYER_ORDER (сначала заливка и
- * разметка, в конце внешний контур и служебный слой) — тот же порядок, что в
- * DXF и G-Code, чтобы файлы разных форматов совпадали послойно.
- * Скрытые слои, скрытые объекты и служебный слой учитываются по опциям.
+ * Геометрия чертежа по своим слоям документа (порядок тот же, что в DXF и в
+ * панели слоёв) — файлы разных форматов совпадают послойно.
+ * Скрытые слои, скрытые объекты и служебные слои учитываются по опциям.
  */
 export function collectVectorGeom(doc: LaserDoc, o: Partial<VectorExportOptions> = {}): VectorLayerGeom[] {
   const opts = normalizeVectorOptions(o);
   const out: VectorLayerGeom[] = [];
-  for (const id of LASER_LAYER_ORDER) {
-    const cfg = doc.layers[id];
-    if (!cfg || !cfg.visible) continue;
-    if (id === 'guide' && !opts.includeGuide) continue;
+  const ids = exportLayerIds(doc);
+  // объекты на неизвестном слое (старый проект, файл генератора) не теряем
+  for (const s of doc.shapes) if (!doc.layers[s.layer] && !ids.includes(s.layer)) ids.push(s.layer);
+  const taken = new Set<string>();
+  for (const id of ids) {
+    const cfg = layerOf(doc, id);
+    if (!cfg.visible) continue;
+    if (cfg.mode === 'guide' && !opts.includeGuide) continue;
     const shapes = doc.shapes.filter((s) => s.layer === id && (opts.includeHidden || !s.hidden));
     if (!shapes.length) continue;
     const paths: VectorPath[] = [];
@@ -148,9 +163,13 @@ export function collectVectorGeom(doc: LaserDoc, o: Partial<VectorExportOptions>
     }
     if (!paths.length) continue;
     const dash = cfg.dashLen > 0 && cfg.gapLen > 0 ? [cfg.dashLen, cfg.gapLen] as [number, number] : null;
+    // имена слоёв в файле не должны повторяться
+    let name = vectorLayerFileName(doc, id);
+    for (let n = 2; taken.has(name); n++) name = `${vectorLayerFileName(doc, id)}_${n}`;
+    taken.add(name);
     out.push({
       id,
-      name: DXF_LAYER_NAMES[id] ?? String(id).toUpperCase(),
+      name,
       title: cfg.short || cfg.name || id,
       color: cfg.color,
       rgb: hexToRgb01(cfg.color),
@@ -456,8 +475,9 @@ export function exportVectorPlt(doc: LaserDoc, o: Partial<VectorExportOptions> =
   const opts = normalizeVectorOptions(o);
   const layers = collectVectorGeom(doc, opts);
   const out: string[] = ['IN;', 'PA;'];
-  for (const L of layers) {
-    const pen = opts.pltPensPerLayer ? PLT_PENS[L.id] ?? 1 : 1;
+  layers.forEach((L, i) => {
+    // своим слоям — перо по порядку, историческим ролям — постоянное перо
+    const pen = opts.pltPensPerLayer ? PLT_PENS[L.id] ?? Math.min(8, i + 1) : 1;
     out.push(`SP${pen};`);
     for (const p of L.paths) {
       for (const sp of p.subpaths) {
@@ -477,7 +497,7 @@ export function exportVectorPlt(doc: LaserDoc, o: Partial<VectorExportOptions> =
         }
       }
     }
-  }
+  });
   out.push('SP0;');
   return out.join('\n');
 }

@@ -8,8 +8,10 @@ import { useMemo, useState } from 'react';
 import { NI, SI, TI, TIC } from './widgets';
 import { Ic } from './icons';
 import {
-  LASER_LAYER_ORDER,
+  LAYER_PALETTE,
   MATERIAL_PRESETS,
+  layerIds,
+  layerOf,
   shapeBBox,
   type AlignMode,
   type BooleanOp,
@@ -24,18 +26,27 @@ import { MACHINE_UI } from '../laser/features';
 import type { TrimMode } from '../laser/trim';
 import type { LaserSimulation } from '../laser/export';
 
-/** Подсказка назначения слоя — для всплывающего текста в списке слоёв. */
+/** Подсказка типа линии слоя — для всплывающего текста в списке слоёв. */
 const LAYER_HINT: Record<LaserLayerConfig['mode'], string> = {
-  cut: 'внешний контур детали',
-  fold: 'линия сгиба (пунктир)',
-  score: 'тонкая разметка',
+  cut: 'сплошная линия',
+  fold: 'штриховая линия',
+  score: 'тонкая штриховая линия',
   fill: 'заливка области',
-  guide: 'служебный, не выводится в файлы',
+  guide: 'служебный слой, не выводится в файлы',
 };
 
-/** Названия слоёв для выпадающих списков (берём короткие имена из документа). */
+/** Типы линии слоя: как слой выглядит на листе и что попадает в файлы. */
+export const LAYER_MODE_OPTIONS: [LaserLayerConfig['mode'], string][] = [
+  ['cut', 'Сплошная линия'],
+  ['fold', 'Штриховая линия'],
+  ['score', 'Тонкая штриховая'],
+  ['fill', 'Заливка области'],
+  ['guide', 'Служебная (не выводится)'],
+];
+
+/** Названия слоёв для выпадающих списков (свои слои документа по порядку). */
 export function layerOptions(doc: LaserDoc): [string, string][] {
-  return LASER_LAYER_ORDER.map((id) => [id, doc.layers[id]?.short ?? id]);
+  return layerIds(doc).map((id) => [id, doc.layers[id]?.short ?? id]);
 }
 
 // ---------------- слои чертежа ----------------
@@ -48,6 +59,8 @@ export function LaserLayersPanel({
   onToggleVisible,
   onToggleLock,
   onShowAll,
+  onAdd,
+  onDelete,
 }: {
   doc: LaserDoc;
   active: LaserLayerId;
@@ -56,7 +69,12 @@ export function LaserLayersPanel({
   onToggleVisible: (id: LaserLayerId) => void;
   onToggleLock: (id: LaserLayerId) => void;
   onShowAll: () => void;
+  /** Добавить свой слой («Слой N»). */
+  onAdd: () => void;
+  /** Удалить слой: его объекты переходят на первый оставшийся. */
+  onDelete: (id: LaserLayerId) => void;
 }) {
+  const ids = layerIds(doc);
   const counts = useMemo(() => {
     const map = new Map<LaserLayerId, number>();
     for (const s of doc.shapes) {
@@ -66,35 +84,44 @@ export function LaserLayersPanel({
     return map;
   }, [doc.shapes]);
 
-  const cfg = doc.layers[active];
+  const id = ids.includes(active) ? active : ids[0];
+  const cfg = id ? layerOf(doc, id) : null;
 
   return (
     <>
       <h3>{MACHINE_UI ? 'Слои станка' : 'Слои чертежа'}</h3>
       <div className="laser-layers">
-        {LASER_LAYER_ORDER.map((id) => {
-          const l = doc.layers[id];
+        {ids.map((lid) => {
+          const l = doc.layers[lid];
           if (!l) return null;
-          const on = active === id;
+          const on = id === lid;
           return (
-            <div key={id} className={'laser-layer' + (on ? ' active' : '') + (l.locked ? ' locked' : '')}>
-              <button
-                type="button"
-                className="laser-layer-main"
-                title={MACHINE_UI
-                  ? `${l.name}\nМощность ${l.power}% · ${l.speed} мм/с · проходов: ${l.passes}${l.kerf ? ` · керф ${l.kerf} мм` : ''}`
-                  : `${l.name}\nСлой чертежа: ${LAYER_HINT[l.mode] ?? l.mode}`}
-                onClick={() => onActive(id)}
-              >
-                <span className="laser-layer-swatch" style={{ background: l.color }} />
-                <span className="laser-layer-name">{l.short}</span>
-                <span className="laser-layer-n">{counts.get(id) ?? 0}</span>
-              </button>
+            <div
+              key={lid}
+              className={'laser-layer' + (on ? ' active' : '') + (l.locked ? ' locked' : '')}
+              onClick={() => onActive(lid)}
+            >
+              <input
+                type="color"
+                className="laser-layer-color"
+                value={l.color}
+                title="Цвет слоя на листе"
+                onChange={(e) => onPatch(lid, { color: e.target.value })}
+              />
+              <input
+                className="laser-layer-name txt"
+                value={l.short}
+                maxLength={60}
+                title="Имя слоя: оно же имя слоя в DXF, PDF, EPS, PLT и SVG"
+                onFocus={() => onActive(lid)}
+                onChange={(e) => onPatch(lid, { short: e.target.value, name: e.target.value })}
+              />
+              <span className="laser-layer-n" title="Объектов на слое">{counts.get(lid) ?? 0}</span>
               <button
                 type="button"
                 className={'tb-btn obj-eye' + (l.visible ? '' : ' off')}
                 title={l.visible ? 'Скрыть слой' : 'Показать слой'}
-                onClick={() => onToggleVisible(id)}
+                onClick={(e) => { e.stopPropagation(); onToggleVisible(lid); }}
               >
                 <Ic n="eye" size={15} />
               </button>
@@ -102,9 +129,20 @@ export function LaserLayersPanel({
                 type="button"
                 className={'tb-btn obj-lock' + (l.locked ? ' on' : '')}
                 title={l.locked ? 'Разблокировать слой' : 'Заблокировать слой'}
-                onClick={() => onToggleLock(id)}
+                onClick={(e) => { e.stopPropagation(); onToggleLock(lid); }}
               >
                 <Ic n={l.locked ? 'lock' : 'unlock'} size={15} />
+              </button>
+              <button
+                type="button"
+                className="tb-btn obj-del"
+                title={ids.length <= 1
+                  ? 'Слой нельзя удалить: он последний'
+                  : 'Удалить слой — его объекты перейдут на первый оставшийся'}
+                disabled={ids.length <= 1}
+                onClick={(e) => { e.stopPropagation(); onDelete(lid); }}
+              >
+                <Ic n="close" size={13} />
               </button>
             </div>
           );
@@ -112,50 +150,55 @@ export function LaserLayersPanel({
       </div>
       <div className="layer-lock-tools">
         <span>Активный слой: <b>{cfg?.short}</b></span>
+        <button type="button" className="btn tiny" onClick={onAdd} title="Добавить свой слой (Слой 2, Слой 3, …)">
+          <Ic n="plus" size={13} /> Слой
+        </button>
         <button type="button" className="btn tiny" onClick={onShowAll}>Показать все</button>
       </div>
 
-      {cfg && (
+      {cfg && id && (
         <div className="props laser-layer-props">
           <h3>{MACHINE_UI ? `Параметры лазера · ${cfg.short}` : `Слой · ${cfg.short}`}</h3>
-          <SI label="Назначение" value={cfg.mode} on={(v) => onPatch(active, { mode: v as LaserLayerConfig['mode'] })}
-            options={[
-              ['cut', 'Внешний контур'],
-              ['fold', 'Линия сгиба (биговка)'],
-              ['score', 'Тонкая разметка'],
-              ['fill', 'Заливка области'],
-              ['guide', 'Служебный (не выводится)'],
-            ]} />
-          {MACHINE_UI && (
+          <SI label="Тип линии" value={cfg.mode} on={(v) => onPatch(id, { mode: v as LaserLayerConfig['mode'] })}
+            options={LAYER_MODE_OPTIONS} />
+          {(cfg.mode === 'fold' || cfg.mode === 'score' || cfg.dashLen > 0) && (
             <>
-              <NI label="Мощность, %" value={cfg.power} min={0} max={100} step={1} on={(v) => onPatch(active, { power: v })} />
-              <NI label="Скорость, мм/с" value={cfg.speed} min={1} max={2000} step={1} on={(v) => onPatch(active, { speed: v })} />
-              <NI label="Проходов" value={cfg.passes} min={0} max={20} step={1} on={(v) => onPatch(active, { passes: Math.round(v) })} />
-              <NI label="Керф, мм" value={cfg.kerf} min={0} max={2} step={0.01} on={(v) => onPatch(active, { kerf: v })} />
+              <NI label="Штрих, мм" value={cfg.dashLen} min={0} max={200} step={0.5} on={(v) => onPatch(id, { dashLen: v })} />
+              <NI label="Пропуск, мм" value={cfg.gapLen} min={0} max={200} step={0.5} on={(v) => onPatch(id, { gapLen: v })} />
             </>
           )}
-          {(cfg.mode === 'fold' || cfg.dashLen > 0 || cfg.gapLen > 0) && (
-            <>
-              <NI label="Штрих, мм" value={cfg.dashLen} min={0} max={200} step={0.5} on={(v) => onPatch(active, { dashLen: v })} />
-              <NI label="Пропуск, мм" value={cfg.gapLen} min={0} max={200} step={0.5} on={(v) => onPatch(active, { gapLen: v })} />
-            </>
-          )}
+          <div className="field">
+            <label>Цвет слоя</label>
+            <div className="laser-palette">
+              {LAYER_PALETTE.map((c) => (
+                <button
+                  key={c}
+                  type="button"
+                  className={'laser-swatch' + (cfg.color === c ? ' on' : '')}
+                  style={{ background: c }}
+                  title={c}
+                  onClick={() => onPatch(id, { color: c })}
+                />
+              ))}
+            </div>
+          </div>
           {MACHINE_UI && (
             <>
+              <NI label="Мощность, %" value={cfg.power} min={0} max={100} step={1} on={(v) => onPatch(id, { power: v })} />
+              <NI label="Скорость, мм/с" value={cfg.speed} min={1} max={2000} step={1} on={(v) => onPatch(id, { speed: v })} />
+              <NI label="Проходов" value={cfg.passes} min={0} max={20} step={1} on={(v) => onPatch(id, { passes: Math.round(v) })} />
+              <NI label="Керф, мм" value={cfg.kerf} min={0} max={2} step={0.01} on={(v) => onPatch(id, { kerf: v })} />
               <label className="laser-check">
-                <input type="checkbox" checked={cfg.airAssist} onChange={(e) => onPatch(active, { airAssist: e.target.checked })} />
+                <input type="checkbox" checked={cfg.airAssist} onChange={(e) => onPatch(id, { airAssist: e.target.checked })} />
                 Обдув воздухом (Air Assist, M8/M9)
               </label>
-              <p className="sub">
-                Керф — диаметр луча: контур реза автоматически смещается наружу на половину диаметра,
-                чтобы деталь получилась точного размера. Для внутренних отверстий смещение идёт внутрь.
-              </p>
             </>
           )}
           {!MACHINE_UI && (
             <p className="sub">
-              Назначение слоя определяет его имя и тип линии в DXF, PDF, EPS и SVG: внешний контур,
-              линия сгиба (пунктир), разметка, заливка и служебный слой размеров, который не выводится в файлы.
+              Слои свои: добавьте столько, сколько нужно, и назовите как угодно.
+              Имя слоя, его цвет и тип линии попадают в DXF, PDF, EPS, PLT и SVG,
+              а служебный слой остаётся только на листе.
             </p>
           )}
         </div>
@@ -341,8 +384,9 @@ export function UnfoldPanel({
         <span>{busy ? 'Строим развёртку…' : 'Построить развёртку на листе'}</span>
       </button>
       <p className="sub">
-        Развёртка добавляется на лист отдельными слоями: внешний контур — «Контур», окна и отверстия — «Внутренний»,
-        линии сгиба — «Сгиб» (перфорация), маркировка — «Разметка» и «Заливка», размеры — «Размеры» (в файлы не выводятся).
+        Развёртка добавляется на лист своими слоями: сплошные контуры и отверстия — на один слой,
+        штриховые линии сгиба — на второй, маркировка — на слой с заливкой,
+        размеры — на служебный слой, который не выводится в файлы.
       </p>
     </div>
   );
@@ -422,7 +466,7 @@ export function LaserPropsPanel({
       <div className="props">
         <h3>Свойства</h3>
         <p className="sub">
-          Выделите объект на листе, чтобы изменить размер, поворот, слой и параметры реза.
+          Выделите объект на листе, чтобы изменить размер, поворот и слой.
           Новый рисунок создаётся на активном слое <b>{doc.layers[active]?.short}</b>.
         </p>
         {msg?.text && <div className={'laser-msg' + (msg.ok === false ? ' bad' : '')}>{msg.text}</div>}
@@ -494,7 +538,7 @@ export function LaserPropsPanel({
           <NI label="Поворот, °" value={one.rot} step={1} on={(v) => actions.onPatch({ rot: v } as Partial<LaserShape>)} />
           <label className="laser-check">
             <input type="checkbox" checked={one.mirror} onChange={(e) => actions.onPatch({ mirror: e.target.checked } as Partial<LaserShape>)} />
-            Зеркально (для штампов)
+            Зеркально
           </label>
           <label className="laser-check">
             <input type="checkbox" checked={one.filled} onChange={(e) => actions.onPatch({ filled: e.target.checked } as Partial<LaserShape>)} />
@@ -521,17 +565,6 @@ export function LaserPropsPanel({
           Заливка области
         </label>
       )}
-      {one && (one.kind === 'rect' || one.kind === 'path' || one.kind === 'polygon' || one.kind === 'ellipse') && (
-        <>
-          <NI label="Перемычек, шт" value={one.tabs ?? 0} min={0} max={24} step={1}
-            on={(v) => actions.onPatch({ tabs: Math.round(v) } as Partial<LaserShape>)} />
-          {!!one.tabs && (
-            <NI label="Ширина перемычки" value={one.tabWidth ?? 1.8} min={0.4} max={20} step={0.1}
-              on={(v) => actions.onPatch({ tabWidth: v } as Partial<LaserShape>)} />
-          )}
-        </>
-      )}
-
       <div className="field">
         <label>Слой</label>
         <select
@@ -620,12 +653,12 @@ export function LaserPropsPanel({
           <Ic n="intersect" size={13} /> Пересечь
         </button>
         <button type="button" className="btn tiny" disabled={shapes.length < 2} onClick={() => actions.onBoolean('xor')}
-          title="Исключение (Simplify/XOR) — общая область вырезается">
+          title="Исключение (Simplify/XOR) — общая область убирается">
           Исключить
         </button>
       </div>
 
-      <h3>Контур и керф</h3>
+      <h3>Контур (Contour)</h3>
       <div className="laser-grid2">
         <NI label="Отступ, мм" value={contourState.delta} min={-50} max={50} step={0.05}
           on={(v) => onContourState({ delta: v })} />
@@ -643,12 +676,6 @@ export function LaserPropsPanel({
         </button>
         <button type="button" className="btn tiny" onClick={() => actions.onContour(-(Math.abs(contourState.delta) || 0.1), contourState.layer)}
           title="Внутренний контур (внутрь)">Внутрь</button>
-        <button type="button" className="btn tiny" onClick={() => actions.onContour(doc.layers.cut.kerf / 2 || 0.05, 'cut')}
-          title={`Компенсация толщины инструмента: +${((doc.layers.cut.kerf || 0) / 2).toFixed(3)} мм наружу по керфу слоя «Контур»`}>
-          Керф наружу
-        </button>
-        <button type="button" className="btn tiny" onClick={() => actions.onContour(-(doc.layers.cut.kerf / 2 || 0.05), 'inner')}
-          title="Компенсация толщины инструмента внутрь (отверстия становятся меньше на керф)">Керф внутрь</button>
       </div>
 
       <h3>Скругление углов (Fillet)</h3>
@@ -840,8 +867,8 @@ export function LaserJobPanel({
     return `${m} мин ${String(s % 60).padStart(2, '0')} с`;
   };
   const visible = doc.shapes.filter((s) => !s.hidden);
-  const perLayer = LASER_LAYER_ORDER
-    .map((id) => ({ id, cfg: doc.layers[id], n: visible.filter((s) => s.layer === id).length }))
+  const perLayer = layerIds(doc)
+    .map((id) => ({ id, cfg: layerOf(doc, id), n: visible.filter((s) => s.layer === id).length }))
     .filter((r) => r.n > 0);
 
   return (
@@ -857,9 +884,9 @@ export function LaserJobPanel({
       </div>
       {sim && (
         <div className="laser-job-layers">
-          {LASER_LAYER_ORDER.map((id) => {
+          {layerIds(doc).map((id) => {
             const row = sim.byLayer[id];
-            const cfg = doc.layers[id];
+            const cfg = layerOf(doc, id);
             if (!row || (!row.count && !row.lengthMm)) return null;
             return (
               <div key={id} className="laser-job-layer">
