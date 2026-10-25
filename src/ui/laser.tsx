@@ -44,9 +44,9 @@ import {
 } from '../laser/project';
 import {
   MATERIAL_PRESETS, addLaserLayer, adoptShapes, alignShapes, arrayShapes, autoNestShapesEx,
-  booleanShapes, docContourLength, ensureRoleLayer, filletShapeCorners, hitShape, layerIds, layerOf,
-  luid, mirrorShape, newLaserDoc, offsetShape, removeLaserLayer,
-  rotateShape, scaleShape, selectionBBox, shapeBBox, shapeToPath, translateShape,
+  booleanShapes, docContourLength, ensureLayerByName, ensureRoleLayer, filletShapeCorners, hitShape,
+  layerIds, layerOf, luid, mirrorShape, newLaserDoc, offsetShape, removeLaserLayer,
+  rotateShape, scaleShape, selectionBBox, shapeBBox, shapeToPath, shapeToPolylines, translateShape,
   type AlignMode, type BooleanOp, type LaserDoc, type LaserGroup, type LaserLayerConfig, type LaserLayerId,
   type LaserShape, type MaterialPreset, type PathNode, type PathShape, type Pt,
 } from '../laser/model';
@@ -54,6 +54,10 @@ import {
   constrainAngle, deleteNode, insertNode, moveHandle, moveNode, nearestHandle, nearestNodeIndex,
   nearestSnapPoint, objectSnapPoints, toggleSmooth,
 } from '../laser/nodes';
+import {
+  AUX_MODES, DEFAULT_AUX_PARAMS, buildAuxLine, pickBase, previewAuxLine,
+  type AuxLine, type AuxMode, type AuxParams,
+} from '../laser/construction';
 import {
   breakApartAtIntersections, breakCurve, extendCurve, trimCurve, trimPreview, trimmable,
   type TrimEdit, type TrimMode, type TrimOptions, type TrimPreview,
@@ -70,7 +74,8 @@ import type { ThemeId } from '../pcb/render';
 // ---------------- инструменты ----------------
 
 export type LaserToolId =
-  | 'select' | 'shape' | 'trim' | 'pan' | 'pen' | 'line' | 'rect' | 'ellipse' | 'polygon' | 'text' | 'dim';
+  | 'select' | 'shape' | 'trim' | 'pan' | 'pen' | 'line' | 'rect' | 'ellipse' | 'polygon' | 'text' | 'dim'
+  | 'aux';
 
 export type { TrimMode };
 
@@ -85,21 +90,35 @@ const LASER_TOOLS: { id: LaserToolId; name: string; icon: string; key: string; h
   { id: 'shape', name: 'Форма (узлы кривой)', icon: 'node', key: 'F10', hint: 'правка узлов и рычагов Безье; двойной клик по кривой — новый узел, по узлу — удалить; S — гладкий/угловой' },
   { id: 'trim', name: 'Усечь кривую', icon: 'cut-curve', key: 'X', hint: 'клик по кривой отрезает кусок до пересечения; 1 — усечь, 2 — продлить, 3 — разрезать; Ctrl+Shift+X — разбить всё по пересечениям' },
   { id: 'pan', name: 'Панорама листа', icon: 'fit', key: 'H', hint: 'перемещение вида (то же — средняя кнопка мыши или пробел)' },
-  { id: 'pen', name: 'Перо (кривая Безье)', icon: 'bezier', key: 'P', hint: 'клик — угловой узел, клик с протяжкой — гладкий узел с рычагами; Enter — закончить, клик по первому узлу — замкнуть' },
-  { id: 'line', name: 'Отрезок', icon: 'line', key: 'L', hint: 'два клика; Shift — угол кратный 15°' },
-  { id: 'rect', name: 'Прямоугольник', icon: 'rect', key: 'R', hint: 'протяжка мышью; Shift — квадрат; скругление углов — в свойствах' },
-  { id: 'ellipse', name: 'Эллипс / дуга', icon: 'circle', key: 'E', hint: 'протяжка мышью; Shift — окружность; углы начала и конца дуги — в свойствах' },
-  { id: 'polygon', name: 'Многоугольник / звезда', icon: 'polygon', key: 'Y', hint: 'протяжка задаёт габарит; число углов и звезда — в свойствах' },
+  { id: 'pen', name: 'Перо (кривая Безье)', icon: 'bezier', key: 'P', hint: 'клик — угловой узел, клик с протяжкой — гладкий узел с рычагами; Enter — закончить, клик по первому узлу — замкнуть; инструмент остаётся активным, Esc или V — к выбору' },
+  { id: 'line', name: 'Отрезок', icon: 'line', key: 'L', hint: 'два клика; Shift — угол кратный 15°; инструмент остаётся активным, Esc или V — к выбору' },
+  { id: 'rect', name: 'Прямоугольник', icon: 'rect', key: 'R', hint: 'протяжка мышью; Shift — квадрат; клик без протяжки — квадрат 20×20 мм; инструмент остаётся активным, Esc или V — к выбору' },
+  { id: 'ellipse', name: 'Эллипс / дуга', icon: 'circle', key: 'E', hint: 'протяжка мышью; Shift — окружность; клик без протяжки — окружность 20 мм; углы дуги — в свойствах; Esc или V — к выбору' },
+  { id: 'polygon', name: 'Многоугольник / звезда', icon: 'polygon', key: 'Y', hint: 'протяжка задаёт габарит; клик без протяжки — 20 мм; число углов и звезда — в свойствах; Esc или V — к выбору' },
   { id: 'text', name: 'Текст (надпись)', icon: 'text', key: 'T', hint: 'клик ставит надпись; текст, кегль и толщину линии меняйте в свойствах справа' },
   { id: 'dim', name: 'Размерная линия', icon: 'ruler', key: 'D', hint: 'две точки + третий клик задаёт вынос; служебный слой «Размеры» не выводится в файлы' },
+  {
+    id: 'aux', name: 'Вспомогательная линия', icon: 'aux', key: 'A',
+    hint: 'перпендикуляр, параллель, касательная, биссектриса, серединный перпендикуляр, направление под углом, горизонталь и вертикаль; линии живут на служебном слое и не попадают в файлы',
+  },
 ];
 
 const TOOL_GROUPS: LaserToolId[][] = [
   ['select', 'shape', 'trim', 'pan'],
   ['pen', 'line'],
   ['rect', 'ellipse', 'polygon'],
-  ['text', 'dim'],
+  ['text', 'dim', 'aux'],
 ];
+
+/** Иконки режимов вспомогательных линий. */
+const AUX_ICONS: Record<AuxMode, string> = {
+  perp: 'angle90', parallel: 'offset', tangent: 'circle', angle: 'angle45',
+  midperp: 'ruler', bisector: 'anglefree', h: 'axis-h', v: 'axis-v',
+};
+
+/** Слой вспомогательных линий: служебный, поэтому в файлы не выводится. */
+const AUX_LAYER_NAME = 'Вспомогательные';
+const AUX_LAYER_COLOR = '#94a3b8';
 
 const TOOL_KEYS: Record<LaserToolId, string> = LASER_TOOLS.reduce(
   (acc, t) => ({ ...acc, [t.id]: t.key }),
@@ -120,7 +139,7 @@ type Draft =
   | { t: 'rect'; layer: LaserLayerId; a: Pt; b: Pt; shift: boolean }
   | { t: 'ellipse'; layer: LaserLayerId; a: Pt; b: Pt; shift: boolean }
   | { t: 'polygon'; layer: LaserLayerId; a: Pt; b: Pt; shift: boolean }
-  | { t: 'pen'; layer: LaserLayerId; nodes: PathNode[]; closed: boolean; dragging: boolean; shift: boolean }
+  | { t: 'pen'; layer: LaserLayerId; nodes: PathNode[]; closed: boolean; dragging: boolean; shift: boolean; cursor?: Pt }
   | { t: 'dim'; a: Pt; b: Pt | null; c: Pt | null };
 
 type Drag =
@@ -128,7 +147,7 @@ type Drag =
   | { mode: 'move'; start: Pt; orig: LaserShape[]; moved: boolean }
   | { mode: 'resize'; handle: SelectionHandleId; bb: [number, number, number, number]; orig: LaserShape[]; moved: boolean; uniform: boolean }
   | { mode: 'marquee'; a: Pt; shift: boolean; base: Set<string>; moved: boolean }
-  | { mode: 'draw'; t: 'rect' | 'ellipse' | 'polygon'; layer: LaserLayerId; a: Pt; shift: boolean }
+  | { mode: 'draw'; t: 'rect' | 'ellipse' | 'polygon'; layer: LaserLayerId; a: Pt; aRaw: Pt; shift: boolean }
   | { mode: 'node'; id: string; idx: number; orig: PathShape; moved: boolean }
   | { mode: 'handle'; id: string; idx: number; which: 'cp1' | 'cp2'; orig: PathShape; moved: boolean };
 
@@ -194,6 +213,36 @@ export function draftToShape(d: Draft): LaserShape | null {
       };
     }
   }
+}
+
+/** Размер объекта, который создаётся по одному клику без протяжки. */
+const CLICK_SHAPE_MM = 20;
+
+/**
+ * Фигура по клику без протяжки: 20×20 мм с центром в точке клика.
+ * Инструмент обязан отзываться на клик — раньше в этом случае не происходило
+ * ничего, и рисование выглядело сломанным.
+ */
+function clickShape(t: 'rect' | 'ellipse' | 'polygon', layer: LaserLayerId, p: Pt): LaserShape | null {
+  const half = CLICK_SHAPE_MM / 2;
+  const a = { x: p.x - half, y: p.y - half };
+  const b = { x: p.x + half, y: p.y + half };
+  return draftToShape(t === 'rect'
+    ? { t: 'rect', layer, a, b, shift: false }
+    : t === 'ellipse'
+      ? { t: 'ellipse', layer, a, b, shift: false }
+      : { t: 'polygon', layer, a, b, shift: false });
+}
+
+/**
+ * Черновик рисуется с временным id 'draft' — для предпросмотра этого довольно.
+ * Но в документ объект обязан попасть с уникальным id: иначе каждый следующий
+ * нарисованный прямоугольник «сливался» с предыдущим (общее выделение, общая
+ * правка и удаление сразу всех), и рисование выглядело сломанным.
+ */
+function withRealId(shape: LaserShape): LaserShape {
+  if (shape.id !== 'draft') return shape;
+  return { ...shape, id: luid(shape.kind) };
 }
 
 /** Ограничение прямоугольника/эллипса: Shift — квадрат (окружность). */
@@ -277,6 +326,11 @@ export function LaserEditor({
   const [nodeEdit, setNodeEdit] = useState<{ id: string; node: number | null } | null>(null);
   const [trimMode, setTrimMode] = useState<TrimMode>('trim');
   const [trimOnlySel, setTrimOnlySel] = useState(false);
+  // вспомогательные линии: режим, параметры построения и незаконченные клики
+  const [auxMode, setAuxMode] = useState<AuxMode>('perp');
+  const [auxParams, setAuxParams] = useState<AuxParams>({ ...DEFAULT_AUX_PARAMS });
+  const [auxDraft, setAuxDraft] = useState<{ pts: Pt[]; baseId: string | null } | null>(null);
+  const [auxPreview, setAuxPreview] = useState<AuxLine | null>(null);
   const [trimHover, setTrimHover] = useState<{ id: string; preview: TrimPreview } | null>(null);
   const trimHoverAt = useRef<{ id: string | null; x: number; y: number }>({ id: null, x: 0, y: 0 });
   const [mouse, setMouse] = useState({ px: -100, py: -100, wx: 0, wy: 0 });
@@ -289,6 +343,14 @@ export function LaserEditor({
   const [polygonStar, setPolygonStar] = useState(false);
   const [spaceDown, setSpaceDown] = useState(false);
   const [savedTick, setSavedTick] = useState(0);
+
+  // Незаконченное построение вспомогательной линии живёт только с инструментом
+  useEffect(() => {
+    if (tool !== 'aux') {
+      setAuxDraft(null);
+      setAuxPreview(null);
+    }
+  }, [tool]);
 
   // Активный слой всегда существует: после нового проекта, открытия файла или
   // удаления слоя переключаемся на первый доступный.
@@ -409,9 +471,12 @@ export function LaserEditor({
 
   const pickable = useCallback((s: LaserShape) => {
     if (s.hidden || s.locked) return false;
-    const cfg = doc.layers[s.layer];
-    return !!cfg && cfg.visible !== false && cfg.locked !== true;
-  }, [doc.layers]);
+    // Слой может быть «чужим»: старый проект, генератор или импорт принесли id,
+    // которого нет в doc.layers. layerOf всегда отдаёт рабочую настройку —
+    // иначе объект нельзя было ни выбрать, ни привязаться к нему.
+    const cfg = layerOf(doc, s.layer);
+    return cfg.visible !== false && cfg.locked !== true;
+  }, [doc]);
 
   // Точки привязки к объектам: узлы кривых, вершины и середины рёбер примитивов,
   // четверти окружностей и центры. Считаются в nodes.ts — там же учитываются
@@ -427,7 +492,9 @@ export function LaserEditor({
     const tol = 7 / Math.max(view.s, 0.001);
     const obj = nearestSnapPoint(snapPoints, p, tol);
     if (obj) return obj;
-    if (grid.on && grid.step > 0) {
+    // К сетке тянем, только когда её шаг различим на экране: на обзорном
+    // масштабе миллиметровая сетка «залипала» под курсором и мешала рисовать.
+    if (grid.on && grid.step > 0 && grid.step * view.s >= 3) {
       return {
         x: Math.round(p.x / grid.step) * grid.step,
         y: Math.round(p.y / grid.step) * grid.step,
@@ -435,6 +502,22 @@ export function LaserEditor({
     }
     return p;
   }, [grid, snapPoints, view.s]);
+
+  /** Рабочий слой для новых объектов: служебный слой для графики не берём. */
+  const workLayer = useCallback((): LaserLayerId => {
+    const d = docRef.current;
+    if (layerOf(d, activeLayer).mode !== 'guide') return activeLayer;
+    return layerIds(d).find((x) => layerOf(d, x).mode !== 'guide') ?? activeLayer;
+  }, [activeLayer]);
+
+  /** Пунктир слоя на холсте — как он ляжет в файл. */
+  const dashOf = useCallback((cfg: LaserLayerConfig): number[] | undefined => {
+    if (cfg.mode === 'guide') return [7, 4];
+    if ((cfg.mode === 'fold' || cfg.mode === 'score') && cfg.dashLen > 0 && cfg.gapLen > 0) {
+      return [Math.max(1, cfg.dashLen * view.s), Math.max(1, cfg.gapLen * view.s)];
+    }
+    return undefined;
+  }, [view.s]);
 
   const pickShape = useCallback((p: Pt): LaserShape | null => {
     const tol = Math.max(0.6, 6 / Math.max(view.s, 0.001));
@@ -971,9 +1054,9 @@ export function LaserEditor({
         drawLaserSheet(ctx, docRef.current, v, w, h, themeNow);
         for (const s of docRef.current.shapes) {
           if (s.hidden) continue;
-          const cfg = docRef.current.layers[s.layer];
-          if (!cfg?.visible) continue;
-          drawLaserShape(ctx, s, v, cfg.color, {});
+          const cfg = layerOf(docRef.current, s.layer);
+          if (cfg.visible === false) continue;
+          drawLaserShape(ctx, s, v, cfg.color || themeNow.sel, { dash: dashOf(cfg) });
         }
         const blob = await new Promise<Blob | null>((resolve) => cv.toBlob(resolve, 'image/png'));
         if (!blob) throw new Error('не удалось создать PNG');
@@ -1064,6 +1147,36 @@ export function LaserEditor({
   const cloneSelected = useCallback((): LaserShape[] =>
     docRef.current.shapes.filter((s) => selRef.current.has(s.id)), []);
 
+  /**
+   * Вспомогательная линия ложится на служебный слой «Вспомогательные»:
+   * он не выводится в DXF, PDF, EPS, PLT и SVG, но по нему можно привязываться.
+   */
+  const commitAux = useCallback((line: AuxLine | null, base: LaserShape | null) => {
+    if (!line) {
+      setMsg({
+        text: 'Построить линию не удалось. Для касательной точка должна лежать вне окружности, '
+          + 'для параллели и перпендикуляра первым кликом нужно попасть в объект-базу.',
+        ok: false,
+      });
+      return;
+    }
+    const grown = ensureLayerByName(docRef.current, AUX_LAYER_NAME,
+      { mode: 'guide', color: AUX_LAYER_COLOR });
+    const shape: LaserShape = {
+      id: luid('aux'), kind: 'path', layer: grown.id, name: line.name,
+      nodes: [{ x: line.a.x, y: line.a.y }, { x: line.b.x, y: line.b.y }], closed: false, filled: false,
+    };
+    commit({ ...grown.doc, shapes: [...grown.doc.shapes, shape] },
+      `${line.name}${base ? ` от «${base.name}»` : ''}`);
+    setSel(new Set([shape.id]));
+  }, [commit, setSel]);
+
+  /** Объект-база незаконченного построения. */
+  const auxBase = useCallback((): LaserShape | null => {
+    if (!auxDraft?.baseId) return null;
+    return docRef.current.shapes.find((x) => x.id === auxDraft.baseId) ?? null;
+  }, [auxDraft]);
+
   const onPointerDown = useCallback((e: RPointerEvent<HTMLCanvasElement>) => {
     const cv = overRef.current;
     if (!cv) return;
@@ -1140,12 +1253,57 @@ export function LaserEditor({
       return;
     }
 
+    // --- вспомогательные линии: перпендикуляр, параллель, касательная и др. ---
+    if (tool === 'aux') {
+      const spec = AUX_MODES.find((m) => m.id === auxMode)!;
+      const pool = docRef.current.shapes.filter(pickable);
+      const tol = Math.max(1.5, 10 / Math.max(view.s, 0.001));
+      const sheet = { w: docRef.current.w, h: docRef.current.h };
+
+      if (!auxDraft) {
+        const base = pickBase(pool, p, tol);
+        if (spec.needsBase && !base && spec.id !== 'perp') {
+          setMsg({
+            text: `«${spec.name}»: первым кликом попадите в объект-базу — линию, кривую, окружность, `
+              + 'прямоугольник или многоугольник.',
+            ok: false,
+          });
+          return;
+        }
+        if (spec.clicks === 1) {
+          commitAux(buildAuxLine({ mode: auxMode, pts: [p], base, params: auxParams, sheet }), base);
+          return;
+        }
+        setAuxDraft({ pts: [p], baseId: base?.id ?? null });
+        setMsg({
+          text: base
+            ? `База — «${base.name}». ${spec.clicks === 3 ? 'Укажите две точки угла.' : 'Укажите точку, через которую пройдёт линия.'}`
+            : (spec.id === 'perp'
+              ? 'База не найдена: перпендикуляр будет построен к отрезку между двумя кликами.'
+              : 'Укажите следующую точку.'),
+          ok: null,
+        });
+        return;
+      }
+
+      const pts = [...auxDraft.pts, p];
+      const base = auxBase();
+      if (pts.length >= spec.clicks) {
+        commitAux(buildAuxLine({ mode: auxMode, pts, base, params: auxParams, sheet }), base);
+        setAuxDraft(null);
+        setAuxPreview(null);
+        return;
+      }
+      setAuxDraft({ pts, baseId: auxDraft.baseId });
+      return;
+    }
+
     // --- инструменты рисования ---
     if (tool === 'rect' || tool === 'ellipse' || tool === 'polygon') {
       setDraft({ t: tool, layer: activeLayer, a: p, b: p, shift: e.shiftKey });
       // свой режим протяжки: маркиз здесь ни при чём, иначе первый же move
       // до обновления draft успевает выделить объекты рамкой
-      drag.current = { mode: 'draw', t: tool, layer: activeLayer, a: p, shift: e.shiftKey };
+      drag.current = { mode: 'draw', t: tool, layer: activeLayer, a: p, aRaw: raw, shift: e.shiftKey };
       return;
     }
     if (tool === 'line') {
@@ -1167,10 +1325,7 @@ export function LaserEditor({
       return;
     }
     if (tool === 'text') {
-      const ids = layerIds(docRef.current);
-      const layer: LaserLayerId = layerOf(docRef.current, activeLayer).mode === 'guide'
-        ? (ids.find((x) => layerOf(docRef.current, x).mode !== 'guide') ?? activeLayer)
-        : activeLayer;
+      const layer: LaserLayerId = workLayer();
       const shape: LaserShape = {
         id: luid('text'), kind: 'text', layer, name: 'Надпись',
         x: p.x, y: p.y, text: 'Текст', size: 6, strokeWidth: 0.4, rot: 0, mirror: false,
@@ -1178,15 +1333,18 @@ export function LaserEditor({
       };
       commit({ ...docRef.current, shapes: [...docRef.current.shapes, shape] }, 'Добавлена надпись');
       setSel(new Set([shape.id]));
-      setTool('select');
-      setMsg({ text: 'Надпись поставлена. Текст, кегль и толщину линии измените в панели свойств справа.', ok: true });
+      setMsg({
+        text: 'Надпись поставлена, инструмент «Текст» остался активным. Текст, кегль и толщину линии '
+          + 'измените в панели свойств справа; V или Esc — вернуться к выбору.',
+        ok: true,
+      });
       return;
     }
     if (tool === 'pen') {
       if (!draft || draft.t !== 'pen') {
         setDraft({
           t: 'pen', layer: activeLayer, closed: false, dragging: true, shift: e.shiftKey,
-          nodes: [{ x: p.x, y: p.y }],
+          cursor: p, nodes: [{ x: p.x, y: p.y }],
         });
         return;
       }
@@ -1200,6 +1358,7 @@ export function LaserEditor({
         ...draft,
         dragging: true,
         shift: e.shiftKey,
+        cursor: p,
         nodes: [...draft.nodes, { x: p.x, y: p.y }],
       });
       return;
@@ -1239,7 +1398,7 @@ export function LaserEditor({
     setMarquee({ a: p, b: p });
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [view, tool, activeLayer, draft, selBBox, selShapes, snapWorld, pickShape, commit, setSel, spaceDown,
-    cloneSelected, runTrim, trimOnlySel]);
+    cloneSelected, runTrim, trimOnlySel, pickable, auxMode, auxParams, auxDraft, auxBase, commitAux]);
 
   /** Завершение рисования отрезка. */
   const finishLine = useCallback((d: Extract<Draft, { t: 'line' }>) => {
@@ -1254,7 +1413,6 @@ export function LaserEditor({
     commit({ ...docRef.current, shapes: [...docRef.current.shapes, shape] }, 'Добавлен отрезок');
     setSel(new Set([shape.id]));
     setDraft(null);
-    setTool('select');
   }, [commit, setSel]);
 
   /** Завершение рисования кривой пером. */
@@ -1274,7 +1432,6 @@ export function LaserEditor({
       d.closed ? `Добавлен замкнутый контур (${nodes.length} узлов)` : `Добавлена кривая (${nodes.length} узлов)`);
     setSel(new Set([shape.id]));
     setDraft(null);
-    setTool('select');
   }, [commit, setSel]);
 
   /** Завершение размерной линии. */
@@ -1300,31 +1457,30 @@ export function LaserEditor({
     commit({ ...grown.doc, shapes: [...grown.doc.shapes, shape] }, `Добавлен размер ${len.toFixed(2)} мм`);
     setSel(new Set([shape.id]));
     setDraft(null);
-    setTool('select');
   }, [commit, setSel]);
 
-  /** Финал протяжки (прямоугольник / эллипс / многоугольник / маркиз). */
+  /** Финал протяжки (прямоугольник / эллипс / многоугольник). */
   const finishDragDraw = useCallback((d: Draft) => {
-    const shape = draftToShape(d);
     setDraft(null);
-    if (!shape || shape.kind === 'path') {
-      if (shape && shape.kind === 'path') {
-        commit({ ...docRef.current, shapes: [...docRef.current.shapes, shape] }, 'Добавлен отрезок');
-        setSel(new Set([shape.id]));
-        setTool('select');
-      }
+    if (d.t !== 'rect' && d.t !== 'ellipse' && d.t !== 'polygon') return;
+    const built = draftToShape(d) ?? clickShape(d.t, d.layer, d.a);
+    if (!built) {
+      setMsg({ text: 'Объект не создан: протяжка получилась меньше 0.2 мм.', ok: false });
       return;
     }
+    let shape = withRealId(built);
     if (shape.kind === 'polygon') {
       shape.sides = polygonSides;
       shape.star = polygonStar;
       shape.innerRatio = 0.45;
     }
     const bb = shapeBBox(shape);
-    if (bb[2] - bb[0] < MIN_DRAW_MM || bb[3] - bb[1] < MIN_DRAW_MM) return;
+    if (bb[2] - bb[0] < MIN_DRAW_MM || bb[3] - bb[1] < MIN_DRAW_MM) {
+      setMsg({ text: 'Объект не создан: размер меньше 0.2 мм — растяните фигуру мышью.', ok: false });
+      return;
+    }
     commit({ ...docRef.current, shapes: [...docRef.current.shapes, shape] }, `Добавлен объект: ${shape.name}`);
     setSel(new Set([shape.id]));
-    setTool('select');
   }, [commit, polygonSides, polygonStar, setSel]);
 
   const onPointerMove = useCallback((e: RPointerEvent<HTMLCanvasElement>) => {
@@ -1345,6 +1501,17 @@ export function LaserEditor({
         updateTrimHover(raw);
         return;
       }
+      // предпросмотр вспомогательной линии: тянется за курсором
+      if (tool === 'aux') {
+        setAuxPreview(previewAuxLine({
+          mode: auxMode,
+          pts: auxDraft?.pts ?? [],
+          base: auxBase(),
+          params: auxParams,
+          sheet: { w: docRef.current.w, h: docRef.current.h },
+        }, p));
+        return;
+      }
       // предпросмотр незавершённого рисунка
       if (draft) {
         if (draft.t === 'line') {
@@ -1352,18 +1519,24 @@ export function LaserEditor({
         } else if (draft.t === 'dim') {
           if (!draft.b) setDraft({ ...draft, c: null });
           else setDraft({ ...draft, c: p });
-        } else if (draft.t === 'pen' && draft.dragging && draft.nodes.length) {
-          const nodes = draft.nodes.slice();
-          const last = nodes[nodes.length - 1];
-          const dx = p.x - last.x;
-          const dy = p.y - last.y;
-          nodes[nodes.length - 1] = {
-            ...last,
-            smooth: Math.hypot(dx, dy) > 1e-3,
-            cp2x: p.x, cp2y: p.y,
-            cp1x: last.x - dx, cp1y: last.y - dy,
-          };
-          setDraft({ ...draft, nodes, shift: e.shiftKey });
+        } else if (draft.t === 'pen' && draft.nodes.length) {
+          if (!draft.dragging) {
+            // кнопка не нажата: просто «резиновая нить» к курсору, узел угловой
+            setDraft({ ...draft, cursor: p, shift: e.shiftKey });
+          } else {
+            // протяжка сразу после клика тянет рычаги Безье — узел гладкий
+            const nodes = draft.nodes.slice();
+            const last = nodes[nodes.length - 1];
+            const dx = p.x - last.x;
+            const dy = p.y - last.y;
+            nodes[nodes.length - 1] = {
+              ...last,
+              smooth: Math.hypot(dx, dy) > 1e-3,
+              cp2x: p.x, cp2y: p.y,
+              cp1x: last.x - dx, cp1y: last.y - dy,
+            };
+            setDraft({ ...draft, nodes, cursor: p, shift: e.shiftKey });
+          }
         }
       }
       return;
@@ -1457,7 +1630,8 @@ export function LaserEditor({
       return;
     }
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [view, draft, grid.snap, snapPoints, snapWorld, pickable, setDoc, setSel, tool, updateTrimHover]);
+  }, [view, draft, grid.snap, snapPoints, snapWorld, pickable, setDoc, setSel, tool, updateTrimHover,
+    auxMode, auxParams, auxDraft, auxBase]);
 
   const onPointerUp = useCallback((e: RPointerEvent<HTMLCanvasElement>) => {
     const cv = overRef.current;
@@ -1466,18 +1640,27 @@ export function LaserEditor({
     }
     const d = drag.current;
     drag.current = null;
+
+    // Перо работает кликами, без перетаскивания: снимаем флаг протяжки, иначе
+    // последний узел продолжал бы гнуться за курсором при простом наведении.
+    if (!d && draft?.t === 'pen' && draft.dragging) setDraft({ ...draft, dragging: false });
     if (!d) return;
 
     if (d.mode === 'draw') {
       const cv2 = overRef.current;
       const rect = cv2?.getBoundingClientRect();
-      const p = rect
-        ? snapWorld(toWorld(view, e.clientX - rect.left, e.clientY - rect.top), e.altKey)
-        : d.a;
-      finishDragDraw({
-        t: d.t, layer: d.layer, a: d.a, shift: d.shift,
-        b: constrainBox(d.a, p, e.shiftKey || d.shift),
-      });
+      const pRaw = rect ? toWorld(view, e.clientX - rect.left, e.clientY - rect.top) : d.aRaw;
+      const p = snapWorld(pRaw, e.altKey);
+      // черновик протяжки собираем по конкретному типу — иначе union «расползается»
+      const box = (a: Pt, b: Pt): Draft => (d.t === 'rect'
+        ? { t: 'rect', layer: d.layer, a, b, shift: d.shift }
+        : d.t === 'ellipse'
+          ? { t: 'ellipse', layer: d.layer, a, b, shift: d.shift }
+          : { t: 'polygon', layer: d.layer, a, b, shift: d.shift });
+      let dd = box(d.a, constrainBox(d.a, p, e.shiftKey || d.shift));
+      // привязка к сетке могла схлопнуть протяжку в точку — берём сырые координаты
+      if (!draftToShape(dd)) dd = box(d.aRaw, constrainBox(d.aRaw, pRaw, e.shiftKey || d.shift));
+      finishDragDraw(dd);
       histStart.current = null;
       return;
     }
@@ -1655,10 +1838,21 @@ export function LaserEditor({
         return;
       case 'Escape':
         if (draft) { setDraft(null); setMsg({ text: 'Рисование отменено.', ok: null }); return; }
+        if (auxDraft) {
+          setAuxDraft(null);
+          setAuxPreview(null);
+          setMsg({ text: 'Построение вспомогательной линии отменено.', ok: null });
+          return;
+        }
         if (dialog) { setDialog(null); return; }
         setSel(new Set());
         setNodeEdit(null);
         setTrimHover(null);
+        // инструменты рисования теперь не выключаются сами: Esc — выход к выбору
+        if (tool !== 'select' && tool !== 'pan') {
+          setTool('select');
+          setMsg({ text: 'Инструмент «Выбор» (V).', ok: null });
+        }
         return;
       case 'Enter':
         if (draft?.t === 'pen') { e.preventDefault(); finishPen(draft); return; }
@@ -1697,43 +1891,68 @@ export function LaserEditor({
         nudge(0, -(st || 1));
         return;
       }
-      case '1': case '2': case '3':
-        if (tool === 'trim') {
-          const mode = TRIM_MODES[Number(key) - 1];
-          if (mode) {
-            setTrimMode(mode.id);
-            setTrimHover(null);
-            setMsg({ text: `Режим «${mode.name}»: ${mode.hint}`, ok: null });
-          }
-          return;
-        }
-        break;
-      case 'f': case 'F': case 'а': case 'А': fit(); return;
-      case 's': case 'S': case 'ы': case 'Ы':
-        if (tool === 'shape' && nodeEdit?.node !== null && nodeEdit?.node !== undefined) {
-          const shape = docRef.current.shapes.find((x) => x.id === nodeEdit.id);
-          if (shape && shape.kind === 'path') {
-            const next = toggleSmooth(shape, nodeEdit.node);
-            commit({
-              ...docRef.current,
-              shapes: docRef.current.shapes.map((x) => (x.id === shape.id ? (next as LaserShape) : x)),
-            }, next.nodes[nodeEdit.node].smooth ? 'Узел сделан гладким' : 'Узел сделан угловым');
-          }
-        }
-        return;
       default: break;
     }
 
-    // выбор инструмента буквой
-    const toolByKey = LASER_TOOLS.find((x) => x.key.toLowerCase() === key.toLowerCase() && x.key !== 'F10');
+    // Цифры переключают режимы инструмента: 1…3 у «Усечь кривую» и 1…8 у
+    // вспомогательных линий. Смотрим и e.code — раскладка может быть русской.
+    const digit = /^Digit([1-9])$/.exec(e.code)?.[1] ?? (/^[1-9]$/.test(key) ? key : null);
+    if (digit && !ctrl && !e.altKey) {
+      const n = Number(digit);
+      if (tool === 'trim' && n <= 3) {
+        const m = TRIM_MODES[n - 1];
+        if (m) {
+          setTrimMode(m.id);
+          setTrimHover(null);
+          setMsg({ text: `Режим «${m.name}»: ${m.hint}`, ok: null });
+        }
+        return;
+      }
+      if (tool === 'aux') {
+        const m = AUX_MODES.find((x) => x.key === digit);
+        if (m) {
+          setAuxMode(m.id);
+          setAuxDraft(null);
+          setAuxPreview(null);
+          setMsg({ text: `«${m.name}»: ${m.hint}`, ok: null });
+        }
+        return;
+      }
+    }
+
+    // Буквы, которые не выбирают инструмент: весь лист и гладкость узла
+    if (key === 'f' || key === 'F' || key === 'а' || key === 'А') { fit(); return; }
+    if (key === 's' || key === 'S' || key === 'ы' || key === 'Ы') {
+      if (tool === 'shape' && nodeEdit?.node !== null && nodeEdit?.node !== undefined) {
+        const shape = docRef.current.shapes.find((x) => x.id === nodeEdit.id);
+        if (shape && shape.kind === 'path') {
+          const next = toggleSmooth(shape, nodeEdit.node);
+          commit({
+            ...docRef.current,
+            shapes: docRef.current.shapes.map((x) => (x.id === shape.id ? (next as LaserShape) : x)),
+          }, next.nodes[nodeEdit.node].smooth ? 'Узел сделан гладким' : 'Узел сделан угловым');
+        }
+      }
+      return;
+    }
+
+    // Выбор инструмента буквой. Сверяемся и с e.code: на русской раскладке
+    // физическая клавиша V даёт «м», и раньше инструмент просто не переключался.
+    const byCode = /^Key([A-Z])$/.exec(e.code)?.[1];
+    const toolByKey = LASER_TOOLS.find((x) => x.key !== 'F10'
+      && (x.key.toLowerCase() === key.toLowerCase() || (byCode !== undefined && x.key.toUpperCase() === byCode)));
     if (toolByKey && !draft) {
       setTool(toolByKey.id);
       if (toolByKey.id !== 'shape') setNodeEdit(null);
+      setAuxDraft(null);
+      setAuxPreview(null);
+      const meta = LASER_TOOLS.find((x) => x.id === toolByKey.id)!;
+      setMsg({ text: `Инструмент «${meta.name}» (${meta.key}): ${meta.hint}`, ok: null });
     }
   }, [
     mode, spaceDown, undo, redo, duplicateSel, deleteSel, groupSel, ungroupSel, toCurves, booleanSel,
     runExport, zoomAt, fit, size.w, size.h, draft, dialog, tool, nodeEdit, grid.step, nudge, commit,
-    pickable, setSel, finishPen, finishLine, finishDim, breakApartSel,
+    pickable, setSel, finishPen, finishLine, finishDim, breakApartSel, auxDraft, auxMode,
   ]);
 
   const keyRef = useRef(keyHandler);
@@ -1778,9 +1997,13 @@ export function LaserEditor({
 
       for (const s of doc.shapes) {
         if (s.hidden) continue;
-        const cfg = doc.layers[s.layer];
-        if (!cfg?.visible) continue;
-        drawLaserShape(ctx, s, view, cfg.color, { selected: sel.has(s.id), sheetBg: th.sheet });
+        // layerOf: объект с неизвестным id слоя (старый проект, генератор,
+        // импорт) раньше просто исчезал с листа — теперь рисуется запасным цветом
+        const cfg = layerOf(doc, s.layer);
+        if (cfg.visible === false) continue;
+        drawLaserShape(ctx, s, view, cfg.color || th.sel, {
+          selected: sel.has(s.id), sheetBg: th.sheet, dash: dashOf(cfg),
+        });
       }
 
       if (selBBox) {
@@ -1842,9 +2065,16 @@ export function LaserEditor({
 
       // черновик рисования
       if (draft) {
-        const shape = draftToShape(draft);
+        // у пера к узлам добавляется «резиновая нить» до курсора — видно,
+        // куда ляжет следующий сегмент
+        const penDraft = draft.t === 'pen' && draft.cursor
+          ? { ...draft, nodes: [...draft.nodes, { x: draft.cursor.x, y: draft.cursor.y }] }
+          : draft;
+        const shape = draftToShape(penDraft);
         if (shape) {
-          const color = shape.kind === 'dim' ? th.dim : (doc.layers[shape.layer]?.color ?? th.sel);
+          const color = shape.kind === 'dim'
+            ? th.dim
+            : (layerOf(doc, draft.t === 'dim' ? 'guide' : draft.layer).color || th.sel);
           drawLaserShape(ctx, shape, view, color, { draft: true });
         }
         if (draft.t === 'pen' && draft.nodes.length) {
@@ -1863,6 +2093,46 @@ export function LaserEditor({
           ctx.arc(first.px, first.py, 7, 0, Math.PI * 2);
           ctx.stroke();
         }
+      }
+
+      // предпросмотр вспомогательной линии: пунктир, точка касания и база
+      if (tool === 'aux' && (auxPreview || auxDraft)) {
+        const base = auxBase();
+        ctx.save();
+        if (base) {
+          ctx.strokeStyle = th.sel;
+          ctx.lineWidth = 1.1;
+          ctx.setLineDash([3, 3]);
+          for (const pl of shapeToPolylines(base)) {
+            ctx.beginPath();
+            pl.forEach((q, i) => {
+              const sp = toScreen(view, q.x, q.y);
+              if (i === 0) ctx.moveTo(sp.px, sp.py);
+              else ctx.lineTo(sp.px, sp.py);
+            });
+            ctx.stroke();
+          }
+        }
+        if (auxPreview) {
+          const a = toScreen(view, auxPreview.a.x, auxPreview.a.y);
+          const b = toScreen(view, auxPreview.b.x, auxPreview.b.y);
+          ctx.strokeStyle = th.dim;
+          ctx.lineWidth = 1.3;
+          ctx.setLineDash([8, 4]);
+          ctx.beginPath();
+          ctx.moveTo(a.px, a.py);
+          ctx.lineTo(b.px, b.py);
+          ctx.stroke();
+          // точки касания, середины и основания перпендикуляров
+          ctx.setLineDash([]);
+          for (const m of [auxPreview.mark, auxDraft?.pts[auxDraft.pts.length - 1]].filter(Boolean) as Pt[]) {
+            const sp = toScreen(view, m.x, m.y);
+            ctx.beginPath();
+            ctx.arc(sp.px, sp.py, 4, 0, Math.PI * 2);
+            ctx.stroke();
+          }
+        }
+        ctx.restore();
       }
 
       // предпросмотр «усечь кривую»: кусок под курсором, точки реза и добор
@@ -1941,7 +2211,8 @@ export function LaserEditor({
       // маркиз
       if (marquee) drawMarquee(ctx, marquee.a, marquee.b, view, th);
     });
-  }, [draft, marquee, mouse.px, mouse.py, snapMark, view, size, th, tool, doc.layers, trimHover]);
+  }, [draft, marquee, mouse.px, mouse.py, snapMark, view, size, th, tool, doc.layers, trimHover,
+    auxPreview, auxDraft, auxBase]);
 
   // ---------------- очистка при размонтировании ----------------
   useEffect(() => () => {
@@ -2144,10 +2415,8 @@ export function LaserEditor({
       <div className="tb-group" aria-label="Оформление">
         {tb(theme === 'dark' ? 'sun' : 'moon', theme === 'dark' ? 'Включить светлую тему' : 'Включить тёмную тему',
           () => setTheme(theme === 'dark' ? 'light' : 'dark'))}
-        <button type="button" className="tb-btn cu" title="Активный слой: новые объекты рисуются на нём"
-          style={{ borderColor: doc.layers[activeLayer]?.color, color: doc.layers[activeLayer]?.color }}>
-          {doc.layers[activeLayer]?.short ?? activeLayer}
-        </button>
+        {/* активного слоя в шапке нет: слой выбирают во вкладке «Слои»,
+            а текущий виден в строке состояния */}
       </div>
 
       <div className="tb-group toolbar-exit" aria-label="Выход">
@@ -2415,6 +2684,90 @@ export function LaserEditor({
             </div>
           )}
 
+          {tool === 'aux' && (
+            <div className="laser-auxbar" role="group" aria-label="Вспомогательные линии">
+              {AUX_MODES.map((m) => (
+                <button
+                  key={m.id}
+                  type="button"
+                  data-aux-mode={m.id}
+                  className={auxMode === m.id ? 'on' : ''}
+                  title={`${m.name} (${m.key}) — ${m.hint}`}
+                  onClick={() => {
+                    setAuxMode(m.id);
+                    setAuxDraft(null);
+                    setAuxPreview(null);
+                    setMsg({ text: `«${m.name}»: ${m.hint}`, ok: null });
+                  }}
+                >
+                  <Ic n={AUX_ICONS[m.id]} size={13} />
+                  {m.name}
+                </button>
+              ))}
+
+              {auxMode === 'angle' && (
+                <label className="aux-field" title="Наклон вспомогательной линии, градусы от оси X против часовой">
+                  Угол, °
+                  <input
+                    type="number"
+                    className="txt"
+                    value={auxParams.angleDeg}
+                    step={1}
+                    onChange={(e) => setAuxParams((p) => ({ ...p, angleDeg: Number(e.target.value) || 0 }))}
+                  />
+                </label>
+              )}
+              {auxMode === 'parallel' && (
+                <label className="aux-field" title="0 — параллель ровно через точку второго клика">
+                  Расстояние, мм
+                  <input
+                    type="number"
+                    className="txt"
+                    value={auxParams.distance}
+                    min={0}
+                    step={0.5}
+                    onChange={(e) => setAuxParams((p) => ({ ...p, distance: Math.max(0, Number(e.target.value) || 0) }))}
+                  />
+                </label>
+              )}
+              <label className="aux-field" title="Длина вспомогательной линии, если не растягивать на весь лист">
+                Длина, мм
+                <input
+                  type="number"
+                  className="txt"
+                  value={auxParams.length}
+                  min={1}
+                  step={10}
+                  disabled={auxParams.fullSheet}
+                  onChange={(e) => setAuxParams((p) => ({ ...p, length: Math.max(1, Number(e.target.value) || 1) }))}
+                />
+              </label>
+              <label className="laser-check" title="Растянуть линию на весь лист вместо фиксированной длины">
+                <input
+                  type="checkbox"
+                  checked={auxParams.fullSheet}
+                  onChange={(e) => setAuxParams((p) => ({ ...p, fullSheet: e.target.checked }))}
+                />
+                на весь лист
+              </label>
+              {auxDraft && (
+                <button
+                  type="button"
+                  className="btn tiny"
+                  onClick={() => { setAuxDraft(null); setAuxPreview(null); }}
+                  title="Отменить незаконченное построение (Esc)"
+                >
+                  Отменить клик
+                </button>
+              )}
+              <span className="aux-note">
+                {AUX_MODES.find((m) => m.id === auxMode)!.clicks === 1
+                  ? 'один клик по листу'
+                  : `${AUX_MODES.find((m) => m.id === auxMode)!.clicks} клика: ${auxDraft ? auxDraft.pts.length : 0} сделано`}
+              </span>
+            </div>
+          )}
+
           <div className="laser-tool-hint" title={toolMeta.hint}>
             <Ic n={toolMeta.icon} size={14} />
             <b>{toolMeta.name}</b>
@@ -2561,7 +2914,7 @@ export function LaserEditor({
       {MACHINE_UI && dialog === 'sim' && <LaserSimDialog doc={doc} onClose={() => setDialog(null)} />}
       {dialog === 'trace' && (
         <LaserTraceDialog
-          layer={activeLayer === 'guide' ? 'engrave' : activeLayer}
+          layer={workLayer()}
           defaultWidthMm={Math.min(80, Math.max(20, doc.w / 3))}
           onClose={() => setDialog(null)}
           onInsert={(shapes, info) => {

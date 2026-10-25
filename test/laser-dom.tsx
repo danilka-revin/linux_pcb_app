@@ -66,6 +66,7 @@ const { newLaserDoc } = await import('../src/laser/model');
 
 const root = createRoot(win.document.getElementById('root')!);
 const buttons = () => [...win.document.querySelectorAll('button')] as HTMLButtonElement[];
+const tbGroupLabels = () => [...win.document.querySelectorAll('.tb-group')].map((g) => g.getAttribute('aria-label') ?? '');
 const byText = (label: string) => {
   const b = buttons().find((x) => x.textContent?.trim() === label);
   assert(b, `кнопка «${label}» не найдена`);
@@ -131,9 +132,18 @@ await settle();
   assert(tabs[2].textContent?.includes('скоро'), 'у 3D-режима метка «скоро»');
 
   const dock = [...win.document.querySelectorAll('.tool-dock .dock-btn')];
-  assert.equal(dock.length, 11, `инструментов в доке: ${dock.length}`);
+  assert.equal(dock.length, 12, `инструментов в доке: ${dock.length}`);
   assert(dock.some((b) => (b.getAttribute('title') ?? '').startsWith('Форма')), 'инструмент «Форма» (F10)');
   assert(dock.some((b) => (b.getAttribute('title') ?? '').startsWith('Перо')), 'инструмент «Перо»');
+  const dockAux = win.document.querySelector('.tool-dock [data-tool-id="aux"]');
+  assert(dockAux, 'инструмент «Вспомогательная линия» в доке');
+  assert((dockAux!.getAttribute('title') ?? '').startsWith('Вспомогательная линия (A)'),
+    `подсказка инструмента вспомогательных линий: ${dockAux!.getAttribute('title')}`);
+  for (const want of ['перпендикуляр', 'параллель', 'касательная', 'биссектриса']) {
+    assert((dockAux!.getAttribute('title') ?? '').toLowerCase().includes(want),
+      `в подсказке вспомогательных линий упомянут «${want}»`);
+  }
+  assert(!win.document.querySelector('.laser-auxbar'), 'панель построения показывается только с инструментом');
   const dockTrim = win.document.querySelector('.tool-dock [data-tool-id="trim"]');
   assert(dockTrim, 'инструмент «Усечь кривую» в доке');
   assert((dockTrim!.getAttribute('title') ?? '').startsWith('Усечь кривую'),
@@ -147,6 +157,9 @@ await settle();
   assert(win.document.querySelector('.obj-tree'), 'по умолчанию открыта вкладка «Объекты»');
   // генератор развёрток вынесен из левой панели в отдельное окно тулбара
   assert(!win.document.querySelector('.laser-unfold'), 'панели развёрток в левой панели нет');
+  // кнопки слоя в шапке больше нет: слой выбирают во вкладке «Слои»
+  assert(!win.document.querySelector('.tb-btn.cu'), 'в шапке нет кнопки активного слоя');
+  assert(!tbGroupLabels().includes('Активный слой'), 'подписи активного слоя в шапке нет');
   const tbTitles = buttons().map((b) => b.getAttribute('title') ?? '');
   assert(tbTitles.some((t) => t.startsWith('Генератор развёрток')), 'кнопка генератора развёрток в тулбаре');
   assert(tbTitles.some((t) => t.startsWith('Генератор коробок')), 'кнопка генератора коробок в тулбаре');
@@ -347,6 +360,30 @@ await settle();
   await pointer('pointerup', px(280), py(60));
   await settle();
 
+  // инструмент не выключается сам: можно рисовать подряд, V или Esc — к выбору
+  const rectBtn = () => win.document.querySelector('.tool-dock [data-tool-id="rect"]') as HTMLButtonElement;
+  assert(rectBtn().classList.contains('active'), 'после фигуры инструмент «Прямоугольник» остался активным');
+
+  // клик без протяжки создаёт объект заданного по умолчанию размера, а не «ничего»
+  await pointer('pointerdown', px(60), py(40));
+  await pointer('pointerup', px(60), py(40));
+  await settle();
+  assert(status().includes('Добавлен объект: Прямоугольник'), `клик без протяжки создал объект: ${status()}`);
+  // у нового объекта свой id: он не «слипается» с уже нарисованным прямоугольником
+  assert(status().includes('Выделено: 1 · 20.00 × 20.00'),
+    `выделен ровно новый квадрат 20×20: ${status()}`);
+  await key('z', { ctrlKey: true });
+  await settle();
+  assert(status().includes('Отменено: Добавлен объект'), `отмена убрала проверочный квадрат: ${status()}`);
+  // отмена снимает выделение — возвращаем его первому прямоугольнику.
+  // Кликаем по его нижнему краю: у незаполненной фигуры попадание считается
+  // по контуру, а не по площади.
+  await click(byTitle('Выбор'));
+  await pointer('pointerdown', px(240), py(20));
+  await pointer('pointerup', px(240), py(20));
+  await settle();
+  assert(status().includes('Выделено: 1 · 50.00 × 40.00'), `выделение возвращено: ${status()}`);
+
   await clickTab('Объекты');
   const rows = objRows();
   const nameOf = (r: Element) => (r.querySelector('input.obj-name-input') as HTMLInputElement | null)?.value ?? '';
@@ -415,6 +452,112 @@ await settle();
   assert(status().includes('Надпись поставлена'), `надпись поставлена: ${status()}`);
   assert(status().includes('Выделено: 1'), 'надпись выделена');
   assert(text().includes('панели свойств'), 'подсказка про панель свойств');
+
+  // ---------------- вспомогательные линии ----------------
+  // Координаты кликов держим точными: Alt временно отключает привязку, иначе
+  // узлы развёртки сдвинут точки и геометрию построения не проверить.
+  const noSnap = { altKey: true };
+
+  // окружность одним кликом: 20 мм с центром в точке клика (260; 15)
+  await click(byTitle('Эллипс / дуга'));
+  await pointer('pointerdown', px(260), py(15), noSnap);
+  await pointer('pointerup', px(260), py(15), noSnap);
+  await settle();
+  assert(status().includes('Добавлен объект: Эллипс'), `окружность по клику: ${status()}`);
+  assert(status().includes('Выделено: 1 · 20.00 × 20.00'), `окружность 20×20: ${status()}`);
+
+  await click(byTitle('Вспомогательная линия'));
+  await settle();
+  assert(win.document.querySelector('.laser-auxbar'), 'панель построения вспомогательных линий');
+  const auxModes = [...win.document.querySelectorAll('.laser-auxbar button[data-aux-mode]')] as HTMLButtonElement[];
+  assert.equal(auxModes.length, 8, `режимов построения: ${auxModes.length}`);
+  const auxNames = auxModes.map((b) => b.textContent ?? '').join('|');
+  for (const want of ['Перпендикуляр', 'Параллель', 'Касательная', 'По углу', 'Серединный перпендикуляр',
+    'Биссектриса', 'Горизонталь', 'Вертикаль']) {
+    assert(auxNames.includes(want), `режим «${want}» в панели построения`);
+  }
+  const auxBtn = (id: string) => win.document.querySelector(`.laser-auxbar button[data-aux-mode="${id}"]`) as HTMLButtonElement;
+  const auxOn = () => auxBtn(auxOnId()).dataset.auxMode;
+  const auxOnId = () => (win.document.querySelector('.laser-auxbar button[data-aux-mode].on') as HTMLButtonElement).dataset.auxMode ?? '';
+  assert.equal(auxOn(), 'perp', 'по умолчанию выбран перпендикуляр');
+  assert(win.document.querySelector('.aux-field input.txt'), 'поле параметров построения');
+  assert(text().includes('на весь лист'), 'режим «на весь лист»');
+  assert(text().includes('Длина, мм'), 'длина вспомогательной линии настраивается');
+
+  // касательной без объекта не бывает — редактор объясняет, что делать
+  await click(auxBtn('tangent'));
+  await pointer('pointerdown', px(295), py(195), noSnap);
+  await settle();
+  assert(status().includes('объект-базу'), `понятная подсказка про базу: ${status()}`);
+
+  // касательная к окружности: клик по верхней точке обвода, затем внешняя точка
+  await pointer('pointerdown', px(260), py(25), noSnap);
+  await settle();
+  assert(status().includes('База — «Эллипс»'), `окружность принята за базу: ${status()}`);
+  await pointer('pointermove', px(295), py(25), noSnap);
+  await pointer('pointerdown', px(295), py(25), noSnap);
+  await settle();
+  assert(status().includes('Вспомогательная: касательная от «Эллипс»'), `касательная построена: ${status()}`);
+  const tanBox = /Выделено: 1 · ([\d.]+) × ([\d.]+) мм/.exec(status());
+  assert(tanBox, `габарит касательной в статусе: ${status()}`);
+  assert.equal(tanBox![1], '300.00', 'касательная растянута на всю ширину листа');
+  assert(Number(tanBox![2]) < 10, `касательная идёт почти вдоль клика, а не наискосок: ${tanBox![2]} мм`);
+
+  // горизонталь одним кликом
+  await click(auxBtn('h'));
+  await pointer('pointerdown', px(250), py(170), noSnap);
+  await settle();
+  assert(status().includes('Вспомогательная: горизонталь'), `горизонталь построена: ${status()}`);
+  assert(status().includes('300.00 × 0.00'), `горизонталь на весь лист: ${status()}`);
+
+  // перпендикуляр без базы — к отрезку между двумя кликами
+  await click(auxBtn('perp'));
+  await pointer('pointerdown', px(240), py(10), noSnap);
+  await settle();
+  assert(status().includes('База не найдена'), `подсказка, когда базы нет: ${status()}`);
+  await pointer('pointermove', px(270), py(10), noSnap);
+  await pointer('pointerdown', px(270), py(10), noSnap);
+  await settle();
+  assert(status().includes('Вспомогательная: перпендикуляр'), `перпендикуляр построен: ${status()}`);
+  assert(status().includes('0.00 × 200.00'), `перпендикуляр — вертикаль на весь лист: ${status()}`);
+
+  // цифры переключают режимы, Esc отменяет незаконченное построение
+  await key('2');
+  await settle();
+  assert.equal(auxOn(), 'parallel', 'клавиша 2 включила режим «Параллель»');
+  assert(text().includes('Расстояние, мм'), 'у параллели задаётся расстояние');
+  await key('5');
+  await settle();
+  assert.equal(auxOn(), 'midperp', 'клавиша 5 включила серединный перпендикуляр');
+  await pointer('pointerdown', px(200), py(100), noSnap);
+  await settle();
+  assert(win.document.querySelector('.laser-auxbar .btn.tiny'), 'кнопка отмены незаконченного построения');
+  assert(text().includes('2 клика: 1 сделано'), `панель показывает, сколько кликов сделано: ${text().match(/\d клика[^A-Z]*/)?.[0]}`);
+  await key('Escape');
+  await settle();
+  assert(status().includes('Построение вспомогательной линии отменено'), `Esc отменил построение: ${status()}`);
+
+  // вспомогательные линии живут на своём служебном слое и не идут в экспорт
+  await clickTab('Слои');
+  const layerNames = () => [...win.document.querySelectorAll('.laser-layer input.laser-layer-name')]
+    .map((i) => (i as HTMLInputElement).value);
+  const auxRow = [...win.document.querySelectorAll('.laser-layer')]
+    .find((l) => (l.querySelector('input.laser-layer-name') as HTMLInputElement)?.value === 'Вспомогательные');
+  assert(auxRow, `служебный слой вспомогательных линий: ${layerNames().join(', ')}`);
+  await click(auxRow!);
+  await settle();
+  assert(text().includes('Служебная'), 'слой вспомогательных линий — служебный, в файлы не выводится');
+  // клик по строке слоя делает его активным — возвращаем рабочий слой, иначе
+  // новые объекты попали бы на служебный
+  const workRow = [...win.document.querySelectorAll('.laser-layer')]
+    .find((l) => (l.querySelector('input.laser-layer-name') as HTMLInputElement)?.value === 'Слой 1');
+  assert(workRow, 'рабочий слой «Слой 1» на месте');
+  await click(workRow!);
+  await settle();
+  assert(status().includes('Слой: Слой 1'), `рабочий слой снова активен: ${status()}`);
+  await clickTab('Объекты');
+  await click(byTitle('Выбор'));
+  await settle();
 
   // панорама средней кнопкой мыши
   await pointer('pointerdown', px(150), py(100), { button: 1 });
@@ -642,6 +785,11 @@ await settle();
   // «Разбить по пересечениям» — Ctrl+Shift+X по всему листу
   await drawLine(60, 20, 60, 180);
   assert.equal(objRows().length, 4, 'добавлена пересекающая вертикаль');
+  // инструмент рисования больше не выключается сам — к выбору возвращаемся V
+  assert(win.document.querySelector('.tool-dock [data-tool-id="line"].active'),
+    'после отрезка инструмент «Отрезок» остался активным');
+  await key('v');
+  await settle();
   await pointer('pointerdown', px(250), py(150));
   await pointer('pointerup', px(250), py(150));
   await settle();

@@ -298,6 +298,25 @@ export function ensureRoleLayer(doc: LaserDoc, role: LaserLayerRole): { doc: Las
 }
 
 /**
+ * Слой с таким именем: ищет существующий (без учёта регистра) или создаёт свой.
+ *
+ * Служебные наборы объектов — размерные и вспомогательные линии — живут на
+ * собственном подписанном слое, а не плодят безымянные «Слой N».
+ */
+export function ensureLayerByName(
+  doc: LaserDoc,
+  name: string,
+  opts?: { mode?: LaserLayerConfig['mode']; color?: string }
+): { doc: LaserDoc; id: string } {
+  const want = name.trim().toLowerCase();
+  for (const id of layerIds(doc)) {
+    const l = doc.layers[id];
+    if (l && (l.short || '').trim().toLowerCase() === want) return { doc, id };
+  }
+  return addLaserLayer(doc, name, opts);
+}
+
+/**
  * Раскладка «чужих» объектов по своим слоям документа.
  *
  * Генераторы (коробки, развёртки) и импорт файлов отдают объекты с ролями
