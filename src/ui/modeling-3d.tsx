@@ -137,7 +137,7 @@ export function Modeling3DView({
               <p className="modeling-3d-lead">
                 Полноценная среда 3D-моделирования скоро появится в PSBees — раздел сейчас находится в активной разработке.
                 Здесь вы сможете проектировать объёмные корпуса под ваши печатные платы ({boardW}×{boardH} мм),
-                складывать плоские развёртки из лазерного редактора в 3D-сборку и экспортировать модели для 3D-печати.
+                складывать плоские развёртки из редактора чертежей в 3D-сборку и экспортировать модели для 3D-печати.
               </p>
 
               <div className="modeling-3d-actions">
@@ -146,8 +146,8 @@ export function Modeling3DView({
                   className="btn primary"
                   onClick={() => onModeChange('laser')}
                 >
-                  <Ic n="laser" size={16} />
-                  <span>Открыть лазерный редактор и развёртки</span>
+                  <Ic n="bezier" size={16} />
+                  <span>Открыть редактор чертежей и развёртки</span>
                 </button>
                 <button
                   type="button"
@@ -184,7 +184,7 @@ export function Modeling3DView({
             <div className="modeling-3d-feature">
               <div className="modeling-3d-feat-head">
                 <Ic n="unfold" size={18} />
-                <b>Сборка 3D из лазерных развёрток</b>
+                <b>Сборка 3D из развёрток</b>
                 <span className="feat-tag">Интеграция</span>
               </div>
               <p>

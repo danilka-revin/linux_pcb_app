@@ -61,7 +61,7 @@ const LaserEditor = lazy(() => import('./ui/laser').then((m) => ({ default: m.La
 // и грузится отдельно, чтобы каталог и расчёт шип-паза не тянулись в главный чанк.
 const BoxWindow = lazy(() => import('./ui/box-window').then((m) => ({ default: m.BoxWindow })));
 import type { BoxApplyPayload } from './ui/box-studio';
-// Переключение режимов рабочего пространства: платы / лазерный станок / 3D.
+// Переключение режимов рабочего пространства: платы / чертежи / 3D.
 import { ModeSwitcher, loadWorkspaceMode, saveWorkspaceMode, type WorkspaceMode } from './ui/mode-switcher';
 import { Modeling3DView } from './ui/modeling-3d';
 import { Ic } from './ui/icons';
@@ -534,8 +534,8 @@ export default function App({ cloudUser, onLogout }: { cloudUser?: CloudUser; on
   // тема оформления: тёмная (по умолчанию) или светлая, переключается в шапке
   const [theme, setTheme] = useState<ThemeId>(loadTheme);
   // ---------------- режимы рабочего пространства ----------------
-  // «Платы» — этот редактор; «Лазерный» — векторный редактор развёрток для
-  // лазерного станка (в духе CorelDRAW); «3D моделирование» — раздел в разработке.
+  // «Платы» — этот редактор; «Чертежи» — векторный редактор чертежей и развёрток
+  // (в духе CorelDRAW, обмен DXF / PDF / EPS / PLT / SVG); «3D моделирование» — в разработке.
   // Плата при переключении не теряется: состояние редактора остаётся в памяти,
   // а черновик — в хранилище браузера.
   const [mode, setModeState] = useState<WorkspaceMode>(loadWorkspaceMode);
@@ -4211,15 +4211,10 @@ export default function App({ cloudUser, onLogout }: { cloudUser?: CloudUser; on
           <span className="brandmark"><BeeMark /></span>
           <span className="brandtext"><b>PS<em>Bees</em></b><small>PCB · LINUX · WINDOWS · SPRINT-LAYOUT</small></span>
         </div>
-        {/* режимы рабочего пространства: платы / лазерный станок / 3D */}
+        {/* режимы рабочего пространства: платы / чертежи / 3D */}
         <ModeSwitcher mode={mode} onChange={setMode} />
-        <div className="tb-group" aria-label="Генератор коробок">
-          <button className="tb-btn" type="button" data-learn="tb-boxes"
-            title="Генератор коробок: 28 типов шип-паз, 3D-сборка, раскладка на листе и точный DXF"
-            onClick={() => setBoxWindow(true)}>
-            <Ic n="cube" size={17} /><span>Коробки</span>
-          </button>
-        </div>
+        {/* Генератор коробок открывается из тулбара редактора чертежей — в шапке
+            режима «Платы» его кнопки нет. */}
         {order.map((id) => (
           <Fragment key={id}>
             {groups[id]}
@@ -4249,7 +4244,7 @@ export default function App({ cloudUser, onLogout }: { cloudUser?: CloudUser; on
     );
   }, [uiConf, uiOrder, defs, view.s, view.mir, activeCu, size, theme, updButton, saveFile, savePrimary,
     cloudUser, activeCloud, cloudStatus, cloudMessage, undo, redo, fit, zoomAt, setDefs, closeApplication,
-    // переключатель режимов рабочего пространства (платы / лазерный / 3D)
+    // переключатель режимов рабочего пространства (платы / чертежи / 3D)
     mode, setMode,
     // подсказка единой кнопки предпросмотра показывает последний режим
     boardPreviewTab,
@@ -4674,8 +4669,8 @@ export default function App({ cloudUser, onLogout }: { cloudUser?: CloudUser; on
     return (
       <>
       <Suspense fallback={<div className="mode-loading">
-        <ProgressBar label="Загружаем лазерный редактор…" indeterminate live
-          meta="векторное ядро, генератор развёрток и CAM-экспорт подгружаются отдельным чанком" />
+        <ProgressBar label="Загружаем редактор чертежей…" indeterminate live
+          meta="векторное ядро, генераторы развёрток и коробок, форматы DXF, PDF, EPS и PLT подгружаются отдельным чанком" />
       </div>}>
         <LaserEditor
           mode={mode}

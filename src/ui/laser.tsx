@@ -1,8 +1,9 @@
-// Редактор чертежей PSBees — векторное рисование развёрток и деталей в стиле
-// CorelDRAW с точным выводом в DXF (слои чертежа, биговка, керф, перемычки).
+// Редактор чертежей PSBees — векторное рисование чертежей, развёрток и деталей
+// в стиле CorelDRAW: точный вывод в DXF, PDF, EPS, PLT и SVG (слои чертежа,
+// биговка, керф, перемычки) и импорт из тех же форматов.
 //
 // Станочная часть — G-Code, симуляция обработки, задание на станок и режимы
-// резки по слоям — в коде сохранена, но скрыта из интерфейса: её возвращает
+// обработки по слоям — в коде сохранена, но скрыта из интерфейса: её возвращает
 // флаг MACHINE_UI (src/laser/features.ts).
 //
 // Координаты — миллиметры листа, Y вверх; (0;0) — левый нижний угол листа.
@@ -24,12 +25,16 @@ import {
 } from './laser-dialogs';
 import {
   DEFAULT_GCODE_OPTIONS, buildLaserSimulation, exportLaserDxf, exportLaserGCode, exportLaserSvg,
-  importVectorFile,
   type GCodeExportOptions, type LaserSimulation,
 } from '../laser/export';
 import {
   DEFAULT_DXF_OPTIONS, exportDxfPerLayer, type DxfOptions,
 } from '../laser/dxf';
+import {
+  DEFAULT_VECTOR_OPTIONS, exportVectorEps, exportVectorPdf, exportVectorPlt,
+  type VectorExportOptions,
+} from '../laser/corel';
+import { importVectorData } from '../laser/corel-parse';
 import { DEFAULT_UNFOLD_PARAMS, UNFOLD_TEMPLATES, generateUnfolding, type UnfoldParams } from '../laser/unfold';
 import { MACHINE_UI } from '../laser/features';
 import { BoxStudio, type BoxApplyPayload } from './box-studio';
@@ -83,8 +88,8 @@ const LASER_TOOLS: { id: LaserToolId; name: string; icon: string; key: string; h
   { id: 'rect', name: 'Прямоугольник', icon: 'rect', key: 'R', hint: 'протяжка мышью; Shift — квадрат; скругление углов — в свойствах' },
   { id: 'ellipse', name: 'Эллипс / дуга', icon: 'circle', key: 'E', hint: 'протяжка мышью; Shift — окружность; углы начала и конца дуги — в свойствах' },
   { id: 'polygon', name: 'Многоугольник / звезда', icon: 'polygon', key: 'Y', hint: 'протяжка задаёт габарит; число углов и звезда — в свойствах' },
-  { id: 'text', name: 'Текст (гравировка)', icon: 'text', key: 'T', hint: 'клик ставит надпись; текст, кегль и толщину линии меняйте в свойствах справа' },
-  { id: 'dim', name: 'Размерная линия', icon: 'ruler', key: 'D', hint: 'две точки + третий клик задаёт вынос; слой «Размеры» не режется лазером' },
+  { id: 'text', name: 'Текст (надпись)', icon: 'text', key: 'T', hint: 'клик ставит надпись; текст, кегль и толщину линии меняйте в свойствах справа' },
+  { id: 'dim', name: 'Размерная линия', icon: 'ruler', key: 'D', hint: 'две точки + третий клик задаёт вынос; служебный слой «Размеры» не выводится в файлы' },
 ];
 
 const TOOL_GROUPS: LaserToolId[][] = [
@@ -262,6 +267,9 @@ export function LaserEditor({
   const [gcode, setGcode] = useState<GCodeExportOptions>({ ...DEFAULT_GCODE_OPTIONS });
   const [dxfOpts, setDxfOpts] = useState<DxfOptions>({ ...DEFAULT_DXF_OPTIONS });
   const [dxfSplit, setDxfSplit] = useState<LaserDxfSplit>('single');
+  // параметры векторных форматов обмена (PDF, EPS, PLT, SVG): толщина линии,
+  // слои PDF (OCG), перья плоттера, допуск аппроксимации кривых
+  const [vecOpts, setVecOpts] = useState<VectorExportOptions>({ ...DEFAULT_VECTOR_OPTIONS });
   const [draft, setDraft] = useState<Draft | null>(null);
   const [marquee, setMarquee] = useState<{ a: Pt; b: Pt } | null>(null);
   const [nodeEdit, setNodeEdit] = useState<{ id: string; node: number | null } | null>(null);
@@ -813,7 +821,7 @@ export function LaserEditor({
       ...docRef.current,
       layers: { ...docRef.current.layers, [id]: { ...docRef.current.layers[id], ...p } },
       materialPresetId: '',
-    }, `Слой «${docRef.current.layers[id]?.short ?? id}»: параметры лазера`, true);
+    }, `Слой «${docRef.current.layers[id]?.short ?? id}»: параметры`, true);
   }, [commit]);
 
   // ---------------- генератор развёрток ----------------
@@ -869,7 +877,7 @@ export function LaserEditor({
       text: over
         ? `Детали (${(bb![2] - bb![0]).toFixed(0)}×${(bb![3] - bb![1]).toFixed(0)} мм) не влезли на лист `
           + `${docRef.current.w}×${docRef.current.h} мм — увеличьте лист или подберите лист в окне коробок.`
-        : `${p.title} помещены на лист: ${p.shapes.length} объектов, готовы к резке и экспорту в DXF.`,
+        : `${p.title} помещены на лист: ${p.shapes.length} объектов, готовы к правке и экспорту в DXF, PDF, EPS и PLT.`,
       ok: !over,
     });
   }, [commit, setSel]);
@@ -904,8 +912,30 @@ export function LaserEditor({
         download(fileName('gcode'), new Blob([text], { type: 'text/plain;charset=utf-8' }));
         setMsg({ text: `G-Code сохранён: ${fileName('gcode')} (${(text.length / 1024).toFixed(1)} КБ)`, ok: true });
       } else if (format === 'svg') {
-        download(fileName('svg'), new Blob([exportLaserSvg(docRef.current)], { type: 'image/svg+xml;charset=utf-8' }));
+        const text = exportLaserSvg(docRef.current, { strokeWidthMm: vecOpts.strokeWidthMm });
+        download(fileName('svg'), new Blob([text], { type: 'image/svg+xml;charset=utf-8' }));
         setMsg({ text: `SVG сохранён: ${fileName('svg')}`, ok: true });
+      } else if (format === 'pdf') {
+        // векторный PDF 1:1 мм: кривые Безье и слои чертежа как слои PDF (OCG)
+        const text = exportVectorPdf(docRef.current, vecOpts);
+        download(fileName('pdf'), new Blob([text], { type: 'application/pdf' }));
+        setMsg({
+          text: `PDF сохранён: ${fileName('pdf')} (${(text.length / 1024).toFixed(1)} КБ)`
+            + (vecOpts.pdfLayers ? ', слои чертежа — слоями PDF' : ''),
+          ok: true,
+        });
+      } else if (format === 'eps') {
+        const text = exportVectorEps(docRef.current, vecOpts);
+        download(fileName('eps'), new Blob([text], { type: 'application/postscript' }));
+        setMsg({ text: `EPS сохранён: ${fileName('eps')} (${(text.length / 1024).toFixed(1)} КБ)`, ok: true });
+      } else if (format === 'plt') {
+        const text = exportVectorPlt(docRef.current, vecOpts);
+        download(fileName('plt'), new Blob([text], { type: 'text/plain;charset=us-ascii' }));
+        setMsg({
+          text: `PLT сохранён: ${fileName('plt')} — HPGL/2, 40 юнитов на мм`
+            + (vecOpts.pltPensPerLayer ? ', перо на каждый слой' : ', всё в перо 1'),
+          ok: true,
+        });
       } else if (format === 'dxf') {
         if (dxfSplit === 'layers') {
           const files = exportDxfPerLayer(docRef.current, dxfOpts);
@@ -922,8 +952,8 @@ export function LaserEditor({
           setMsg({ text: `DXF сохранён: ${fileName('dxf')} (${(text.length / 1024).toFixed(1)} КБ)`, ok: true });
         }
       } else if (format === 'project') {
-        download(fileName('pslaser'), new Blob([serializeLaserProject(docRef.current)], { type: 'application/json' }));
-        setMsg({ text: `Проект сохранён: ${fileName('pslaser')}`, ok: true });
+        download(fileName('psdraw'), new Blob([serializeLaserProject(docRef.current)], { type: 'application/json' }));
+        setMsg({ text: `Проект сохранён: ${fileName('psdraw')}`, ok: true });
       } else if (format === 'png') {
         const pxPerMm = Math.max(2, Math.min(20, 2400 / Math.max(docRef.current.w, docRef.current.h)));
         const w = Math.max(64, Math.round(docRef.current.w * pxPerMm));
@@ -951,15 +981,18 @@ export function LaserEditor({
     } catch (e) {
       setMsg({ text: e instanceof Error ? e.message : 'Ошибка экспорта.', ok: false });
     }
-  }, [fileName, gcode, dxfOpts, dxfSplit, theme]);
+  }, [fileName, gcode, dxfOpts, dxfSplit, vecOpts, theme]);
 
   const openProjectFile = useCallback((file: File) => {
-    file.text().then((text) => {
-      const name = file.name.toLowerCase();
-      if (name.endsWith('.pslaser') || name.endsWith('.json')) {
-        const next = parseLaserProject(text);
+    const name = file.name.toLowerCase();
+    // Читаем байты, а не текст: PDF и свежий AI хранят сжатые потоки, которые
+    // декодирование в UTF-8 необратимо портит.
+    file.arrayBuffer().then(async (buf) => {
+      const bytes = new Uint8Array(buf);
+      if (name.endsWith('.psdraw') || name.endsWith('.pslaser') || name.endsWith('.json')) {
+        const next = parseLaserProject(new TextDecoder('utf-8').decode(bytes));
         if (!next) {
-          setMsg({ text: 'Это не проект PSBees Laser (.pslaser) или файл повреждён.', ok: false });
+          setMsg({ text: 'Это не проект PSBees (.psdraw / .pslaser) или файл повреждён.', ok: false });
           return;
         }
         past.current = [...past.current, { doc: docRef.current, label: 'Открыт проект' }].slice(-HISTORY_LIMIT);
@@ -972,25 +1005,38 @@ export function LaserEditor({
         setTimeout(() => fit(next), 40);
         return;
       }
-      // SVG / DXF — импорт векторной геометрии
-      const shapes = importVectorFile(text, file.name, docRef.current.h);
-      if (!shapes.length) {
-        setMsg({ text: 'В файле не найдено векторных объектов (поддерживаются SVG и DXF).', ok: false });
+      // векторный импорт: SVG, DXF, PDF, EPS/AI (PostScript) и PLT (HPGL)
+      const res = await importVectorData(file.name, bytes, docRef.current.h);
+      if (!res.shapes.length) {
+        setMsg({
+          text: res.notes.join(' ')
+            || 'В файле не найдено векторных объектов (поддерживаются SVG, DXF, PDF, EPS/AI и PLT).',
+          ok: false,
+        });
         return;
       }
       // переносим импорт в пределы листа
-      const bb = selectionBBox(shapes);
-      let placed = shapes;
+      const bb = selectionBBox(res.shapes);
+      let placed = res.shapes;
       if (bb && (bb[0] < 0 || bb[1] < 0 || bb[2] > docRef.current.w || bb[3] > docRef.current.h)) {
         const dx = 5 - bb[0];
         const dy = 5 - bb[1];
-        placed = shapes.map((s) => translateShape(s, dx, dy));
+        placed = res.shapes.map((s) => translateShape(s, dx, dy));
       }
       commit({ ...docRef.current, shapes: [...docRef.current.shapes, ...placed] },
         `Импорт ${file.name}: ${placed.length} объектов`);
       setSel(new Set(placed.map((s) => s.id)));
+      setMsg({
+        text: `Импорт ${file.name}: ${placed.length} объектов`
+          + (res.pages > 1 ? `, страница 1 из ${res.pages}` : '')
+          + (res.notes.length ? `. ${res.notes.join(' ')}` : '.'),
+        ok: true,
+      });
       setTimeout(() => fit(), 40);
-    }).catch(() => setMsg({ text: 'Не удалось прочитать файл.', ok: false }));
+    }).catch((e: unknown) => setMsg({
+      text: e instanceof Error ? e.message : 'Не удалось прочитать файл.',
+      ok: false,
+    }));
   }, [commit, fit, setDoc, setSel]);
 
   const runSimulate = useCallback(() => {
@@ -1118,7 +1164,7 @@ export function LaserEditor({
     if (tool === 'text') {
       const layer: LaserLayerId = activeLayer === 'guide' ? 'engrave' : activeLayer;
       const shape: LaserShape = {
-        id: luid('text'), kind: 'text', layer, name: 'Надпись (гравировка)',
+        id: luid('text'), kind: 'text', layer, name: 'Надпись',
         x: p.x, y: p.y, text: 'Текст', size: 6, strokeWidth: 0.4, rot: 0, mirror: false,
         filled: layer === 'engrave',
       };
@@ -1977,12 +2023,12 @@ export function LaserEditor({
 
       <div className="tb-group" aria-label="Файл">
         {tb('new', 'Новый лист / новый проект (Ctrl+N)', () => setDialog('new'))}
-        {tb('open', 'Открыть проект или импорт SVG/DXF (Ctrl+O)', () => fileRef.current?.click())}
-        {tb('save', 'Сохранить проект .pslaser (Ctrl+S)', () => void runExport('project'))}
+        {tb('open', 'Открыть проект или импорт: SVG, DXF, PDF, EPS/AI, PLT (Ctrl+O)', () => fileRef.current?.click())}
+        {tb('save', 'Сохранить проект .psdraw (Ctrl+S)', () => void runExport('project'))}
         {tb('spark', 'Векторизовать изображение (трассировка в контуры)', () => setDialog('trace'))}
         {tb('gerber', MACHINE_UI
           ? 'Экспорт на станок: G-Code, DXF, SVG, PNG (Ctrl+E)'
-          : 'Экспорт чертежа: DXF, SVG, проект (Ctrl+E)', () => setDialog('export'), { wide: false })}
+          : 'Экспорт чертежа: DXF, PDF, EPS, PLT, SVG, проект (Ctrl+E)', () => setDialog('export'), { wide: false })}
       </div>
 
       <div className="tb-group" aria-label="Отмена и повтор">
@@ -2163,7 +2209,7 @@ export function LaserEditor({
             <LaserMaterialPanel
               doc={doc}
               onApply={applyMaterial}
-              onThickness={(mm) => commit({ ...docRef.current, materialThickness: mm }, `Толщина материала ${mm} мм`, true)}
+              onThickness={(mm) => commit({ ...docRef.current, materialThickness: mm }, `Толщина листа ${mm} мм`, true)}
             />
             <LaserJobPanel
               doc={doc}
@@ -2186,7 +2232,7 @@ export function LaserEditor({
           </div>
           {!MACHINE_UI && (
             <NI label="Толщина, мм" value={doc.materialThickness} min={0.1} max={50} step={0.1}
-              on={(mm) => commit({ ...docRef.current, materialThickness: mm }, `Толщина материала ${mm} мм`, true)} />
+              on={(mm) => commit({ ...docRef.current, materialThickness: mm }, `Толщина листа ${mm} мм`, true)} />
           )}
           {!MACHINE_UI && (
             <div className="laser-btnrow">
@@ -2256,7 +2302,7 @@ export function LaserEditor({
             }}
           />
 
-          <div className="tool-dock" role="toolbar" aria-label="Инструменты лазерного редактора">
+          <div className="tool-dock" role="toolbar" aria-label="Инструменты редактора чертежей">
             {TOOL_GROUPS.map((grp, gi) => (
               <ToolGroup key={gi}>
                 {gi > 0 && <div className="dock-sep" />}
@@ -2322,7 +2368,7 @@ export function LaserEditor({
           <input
             ref={fileRef}
             type="file"
-            accept=".pslaser,.json,.svg,.dxf,application/json,image/svg+xml"
+            accept=".psdraw,.pslaser,.json,.svg,.dxf,.pdf,.ai,.eps,.ps,.plt,.hp,.hpgl,.cdr,application/pdf,application/postscript,image/svg+xml,application/json"
             style={{ display: 'none' }}
             onChange={(e) => {
               const f = e.target.files?.[0];
@@ -2438,7 +2484,7 @@ export function LaserEditor({
                 layers.engrave = { ...layers.engrave, power: preset.engravePower, speed: preset.engraveSpeed };
                 return layers;
               })() : docRef.current.layers,
-            }, `Лист ${next.w}×${next.h} мм, материал ${next.thickness} мм`);
+            }, `Лист ${next.w}×${next.h} мм, толщина ${next.thickness} мм`);
             setDialog(null);
             setTimeout(() => fit(), 40);
           }}
@@ -2454,6 +2500,8 @@ export function LaserEditor({
           onDxfChange={(patch) => setDxfOpts((o) => ({ ...o, ...patch }))}
           dxfSplit={dxfSplit}
           onDxfSplitChange={setDxfSplit}
+          vec={vecOpts}
+          onVecChange={(patch) => setVecOpts((v) => ({ ...v, ...patch }))}
           onExport={(format) => void runExport(format)}
           onClose={() => setDialog(null)}
         />
@@ -2492,7 +2540,7 @@ function ToolGroup({ children }: { children: ReactNode }) {
   return <Fragment>{children}</Fragment>;
 }
 
-/** Компактная панель сетки и привязки лазерного редактора. */
+/** Компактная панель сетки и привязки редактора чертежей. */
 function LaserGridPanel({
   grid,
   onGrid,

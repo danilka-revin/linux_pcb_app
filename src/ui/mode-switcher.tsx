@@ -1,6 +1,7 @@
 // Переключатель режимов рабочего пространства PSBees в шапке программы:
 // 1. «Платы» — редактор печатных плат (Sprint-Layout / Gerber / ЧПУ)
-// 2. «Лазерный» — векторный редактор развёрток и лазерной резки (в стиле CorelDRAW + LightBurn)
+// 2. «Чертежи» — векторный редактор чертежей и развёрток: DXF, PDF, EPS, PLT и SVG,
+//    обмен с CorelDRAW, AutoCAD и Inkscape (в стиле CorelDRAW)
 // 3. «3D моделирование» — раздел твердотельного 3D-моделирования («Скоро в разработке»)
 
 import { Ic } from './icons';
@@ -48,11 +49,11 @@ export function ModeSwitcher({
         role="tab"
         aria-selected={mode === 'laser'}
         className={'mode-tab' + (mode === 'laser' ? ' active' : '')}
-        title="Лазерный станок и развёртка (векторный редактор в стиле CorelDRAW, генератор развёрток, экспорт DXF / SVG / G-Code)"
+        title="Векторный редактор чертежей: DXF, PDF, EPS, PLT и SVG, генераторы развёрток и коробок — обмен с CorelDRAW, AutoCAD и Inkscape"
         onClick={() => onChange('laser')}
       >
-        <Ic n="laser" size={16} />
-        <span>Лазерный</span>
+        <Ic n="bezier" size={16} />
+        <span>Чертежи</span>
       </button>
       <button
         type="button"

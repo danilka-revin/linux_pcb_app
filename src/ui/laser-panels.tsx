@@ -1,5 +1,5 @@
 // Панели редактора чертежей: слои, свойства объекта, дерево объектов,
-// генератор развёрток, материал и сводка задания на станок.
+// генератор развёрток, толщина листа и сводка задания (станочная часть под MACHINE_UI).
 // Всё в общем стиле PSBees (виджеты NI/TI/SI, классы .props/.field/.btn).
 // Станочные поля (мощность, скорость, проходы, керф, обдув) показываются только
 // при MACHINE_UI — см. src/laser/features.ts.
@@ -26,11 +26,11 @@ import type { LaserSimulation } from '../laser/export';
 
 /** Подсказка назначения слоя — для всплывающего текста в списке слоёв. */
 const LAYER_HINT: Record<LaserLayerConfig['mode'], string> = {
-  cut: 'резка насквозь',
-  fold: 'биговка / сгиб (пунктир)',
-  score: 'надрез / разметка',
-  fill: 'гравировка заливкой',
-  guide: 'служебный, не режется',
+  cut: 'внешний контур детали',
+  fold: 'линия сгиба (пунктир)',
+  score: 'тонкая разметка',
+  fill: 'заливка области',
+  guide: 'служебный, не выводится в файлы',
 };
 
 /** Названия слоёв для выпадающих списков (берём короткие имена из документа). */
@@ -38,7 +38,7 @@ export function layerOptions(doc: LaserDoc): [string, string][] {
   return LASER_LAYER_ORDER.map((id) => [id, doc.layers[id]?.short ?? id]);
 }
 
-// ---------------- слои лазера ----------------
+// ---------------- слои чертежа ----------------
 
 export function LaserLayersPanel({
   doc,
@@ -120,11 +120,11 @@ export function LaserLayersPanel({
           <h3>{MACHINE_UI ? `Параметры лазера · ${cfg.short}` : `Слой · ${cfg.short}`}</h3>
           <SI label="Назначение" value={cfg.mode} on={(v) => onPatch(active, { mode: v as LaserLayerConfig['mode'] })}
             options={[
-              ['cut', 'Резка насквозь'],
-              ['fold', 'Биговка / сгиб'],
-              ['score', 'Надрез / разметка'],
-              ['fill', 'Гравировка заливкой'],
-              ['guide', 'Служебный (не режется)'],
+              ['cut', 'Внешний контур'],
+              ['fold', 'Линия сгиба (биговка)'],
+              ['score', 'Тонкая разметка'],
+              ['fill', 'Заливка области'],
+              ['guide', 'Служебный (не выводится)'],
             ]} />
           {MACHINE_UI && (
             <>
@@ -154,8 +154,8 @@ export function LaserLayersPanel({
           )}
           {!MACHINE_UI && (
             <p className="sub">
-              Назначение слоя определяет его имя и тип линии в DXF и SVG: резка, биговка (пунктир),
-              разметка, гравировка и служебный слой размеров, который не режется.
+              Назначение слоя определяет его имя и тип линии в DXF, PDF, EPS и SVG: внешний контур,
+              линия сгиба (пунктир), разметка, заливка и служебный слой размеров, который не выводится в файлы.
             </p>
           )}
         </div>
@@ -305,7 +305,7 @@ export function UnfoldPanel({
           <NI label="Окно: высота, мм" value={params.displayH} min={5} max={300} step={1} on={(v) => onParams({ displayH: v })} />
           <NI label="Регуляторов, шт" value={params.controlsCount} min={0} max={6} step={1}
             on={(v) => onParams({ controlsCount: Math.round(v) })} />
-          <TI label="Гравировка" value={params.titleText} on={(v) => onParams({ titleText: v })} />
+          <TI label="Маркировка" value={params.titleText} on={(v) => onParams({ titleText: v })} />
         </>
       )}
       {needs.openTop && (
@@ -341,8 +341,8 @@ export function UnfoldPanel({
         <span>{busy ? 'Строим развёртку…' : 'Построить развёртку на листе'}</span>
       </button>
       <p className="sub">
-        Развёртка добавляется на лист отдельными слоями: внешний контур — «Резка», окна и отверстия — «Внутр. рез»,
-        линии сгиба — «Сгиб» (перфорация), маркировка — «Разметка» и «Гравировка», размеры — «Размеры» (не режутся).
+        Развёртка добавляется на лист отдельными слоями: внешний контур — «Контур», окна и отверстия — «Внутренний»,
+        линии сгиба — «Сгиб» (перфорация), маркировка — «Разметка» и «Заливка», размеры — «Размеры» (в файлы не выводятся).
       </p>
     </div>
   );
@@ -498,7 +498,7 @@ export function LaserPropsPanel({
           </label>
           <label className="laser-check">
             <input type="checkbox" checked={one.filled} onChange={(e) => actions.onPatch({ filled: e.target.checked } as Partial<LaserShape>)} />
-            Заливка (гравировка)
+            Заливка области
           </label>
         </>
       )}
@@ -518,7 +518,7 @@ export function LaserPropsPanel({
             checked={'filled' in one ? !!one.filled : false}
             onChange={(e) => actions.onPatch({ filled: e.target.checked } as Partial<LaserShape>)}
           />
-          Заливка (для гравировки)
+          Заливка области
         </label>
       )}
       {one && (one.kind === 'rect' || one.kind === 'path' || one.kind === 'polygon' || one.kind === 'ellipse') && (
@@ -644,11 +644,11 @@ export function LaserPropsPanel({
         <button type="button" className="btn tiny" onClick={() => actions.onContour(-(Math.abs(contourState.delta) || 0.1), contourState.layer)}
           title="Внутренний контур (внутрь)">Внутрь</button>
         <button type="button" className="btn tiny" onClick={() => actions.onContour(doc.layers.cut.kerf / 2 || 0.05, 'cut')}
-          title={`Компенсация реза: +${((doc.layers.cut.kerf || 0) / 2).toFixed(3)} мм наружу по керфу слоя «Резка»`}>
+          title={`Компенсация толщины инструмента: +${((doc.layers.cut.kerf || 0) / 2).toFixed(3)} мм наружу по керфу слоя «Контур»`}>
           Керф наружу
         </button>
         <button type="button" className="btn tiny" onClick={() => actions.onContour(-(doc.layers.cut.kerf / 2 || 0.05), 'inner')}
-          title="Компенсация реза внутрь (отверстия становятся меньше на керф)">Керф внутрь</button>
+          title="Компенсация толщины инструмента внутрь (отверстия становятся меньше на керф)">Керф внутрь</button>
       </div>
 
       <h3>Скругление углов (Fillet)</h3>

@@ -28,10 +28,11 @@ import {
   type Pt,
 } from '../laser/model';
 import { MACHINE_UI } from '../laser/features';
+import { DEFAULT_VECTOR_OPTIONS, PLT_PENS, type VectorExportOptions } from '../laser/corel';
 import { toScreen, type LaserView } from '../laser/render';
 import { facesToPolys, traceImage, type BitmapImage, type TraceResult } from '../pcb/imagetrace';
 
-export type LaserExportFormat = 'gcode' | 'svg' | 'dxf' | 'png' | 'project';
+export type LaserExportFormat = 'gcode' | 'svg' | 'dxf' | 'png' | 'project' | 'pdf' | 'eps' | 'plt';
 
 /** Как отдавать DXF: одним файлом или отдельными файлами по слоям (архивом ZIP). */
 export type LaserDxfSplit = 'single' | 'layers';
@@ -126,7 +127,7 @@ export function LaserSheetDialog({
           ? 'Размер стола задаёт рабочее поле: объекты за его пределами станок не обработает. '
             + 'Толщина материала используется генератором развёрток (шип-паз, клапаны, зазоры посадки).'
           : 'Размер листа задаёт границы чертежа: объекты за его пределами не попадут в раскладку. '
-            + 'Толщина материала используется генератором развёрток и коробок (шип-паз, клапаны, зазоры посадки).'}
+            + 'Толщина листа используется генератором развёрток и коробок (шип-паз, клапаны, зазоры посадки).'}
       </p>
     </Modal>
   );
@@ -143,6 +144,8 @@ export function LaserExportDialog({
   onDxfChange,
   dxfSplit,
   onDxfSplitChange,
+  vec,
+  onVecChange,
   onExport,
   onClose,
 }: {
@@ -154,6 +157,8 @@ export function LaserExportDialog({
   onDxfChange: (patch: Partial<DxfOptions>) => void;
   dxfSplit: LaserDxfSplit;
   onDxfSplitChange: (split: LaserDxfSplit) => void;
+  vec: VectorExportOptions;
+  onVecChange: (patch: Partial<VectorExportOptions>) => void;
   onExport: (format: LaserExportFormat) => void;
   onClose: () => void;
 }) {
@@ -224,14 +229,35 @@ export function LaserExportDialog({
       name: 'AutoCAD DXF',
       ext: dxfSplit === 'layers' ? `.zip (${dxfFiles.length} × .dxf)` : '.dxf',
       icon: 'gerber',
-      desc: 'Точный векторный чертёж 1:1 в миллиметрах по слоям CUT / INNER / FOLD / SCORE / ENGRAVE — открывается в RDWorks, CypCut, CorelDRAW, AutoCAD, LightBurn. Версию, сущности, слои, допуски и разбивку по файлам можно настроить ниже.',
+      desc: 'Точный векторный чертёж 1:1 в миллиметрах по слоям CUT / INNER / FOLD / SCORE / ENGRAVE — открывается в CorelDRAW, AutoCAD, Adobe Illustrator, Inkscape и Компас-3D. Версию, сущности, слои, допуски и разбивку по файлам можно настроить ниже.',
+    },
+    {
+      id: 'pdf',
+      name: 'PDF 1:1 мм',
+      ext: '.pdf',
+      icon: 'layers',
+      desc: 'Векторный PDF в масштабе 1:1 (1 мм = 2.8346 пт): кривые Безье без аппроксимации, цвета и пунктир слоёв, а слои чертежа становятся слоями PDF (OCG). CorelDRAW, Illustrator, Inkscape и Acrobat разбирают такой файл по слоям и читают его обратно.',
+    },
+    {
+      id: 'eps',
+      name: 'EPS / PostScript',
+      ext: '.eps',
+      icon: 'bezier',
+      desc: 'EPS 3.0 для CorelDRAW и Illustrator: точные кривые, цвета и пунктир слоёв, %%BoundingBox по размеру листа. Слои помечены комментарием %PSBeesLayer — по нему же обратный импорт возвращает объекты на свои слои.',
+    },
+    {
+      id: 'plt',
+      name: 'PLT (HPGL/2)',
+      ext: '.plt',
+      icon: 'grid',
+      desc: 'Формат плоттеров: 40 юнитов на миллиметр (1 юнит = 0.025 мм), своё перо на каждый слой, пунктир биговки — настоящими пропусками пера. CorelDRAW и Illustrator открывают PLT как кривые, перья превращаются в слои.',
     },
     {
       id: 'svg',
       name: 'SVG 1:1 мм',
       ext: '.svg',
       icon: 'png',
-      desc: 'Масштаб 1:1 в миллиметрах, группы по слоям, пунктир биговки. Для CorelDRAW, Inkscape, Illustrator и веб-станков.',
+      desc: 'Масштаб 1:1 в миллиметрах, группы по слоям, пунктир биговки. Для CorelDRAW, Inkscape, Illustrator и просмотра в браузере.',
     },
     {
       id: 'png',
@@ -242,10 +268,10 @@ export function LaserExportDialog({
     },
     {
       id: 'project',
-      name: 'Проект PSBees Laser',
-      ext: '.pslaser',
+      name: 'Проект PSBees',
+      ext: '.psdraw',
       icon: 'save',
-      desc: 'Полный проект: лист, слои с режимами лазера, материал, объекты и группы. Открывается обратно в этом редакторе.',
+      desc: 'Полный проект: лист, слои, толщина, объекты и группы. Открывается обратно в этом редакторе; прежние файлы .pslaser тоже читаются.',
     },
   ];
 
@@ -283,6 +309,90 @@ export function LaserExportDialog({
         ))}
       </div>
       <p className="sub">{active.desc}</p>
+
+      {!MACHINE_UI && (
+        <p className="hint laser-corel-hint">
+          Обмен с CorelDRAW: экспорт в DXF, PDF, EPS, PLT и SVG, импорт — из DXF, PDF, EPS/AI, PLT и SVG.
+          Родной формат <b>.cdr закрытый</b> (двоичный, без публичной спецификации), поэтому в CorelDRAW
+          сохраняйте чертёж через «Файл → Опубликовать в PDF» или «Файл → Экспорт» в EPS, SVG, DXF или PLT —
+          редактор прочитает любой из них и вернёт объекты на слои.
+        </p>
+      )}
+
+      {(format === 'pdf' || format === 'eps' || format === 'plt' || format === 'svg') && (
+        <div className="props laser-vec-opts">
+          <h3>Параметры векторного файла</h3>
+          <NI
+            label="Толщина линии, мм"
+            value={vec.strokeWidthMm}
+            min={0}
+            max={2}
+            step={0.05}
+            on={(v) => onVecChange({ strokeWidthMm: v })}
+          />
+          {format === 'plt' && (
+            <NI
+              label="Допуск аппроксимации кривых, мм"
+              value={vec.tolerance}
+              min={0.001}
+              max={1}
+              step={0.005}
+              on={(v) => onVecChange({ tolerance: v })}
+            />
+          )}
+          <div className="laser-dxf-checks">
+            {format === 'pdf' && (
+              <label className="laser-check">
+                <input
+                  type="checkbox"
+                  checked={vec.pdfLayers}
+                  onChange={(e) => onVecChange({ pdfLayers: e.target.checked })}
+                />
+                Слои чертежа как слои PDF (OCG)
+              </label>
+            )}
+            {format === 'plt' && (
+              <label className="laser-check">
+                <input
+                  type="checkbox"
+                  checked={vec.pltPensPerLayer}
+                  onChange={(e) => onVecChange({ pltPensPerLayer: e.target.checked })}
+                />
+                Отдельное перо на каждый слой
+              </label>
+            )}
+            {format !== 'svg' && (
+              <>
+                <label className="laser-check">
+                  <input
+                    type="checkbox"
+                    checked={vec.includeGuide}
+                    onChange={(e) => onVecChange({ includeGuide: e.target.checked })}
+                  />
+                  Служебный слой (размеры и направляющие)
+                </label>
+                <label className="laser-check">
+                  <input
+                    type="checkbox"
+                    checked={vec.includeHidden}
+                    onChange={(e) => onVecChange({ includeHidden: e.target.checked })}
+                  />
+                  Скрытые объекты
+                </label>
+              </>
+            )}
+          </div>
+          <p className="sub">
+            {format === 'pdf'
+              ? 'Масштаб 1:1: 1 мм листа = 2.8346 пункта PDF, ось Y вверх, как в чертеже. Слои CUT, INNER, FOLD, SCORE, ENGRAVE становятся слоями PDF — в CorelDRAW и Acrobat их можно включать и выключать по отдельности.'
+              : format === 'eps'
+                ? 'Масштаб 1:1 в пунктах PostScript, начало координат — левый нижний угол листа. Каждый слой помечен комментарием %PSBeesLayer, поэтому обратный импорт возвращает объекты на свои слои.'
+                : format === 'plt'
+                  ? `Масштаб 1:1: 40 юнитов HPGL на миллиметр. Перья: ${PLT_PENS.cut} — CUT, ${PLT_PENS.inner} — INNER, ${PLT_PENS.fold} — FOLD, ${PLT_PENS.score} — SCORE, ${PLT_PENS.engrave} — ENGRAVE, ${PLT_PENS.guide} — GUIDE. Кривые раскладываются полилинией с заданным допуском: HPGL не знает Безье.`
+                  : 'Масштаб 1:1 в миллиметрах, группы по слоям, пунктир биговки свойством stroke-dasharray.'}
+          </p>
+        </div>
+      )}
 
       <div className="laser-export-summary">
         <div><span>Проект</span><b>{doc.name}</b></div>
@@ -373,7 +483,7 @@ export function LaserExportDialog({
           </div>
           <p className="sub">
             {dxfSplit === 'layers'
-              ? 'Каждый слой чертежа — отдельный DXF внутри архива: в RDWorks и CypCut файлы заводятся по одному, режимы назначаются сразу и ничего не теряется при импорте.'
+              ? 'Каждый слой чертежа — отдельный DXF внутри архива: в CorelDRAW и CAD-программах файлы заводятся по одному, цвета и типы линий сохраняются, ничего не теряется при импорте.'
               : 'Все слои в одном файле: слои CUT, INNER, FOLD, SCORE, ENGRAVE становятся слоями DXF со своими цветами и типами линий.'}
           </p>
 
@@ -463,7 +573,7 @@ export function LaserExportDialog({
             <label className="laser-check">
               <input type="checkbox" checked={dxf.kerf}
                 onChange={(e) => onDxfChange({ kerf: e.target.checked })} />
-              Компенсация толщины луча (керф) на слоях резки
+              Компенсация толщины инструмента (керф): контур смещается на половину толщины
             </label>
             <label className="laser-check">
               <input type="checkbox" checked={dxf.tabs}
@@ -1062,7 +1172,7 @@ export function LaserTraceDialog({
               ? `Контуров: ${result.faces.length} · размер ${result.widthMm.toFixed(1)} × ${result.heightMm.toFixed(1)} мм · отброшено мелких пятен: ${result.dropped}`
               : bitmap
                 ? 'Векторизуем…'
-                : 'Выберите изображение — оно превратится в контуры для гравировки или резки.'}
+                : 'Выберите изображение — оно превратится в векторные контуры чертежа.'}
           </div>
         </div>
       </div>
