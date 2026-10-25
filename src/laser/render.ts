@@ -238,6 +238,8 @@ export interface DrawShapeOpts {
   ghost?: boolean;
   /** Цвет листа — подложка подписи размерной линии (иначе в светлой теме она тёмная). */
   sheetBg?: string;
+  /** Пунктир в экранных пикселах: штриховые и служебные слои видны как в файле. */
+  dash?: number[];
 }
 
 /** Отрисовка одной фигуры в цвете её слоя */
@@ -258,6 +260,7 @@ export function drawLaserShape(
   ctx.lineCap = 'round';
   if (opts.draft) ctx.setLineDash([5, 4]);
   else if (opts.ghost) ctx.setLineDash([3, 3]);
+  else if (opts.dash && opts.dash.length) ctx.setLineDash(opts.dash);
 
   const trace = (pts: Pt[]) => {
     ctx.beginPath();
