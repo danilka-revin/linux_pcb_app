@@ -764,6 +764,168 @@ export function tactFootprint(o: {
   return { els, spec: { pins: 4, pitch: r3(Math.min(px, py)), labels: 4, holes: 0 } };
 }
 
+/** DHT11/DHT22: разъём готового 3-pin модуля или 4-pad bare sensor. */
+export interface DhtOpts {
+  bare?: boolean;
+  pitch?: number;
+  bodyW?: number;
+  bodyH?: number;
+  padSize?: number;
+  drill?: number;
+  labels?: boolean;
+  layer?: LibLayer;
+  title?: string;
+}
+
+export function dhtFootprint(o: DhtOpts = {}): { els: LibEl[]; spec: FpSpec } {
+  const layer = o.layer ?? 's1';
+  const bare = !!o.bare;
+  const pitch = o.pitch ?? 2.54;
+  const bodyW = o.bodyW ?? (bare ? 12 : 18);
+  const bodyH = o.bodyH ?? (bare ? 15.5 : 15);
+  const padSize = o.padSize ?? 1.8;
+  const drill = o.drill ?? 1.0;
+  const names = bare ? ['VCC', 'DATA', 'NC', 'GND'] : ['DATA', 'VCC', 'GND'];
+  const y = -bodyH / 2 - 2.0;
+  const x0 = -((names.length - 1) * pitch) / 2;
+  const els: LibEl[] = [SR(-bodyW / 2, -bodyH / 2, bodyW, bodyH, silkTh(), layer)];
+  const pts: LabelledPt[] = [];
+  for (let i = 0; i < names.length; i++) {
+    const x = x0 + i * pitch;
+    els.push(P(x, y, drill, padSize, i === 0 ? 'square' : 'round'));
+    pts.push({ x, y, t: names[i] });
+  }
+  if (o.labels !== false) els.push(...rowLabels(pts, 0.8, false, padSize / 2, layer));
+  if (o.title) els.push(lc(0, bodyH / 2 + 0.8, o.title, 0.9, 0, layer));
+  return {
+    els,
+    spec: { pins: names.length, pitch: r3(pitch), labels: o.labels === false ? 0 : names.length, w: r3(bodyW), h: r3(bodyH), holes: 0 },
+  };
+}
+
+/** Трёхпроводное подключение адресной ленты: GND, DIN/DOUT, +V. */
+export interface LedStripOpts {
+  pitch?: number;
+  padSize?: number;
+  drill?: number;
+  voltage?: '5V' | '12V';
+  output?: boolean;
+  labels?: boolean;
+  layer?: LibLayer;
+  title?: string;
+}
+
+export function ledStripFootprint(o: LedStripOpts = {}): { els: LibEl[]; spec: FpSpec } {
+  const layer = o.layer ?? 's1';
+  const pitch = o.pitch ?? 2.54;
+  const padSize = o.padSize ?? 2.0;
+  const drill = o.drill ?? 1.0;
+  const signal = o.output ? 'DOUT' : 'DIN';
+  const names = ['GND', signal, o.voltage ?? '5V'];
+  const x0 = -pitch;
+  const pts: LabelledPt[] = [];
+  const els: LibEl[] = [];
+  for (let i = 0; i < names.length; i++) {
+    const x = x0 + i * pitch;
+    els.push(P(x, 0, drill, padSize, i === 0 ? 'square' : 'round'));
+    pts.push({ x, y: 0, t: names[i] });
+  }
+  // Рамка зоны пайки, оставляет площадки доступными для проводов.
+  els.push(SR(-pitch - 1.4, -2.5, 2 * pitch + 2.8, 5, 0.2, layer));
+  if (o.labels !== false) els.push(...rowLabels(pts, 0.8, false, padSize / 2, layer));
+  if (o.title) els.push(lc(0, 3.4, o.title, 0.9, 0, layer));
+  return {
+    els,
+    spec: { pins: 3, pitch: r3(pitch), labels: o.labels === false ? 0 : 3, w: r3(2 * pitch + padSize), h: r3(5), holes: 0 },
+  };
+}
+
+/** Макет площадок дискретного 12 V MOSFET-драйвера DC-соленоида. */
+export function solenoidDriverFootprint(o: { layer?: LibLayer; title?: string } = {}): { els: LibEl[]; spec: FpSpec } {
+  const layer = o.layer ?? 's1';
+  const els: LibEl[] = [];
+  const pad = (x: number, y: number, pin: string, size: number, drill: number, square = false): void => {
+    const p = P(x, y, drill, size, square ? 'square' : 'round');
+    if (p.kind !== 'pad') throw new Error('pad factory');
+    els.push({ ...p, pin });
+  };
+  const text = (x: number, y: number, t: string, size = 0.8): void => {
+    els.push(LT(x, y, t, size, thFor(size), 0, layer));
+  };
+  const line = (x1: number, y1: number, x2: number, y2: number, w = 0.2): void => {
+    els.push(SL(x1, y1, x2, y2, w, layer));
+  };
+
+  // J1: signal, common ground. J2: 12 V input. J3: coil terminals.
+  const ctrl = [-24, -21.46];
+  pad(ctrl[0], 16, 'CTRL_IN', 1.8, 0.9, true);
+  pad(ctrl[1], 16, 'CTRL_GND', 1.8, 0.9);
+  els.push(SR(-26.1, 18.3, 5.9, 4.2, silkTh(), layer));
+  text(-25, 23.0, 'J1 CTRL');
+  els.push(...rowLabels([
+    { x: ctrl[0], y: 16, t: 'IN' }, { x: ctrl[1], y: 16, t: 'GND' },
+  ], 0.75, false, 0.9, layer));
+
+  const pwr = [-2.54, 2.54];
+  pad(pwr[0], 16, 'VIN_12V', 3.4, 1.6, true);
+  pad(pwr[1], 16, 'GND_PWR', 3.4, 1.6);
+  els.push(SR(-6.1, 18.3, 7.2, 4.2, silkTh(), layer));
+  text(-5.6, 23.0, 'J2 12V');
+  els.push(...rowLabels([
+    { x: pwr[0], y: 16, t: '+12V' }, { x: pwr[1], y: 16, t: 'GND' },
+  ], 0.75, false, 1.7, layer));
+
+  const load = [18, 23.08];
+  pad(load[0], 16, 'LOCK_PLUS', 3.4, 1.6, true);
+  pad(load[1], 16, 'LOCK_SW', 3.4, 1.6);
+  els.push(SR(14.4, 18.3, 12.3, 4.2, silkTh(), layer));
+  text(14.7, 23.0, 'J3 LOCK');
+  els.push(...rowLabels([
+    { x: load[0], y: 16, t: 'LOCK+' }, { x: load[1], y: 16, t: 'SW' },
+  ], 0.75, false, 1.7, layer));
+
+  // Q1 logic-level MOSFET, TO-220-compatible row: Gate / Drain / Source.
+  const qx = [-2.54, 0, 2.54];
+  ['GATE', 'DRAIN', 'SOURCE'].forEach((pin, i) => pad(qx[i], 3, `Q1_${pin}`, 2.2, 1.2, i === 0));
+  els.push(SR(-5.4, 5.2, 10.8, 7.0, silkTh(), layer));
+  text(-4.8, 12.7, 'Q1 MOSFET');
+  els.push(...rowLabels(qx.map((x, i) => ({ x, y: 3, t: ['G', 'D', 'S'][i] })), 0.75, false, 1.1, layer));
+
+  // RG series gate resistor (10.16 mm lead pitch); RPD is a gate pull-down.
+  for (const [cy, ref, a, b] of [[3, 'RG', 'CTRL_IN', 'Q1_GATE'], [-6, 'RPD', 'Q1_GATE', 'GND_PWR']] as const) {
+    pad(-20.08, cy, `${ref}_1_${a}`, 1.8, 0.9, true);
+    pad(-9.92, cy, `${ref}_2_${b}`, 1.8, 0.9);
+    els.push(SR(-17.9, cy - 1.6, 5.8, 3.2, silkTh(), layer));
+    text(-17.7, cy + 2.1, ref, 0.7);
+  }
+
+  // D1: flyback diode across the lock terminals; cathode (+12 V) at the top.
+  pad(10, 5.54, 'D1_K', 2.4, 1.1, true);
+  pad(10, 0.46, 'D1_A', 2.4, 1.1);
+  els.push(SR(8.6, 2.0, 2.8, 2.0, silkTh(), layer));
+  line(8.8, 2.7, 11.2, 2.7, 0.3); // cathode band
+  text(8.1, -2.0, 'D1 FLYBACK', 0.7);
+  els.push(...labelsFor([
+    { x: 10, y: 5.54, t: 'K' }, { x: 10, y: 0.46, t: 'A' },
+  ], 'right', 0.75, 1.2, layer));
+
+  // C1 bulk reservoir across input; it smooths transients but does not increase DC supply capacity.
+  pad(20, 5.54, 'C1_PLUS', 2.6, 1.2, true);
+  pad(20, 0.46, 'C1_MINUS', 2.6, 1.2);
+  els.push(SR(18.1, 1.9, 3.8, 2.2, silkTh(), layer));
+  text(18.4, 7.0, 'C1 BULK', 0.7);
+  els.push(...labelsFor([
+    { x: 20, y: 5.54, t: '+' }, { x: 20, y: 0.46, t: '-' },
+  ], 'right', 0.75, 1.3, layer));
+
+  if (o.title) text(-4.5, -12.0, o.title, 0.9);
+  const pins = els.filter((e) => e.kind === 'pad').length;
+  return {
+    els,
+    spec: { pins, labels: els.filter((e) => e.kind === 'text').length, pitch: 2.54, w: 52, h: 34, holes: 0 },
+  };
+}
+
 /** TO-92 / TO-126 / TO-220: 3 вывода (линия или треугольник) + отверстие под винт */
 export function packFootprint(o: {
   pitch?: number; padSize?: number; drill?: number;
@@ -1136,6 +1298,154 @@ export function relayFootprint(o: {
   }
   els.push(...labelsFor(pts, 'down', 0.8, size / 2, layer));
   return { els, spec: { pins, pitch: r3(pitch), labels: pins } };
+}
+
+// ------------------------------------------------------ модуль реле на стойках
+
+/**
+ * Габариты плат типовых модулей реле, мм. Источники: SunFounder TS0011 —
+ * 73 × 54 (4 канала), у клонов того же чертежа встречается 75 × 55 и 77 × 54;
+ * 1 канал — 50 × 26, 2 канала — 50.5 × 38.5, 8 каналов — 138 × 56 (шаг крепежа
+ * 131 × 49.5, то есть отступ центра от края 3.5 и 3.25 мм).
+ * Разброс у клонов большой, поэтому размер задаётся и вручную.
+ */
+export const RELAY_MOD_SIZE: Record<number, { w: number; h: number }> = {
+  1: { w: 50, h: 26 },
+  2: { w: 50.5, h: 38.5 },
+  4: { w: 75, h: 55 },
+  8: { w: 138, h: 56 },
+};
+
+export interface RelayModOpts {
+  /** число каналов (реле на модуле), 1…8 */
+  ch?: number;
+  /** габарит платы модуля, мм; 0/не задано — по числу каналов (RELAY_MOD_SIZE) */
+  w?: number;
+  h?: number;
+  /** число отверстий под стойки: 0…4 (по умолчанию 4) */
+  holes?: number;
+  /** Ø отверстий под стойки; 0 — без крепежа */
+  holeD?: number;
+  /** отступ центра отверстия от края платы модуля, мм */
+  holeInset?: number;
+  /** кольцо вокруг крепежа на шелкографии (метки под стойку; меди не добавляет) */
+  ring?: boolean;
+  /** площадки, к которым паяются провода от разъёма управления */
+  wires?: boolean;
+  /** отдельные площадки под JD-VCC (питание реле своим источником) */
+  jd?: boolean;
+  /** шаг площадок под провода, мм */
+  wirePitch?: number;
+  padSize?: number;
+  drill?: number;
+  /** корпуса реле на шелкографии (ориентировочно — только чтобы видеть габарит) */
+  relays?: boolean;
+  labels?: boolean;
+  /** контур модуля на шелкографии */
+  silk?: boolean;
+  /** подписать габарит модуля */
+  dim?: boolean;
+  layer?: LibLayer;
+  title?: string;
+}
+
+/**
+ * Посадочное место под готовый модуль реле, который ставят на стойки,
+ * а к плате подключают проводами.
+ *
+ * На самой плате меди почти нет: контур модуля, четыре отверстия под стойки
+ * (M3 → Ø3.2, у модуля они Ø3.1) и ряд площадок за габаритом модуля — к ним
+ * паяются провода от разъёма управления. Порядок разъёма у типового модуля:
+ * GND, IN1…INn, VCC; рядом джампер JD-VCC/VCC — питание реле можно взять
+ * отдельно, если у вашей версии модуля есть для этого выводы (сверьтесь с маркировкой).
+ *
+ * Разъём управления у модуля на длинной стороне, поэтому площадки выведены
+ * за длинную сторону контура: так их можно пропаять, когда модуль уже стоит
+ * на стойках. Если у вашего модуля разъём с другого края — поверните деталь.
+ */
+export function relayModuleFootprint(o: RelayModOpts): { els: LibEl[]; spec: FpSpec } {
+  const layer = o.layer ?? 's1';
+  const ch = Math.max(1, Math.min(8, Math.round(o.ch ?? 4)));
+  const tab = RELAY_MOD_SIZE[ch] ?? RELAY_MOD_SIZE[4];
+  const w = o.w && o.w > 0 ? o.w : tab.w;
+  const h = o.h && o.h > 0 ? o.h : tab.h;
+  const pitch = o.wirePitch ?? 2.54;
+  const padSize = o.padSize ?? 1.8;
+  const drill = o.drill ?? 1.0;
+  const holeD = o.holeD ?? 3.2;
+  const inset = o.holeInset ?? 3.5;
+  const els: LibEl[] = [];
+  let holes = 0;
+  let pins = 0;
+  let labels = 0;
+
+  // контур модуля — по нему видно, что окажется над платой
+  if (o.silk !== false) els.push(SR(-w / 2, -h / 2, w, h, silkTh(), layer));
+
+  // крепёж под стойки: четыре отверстия по углам, как у модуля
+  if (holeD > 0) {
+    const hx = Math.max(holeD / 2 + 0.4, Math.min(w / 2 - inset, w / 2 - holeD / 2 - 0.4));
+    const hy = Math.max(holeD / 2 + 0.4, Math.min(h / 2 - inset, h / 2 - holeD / 2 - 0.4));
+    const all: [number, number][] = [[-hx, -hy], [hx, -hy], [hx, hy], [-hx, hy]];
+    const count = Math.max(0, Math.min(4, Math.round(o.holes ?? 4)));
+    const spots = count === 0 ? [] : count === 1 ? [all[0]]
+      : count === 2 ? [all[0], all[2]] : count === 3 ? [all[0], all[1], all[3]] : all;
+    for (const [x, y] of spots) {
+      holes++;
+      els.push({ kind: 'hole', x, y, d: holeD });
+      // кольцо-метка вокруг стойки: видно, что тут ничего не паяем и не сверлим лишнего
+      if (o.ring) els.push(SC(x, y, holeD / 2 + 1.0, 0.2, layer));
+    }
+  }
+
+  // корпуса реле: SRD-05VDC-SL-C 19.2 × 15.6 мм, стоят в ряд вдоль длинной стороны,
+  // клеммниками к краю. Положение ориентировочное — нужно, чтобы видеть занятое место.
+  if (o.relays !== false && o.silk !== false) {
+    const bl = 15.6, bd = 19.2;                     // длина вдоль X, глубина вдоль Y
+    const step = ch > 1 ? (w - 6) / ch : 0;
+    const bw = Math.min(bl, step > 0 ? step - 0.6 : bl);
+    const yc = h / 2 - bd / 2 - 2;                  // к верхнему краю, где клеммники
+    const x0 = -((ch - 1) * step) / 2;
+    for (let i = 0; i < ch; i++) {
+      const x = x0 + i * step;
+      els.push(SR(x - bw / 2, yc - bd / 2, bw, bd, 0.15, layer));
+      if (o.labels !== false) {
+        labels++;
+        els.push(lc(x, yc - bd / 2 - 1.1, `K${i + 1}`, 0.7, 0, layer));
+      }
+    }
+  }
+
+  // площадки под провода управления — за габаритом модуля, чтобы паять было удобно
+  if (o.wires !== false) {
+    const names = ['GND', ...Array.from({ length: ch }, (_, i) => `IN${i + 1}`), 'VCC'];
+    if (o.jd !== false) names.push('JD-VCC', 'GND2');
+    const n = names.length;
+    const y = -h / 2 - 2.2;
+    const x0 = -((n - 1) * pitch) / 2;
+    const pts: LabelledPt[] = [];
+    for (let i = 0; i < n; i++) {
+      const x = x0 + i * pitch;
+      pins++;
+      els.push(P(x, y, drill, padSize, i === 0 ? 'square' : 'round'));
+      pts.push({ x, y, t: names[i] });
+    }
+    if (o.labels !== false) {
+      // подписи повёрнуты на 90°: в ряду с шагом 2.54 мм горизонтальный текст не влезает
+      labels += pts.length;
+      els.push(...rowLabels(pts, 0.8, false, padSize / 2, layer));
+    }
+  }
+
+  if (o.dim !== false) els.push(lc(0, h / 2 + 0.8, `${r3(w)} x ${r3(h)} мм`, 1.0, 0, layer));
+  if (o.title) els.push(lc(0, h / 2 + 2.4, o.title, 1.1, 0, layer));
+  return {
+    els,
+    spec: {
+      pins, pitch: pins > 1 ? r3(pitch) : undefined, holes, labels,
+      w: r3(w), h: r3(h),
+    },
+  };
 }
 
 /** DIP-переключатель: n секций по 2 вывода */
