@@ -113,13 +113,18 @@ const EXTRA: Record<string, string[]> = {
   chip: ['0805', '1206диод', 'smd 0402', 'конденсатор 0603'],
   row: ['header 2x40', 'гребёнка 1x3 90', 'idc 10 шаг 2.54', 'папа 40'],
   klem: ['клеммник 2 контакта 5.08 без шелкографии', 'клеммник 4', 'клеммник 3 контакта 3.5'],
-  tact: ['tact 6x6 4pin', 'кнопка 12x12'],
+  tact: ['tact 6x6 4pin', 'кнопка 12x12', 'тактовая кнопка 6x6'],
   pack: ['to220', 'to-92', 'корпус TO-3P'],
   sot: ['sot-23', 'sot-89', 'транзистор smd'],
   elco: ['электролит 10 мм шаг 5', 'конденсатор 100нф шаг 5.08'],
   module: ['esp32 devkit', 'duino nano', 'raspberry pi pico', 'nodemcu', 'blue pill', 'stm32f103c8t6'],
   shield: ['nano shield m3 крепёж', 'pro shield', 'arduino uno shield'],
   mega: ['arduino mega 2560', 'mega2560 без icsp', 'ардуино мега без подписей'],
+  relaymod: ['модуль реле 4 канала', 'модуль реле 8 каналов', 'модуль реле 2 канала без jd',
+    'модуль реле 4 канала 75x55', '8-канальный модуль реле', 'модуль реле 1 канал кольцо', 'модуль реле 4 канала 2 отверстия'],
+  dht: ['dht11 модуль', 'dht11 голый сенсор', 'dht22', 'dht11 20x16'],
+  ledstrip: ['подключение адресной ленты ws2812b', 'ws2815 12v', 'адресной ленты выход dout'],
+  solenoid: ['драйвер соленоида 12в', 'электрозамок 12в'],
   board: ['плата 60x40 4 m3', 'плата 100x80, отступ 4'],
   hole: ['крепёжное отверстие m3 x4 шаг 20', '2 отверстия 3.2'],
   pad: ['тестпоинт 1.8/1.0', 'площадка 2.5/1.0'],
@@ -255,6 +260,51 @@ expect('idc 10 шаг 2.54', { family: 'row', n: 10, specPins: 10 });
 expect('клеммник 2 контакта 5.08', { family: 'klem', n: 2, pitch: 5.08 });
 expect('клеммник 2 контакта 5.08 без шелкографии', { family: 'klem', n: 2, silk: false, specHoles: 0 });
 expect('tact 6x6 4pin', { family: 'tact', px: 6, py: 6, specPins: 4 });
+expect('тактовая кнопка 6x6', { family: 'tact', specPins: 4 });
+expect('dht11 модуль', { family: 'dht', bare: false, pitch: 2.54, specPins: 3, bodyW: 18, bodyH: 15 });
+expect('dht11 голый сенсор', { family: 'dht', bare: true, specPins: 4 });
+expect('dht22', { family: 'dht', specPins: 3 });
+expect('dht11 20x16', { family: 'dht', bodyW: 20, bodyH: 16 });
+expect('подключение адресной ленты ws2812b', { family: 'ledstrip', voltage: '5V', output: false, specPins: 3 });
+expect('ws2815 12v', { family: 'ledstrip', voltage: '12V', specPins: 3 });
+expect('адресной ленты выход dout', { family: 'ledstrip', output: true });
+expect('драйвер соленоида 12в', { family: 'solenoid', specPins: 17 });
+{
+  const r = generate('драйвер соленоида 12в');
+  const required = ['CTRL_IN', 'CTRL_GND', 'VIN_12V', 'GND_PWR', 'LOCK_PLUS', 'LOCK_SW',
+    'Q1_GATE', 'Q1_DRAIN', 'Q1_SOURCE', 'D1_K', 'D1_A', 'C1_PLUS', 'C1_MINUS'];
+  if (!r.ok) fail('solenoid driver: не собрался');
+  else {
+    const pads = r.els.filter((e): e is Extract<LibEl, { kind: 'pad' }> => e.kind === 'pad');
+    const got = new Set(pads.map((p) => p.pin));
+    if (pads.length !== 17) fail(`solenoid driver: площадок ${pads.length}, ожидалось 17`);
+    for (const pin of required) if (!got.has(pin)) fail(`solenoid driver: нет именованной площадки ${pin}`);
+    if (!r.notes.some((n) => n.includes('не предварительно разведённая плата')))
+      fail('solenoid driver должен предупреждать, что это макет посадочных мест, а не готовая схема');
+    console.log('GEN: MOSFET driver 12V — проверены 17 именованных площадок и предупреждение о ручной разводке');
+  }
+}
+{
+  const dht = generate('dht11');
+  const bare = generate('dht11 голый сенсор');
+  const led = generate('подключение адресной ленты ws2812b');
+  const text = (r: ReturnType<typeof generate>): string[] => r.ok
+    ? r.els.filter((e): e is Extract<LibEl, { kind: 'text' }> => e.kind === 'text').map((e) => e.text)
+    : [];
+  if (!dht.ok || dht.els.filter((e) => e.kind === 'pad').length !== 3
+      || !['DATA', 'VCC', 'GND'].every((t) => text(dht).includes(t))) {
+    fail('DHT11 module: нужны 3 площадки DATA/VCC/GND');
+  }
+  if (!bare.ok || bare.els.filter((e) => e.kind === 'pad').length !== 4
+      || !['VCC', 'DATA', 'NC', 'GND'].every((t) => text(bare).includes(t))) {
+    fail('DHT11 bare: нужны 4 площадки VCC/DATA/NC/GND');
+  }
+  if (!led.ok || led.els.filter((e) => e.kind === 'pad').length !== 3
+      || !['GND', 'DIN', '5V'].every((t) => text(led).includes(t))) {
+    fail('LED strip: нужны 3 площадки GND/DIN/5V');
+  }
+  console.log('GEN: DHT11 module/bare и адресная лента — проверены площадки и метки');
+}
 expect('to220', { family: 'pack', specHoles: 1 });
 expect('sot-23', { family: 'sot', pins: 3, specSmd: 3 });
 expect('smd 0603', { family: 'chip', code: '0603', specSmd: 2 });
@@ -326,6 +376,55 @@ expect('arduino mega shield', { family: 'shield', w: 101.52, h: 53.34 });   // �
     fail(`mega: координаты разошлись с эталоном; нет у нас: ${missing.slice(0, 5)}; лишнее: ${extra.slice(0, 5)}`);
   }
   console.log(`GEN: mega — все ${cu.length} площадок и отверстий совпадают с эталоном KiCad`);
+}
+
+expect('модуль реле 4 канала', { family: 'relaymod', n: 4, specPins: 8, specHoles: 4, holeD: 3.2, holes: 4 });
+expect('модуль реле', { family: 'relaymod', n: 4, specPins: 8 });
+expect('модуль реле 8 каналов', { family: 'relaymod', n: 8, specPins: 12, specHoles: 4 });
+expect('8-канальный модуль реле', { family: 'relaymod', n: 8 });
+expect('relay module 4 channel', { family: 'relaymod', n: 4 });
+expect('модуль реле 2 канала без jd', { family: 'relaymod', n: 2, jd: false, specPins: 4 });
+expect('модуль реле 4 канала 75x55', { family: 'relaymod', bw: 75, bh: 55 });
+expect('модуль реле 1 канал кольцо', { family: 'relaymod', n: 1, ring: true, specPins: 5, specHoles: 4 });
+expect('модуль реле 4 канала 2 отверстия', { family: 'relaymod', holes: 2, specHoles: 2 });
+expect('модуль реле pitch 2.55', { family: 'relaymod', pitch: 2.55 });
+// одиночное реле и модуль на гребёнках не должны отдаваться семейству модуля реле
+expect('реле 5 выводов шаг 5', { family: 'relay', pins: 5, pitch: 5 });
+expect('arduino nano', { family: 'module' });
+
+// Модуль реле на стойках: на плате контур, четыре отверстия под стойки и ряд
+// площадок за габаритом модуля — к ним паяются провода от разъёма управления.
+{
+  const r = generate('модуль реле 4 канала');
+  if (!r.ok) fail('relaymod: не собралось');
+  else {
+    const pads = r.els.filter((e): e is Extract<LibEl, { kind: 'pad' }> => e.kind === 'pad');
+    const holes = r.els.filter((e): e is Extract<LibEl, { kind: 'hole' }> => e.kind === 'hole');
+    if (holes.length !== 4 || holes.some((h) => Math.abs(h.d - 3.2) > 1e-9)) {
+      fail(`relaymod: ждали 4 отверстия Ø3.2 под стойки M3, получили ${holes.length}`);
+    }
+    // плата 75 × 55, отступ центра отверстия от края 3.5 мм → крепёж 68 × 48
+    const gh = holes.map((h) => `${r3(Math.abs(h.x))}/${r3(Math.abs(h.y))}`).sort();
+    if (gh.join() !== ['34/24', '34/24', '34/24', '34/24'].join()) {
+      fail(`relaymod: крепёж не по углам платы 75×55 с отступом 3.5 мм: ${gh.join(', ')}`);
+    }
+    if (pads.length !== 8) fail(`relaymod: площадок под провода ${pads.length}, ждали 8 (GND, IN1…IN4, VCC, JD-VCC, GND2)`);
+    if (pads.some((pd) => pd.y > -27.5)) fail('relaymod: площадки под провода должны быть за габаритом модуля, а не под ним');
+    const xs = pads.map((pd) => pd.x).sort((a, b) => a - b);
+    for (let i = 1; i < xs.length; i++) {
+      if (Math.abs(xs[i] - xs[i - 1] - 2.54) > 1e-6) fail(`relaymod: шаг площадок ${r3(xs[i] - xs[i - 1])} мм, ждали 2.54`);
+    }
+    if (pads[0].shape !== 'square') fail('relaymod: первая площадка (GND) должна быть квадратной');
+    const two = generate('модуль реле 4 канала 2 отверстия');
+    if (!two.ok || two.els.filter((e) => e.kind === 'hole').length !== 2) {
+      fail('relaymod: явное число отверстий должно ограничивать крепёж');
+    }
+    if (r.els.some((e) => e.kind === 'text' && e.text === 'VCC2')
+        || !r.els.some((e) => e.kind === 'text' && e.text === 'GND2')) {
+      fail('relaymod: площадка отдельного питания должна быть подписана GND2');
+    }
+    console.log('GEN: модуль реле 4 канала — контур 75×55, крепёж 68×48 под M3, 8 площадок под провода с шагом 2.54');
+  }
 }
 
 expect('плата 60x40 4 m3', { family: 'board', bw: 60, bh: 40, holes: 4, holeD: 3.2 });

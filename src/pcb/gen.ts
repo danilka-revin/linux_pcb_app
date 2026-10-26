@@ -25,8 +25,10 @@
 import {
   bboxOf as fpBBox,
   boardFootprint, chipSmdFootprint, crystalFootprint, dipFootprint, dipSwitchFootprint,
-  electroFootprint, fiducialFootprint, holeFootprint, megaFootprint, minCopperPitch, moduleFootprint,
-  packFootprint, padFootprint, quadFootprint, relayFootprint, rowFootprint, r3, shieldFootprint,
+  dhtFootprint, electroFootprint, fiducialFootprint, holeFootprint, ledStripFootprint,
+  megaFootprint, minCopperPitch, moduleFootprint,
+  packFootprint, padFootprint, quadFootprint, RELAY_MOD_SIZE, relayFootprint, relayModuleFootprint,
+  rowFootprint, r3, shieldFootprint, solenoidDriverFootprint,
   soicFootprint, sotFootprint, tactFootprint, terminalFootprint, twoLeadFootprint,
   type FpSpec, type LibEl, type LibLayer, type Polarity,
 } from './footprint';
@@ -746,7 +748,7 @@ export const FAMILIES: Family[] = [
     id: 'tact',
     title: 'Кнопка / тактовая кнопка',
     hint: 'Четыре вывода по углам и корпус 6×6 (или другой размер); круглый корпус — для «шайбы».',
-    aliases: ['кнопка', 'tact', 'тактовик', 'button', 'knopka'],
+    aliases: ['тактовая кнопка', 'кнопка 6x6', 'кнопка', 'tact', 'тактовик', 'button', 'knopka'],
     weak: ['переключатель кнопочный'],
     bare: ['body', 'px', 'py'],
     params: [
@@ -764,6 +766,82 @@ export const FAMILIES: Family[] = [
         round: p.round as boolean, layer: ctxLayer(ctx),
       });
       return { els: el.els, spec: { ...el.spec, w: r3(body + 2), h: r3(body + 2) }, title: `Кнопка ${r3(body)}×${r3(body)}` };
+    },
+  },
+  {
+    id: 'dht',
+    title: 'Датчик DHT11 / DHT22',
+    hint: 'Готовый модуль DHT11: 3 площадки DATA/VCC/GND и контур платы; вариант голого сенсора: 4 площадки VCC/DATA/NC/GND. Подписи и габарит помогают не перепутать исполнение.',
+    aliases: ['dht11 модуль', 'dht22 модуль', 'dht11', 'dht-11', 'dht22', 'dht-22', 'am2302', 'датчик влажности dht'],
+    noNum: true,
+    bare: ['pitch', 'bodyW'],
+    params: [
+      P_BOOL('bare', 'Голый сенсор (4 вывода, без платы)', false, {
+        words: ['голый сенсор', 'голый датчик', 'bare'], token: 'bare',
+        hint: 'По умолчанию — готовый 3-проводный модуль; для самого синего корпуса DHT выберите 4 вывода.',
+      }),
+      pitch(2.54), bodyW(18), bodyH(15), padSize(1.8), drill(1.0),
+      P_BOOL('labels', 'Подписи выводов', true, { words: ['подписи', 'имена'], token: 'подписи' }),
+      silkOn(), valueP(),
+    ],
+    build(p, ctx) {
+      const bare = p.bare as boolean;
+      const bodyW0 = bare && p.bodyW === ctx.defaults.bodyW ? 12 : p.bodyW as number;
+      const bodyH0 = bare && p.bodyH === ctx.defaults.bodyH ? 15.5 : p.bodyH as number;
+      const el = dhtFootprint({
+        bare, pitch: p.pitch as number, bodyW: bodyW0, bodyH: bodyH0,
+        padSize: p.padSize as number, drill: p.drill as number,
+        labels: p.labels as boolean, layer: ctxLayer(ctx),
+        title: (p.value as string) || (bare ? 'DHT11 SENSOR' : 'DHT11 MODULE'),
+      });
+      return {
+        els: el.els, spec: el.spec,
+        title: `${bare ? 'DHT11 сенсор 4 выв.' : 'DHT11 модуль 3 выв.'} · ${r3(bodyW0)}×${r3(bodyH0)}`,
+        notes: bare
+          ? ['Порядок у датчика при виде на решётку: VCC, DATA, NC, GND. NC не подключать.', 'Голому сенсору обычно нужен подтягивающий резистор DATA—VCC 4.7…10 кОм; у готового 3-pin модуля он обычно уже есть. Проверьте маркировку своей платы.']
+          : ['Порядок площадок по умолчанию: DATA, VCC, GND; у модулей разных производителей распиновка бывает другой — сверьте надписи на своей плате.'],
+      };
+    },
+  },
+  {
+    id: 'ledstrip',
+    title: 'Подключение адресной LED-ленты',
+    hint: 'Три выводные площадки для проводов к входу адресной ленты: GND, DIN, +5V (или +12V). Для продолжения цепочки можно сделать DOUT.',
+    aliases: [
+      'подключение адресной ленты светодиодной', 'подключение адресной ленты',
+      'адресная лента', 'адресной ленты', 'светодиодная адресная лента', 'светодиодной ленты ws2812',
+      'ws2812', 'ws2812b', 'ws2811', 'ws2813', 'ws2815', 'sk6812', 'neopixel',
+      'addressable led strip', 'led strip ws', 'din', 'dout',
+    ],
+    noNum: true,
+    bare: ['pitch'],
+    params: [
+      P_ENUM('voltage', 'Питание ленты', '5V', [['5V', '5 В'], ['12V', '12 В']], {
+        words: ['напряжение'], token: 'напряжение', hint: 'напряжение питания ленты, не логического входа DATA',
+      }),
+      P_BOOL('output', 'Выход на следующую ленту (DOUT)', false, {
+        words: ['выход', 'dout', 'следующая лента'], token: 'dout',
+      }),
+      pitch(2.54), padSize(2.0), drill(1.0),
+      P_BOOL('labels', 'Подписи GND/DIN/+V', true, { words: ['подписи', 'имена'], token: 'подписи' }),
+      silkOn(), valueP(),
+    ],
+    build(p, ctx) {
+      const output = p.output as boolean;
+      const voltage = String(p.voltage) as '5V' | '12V';
+      const el = ledStripFootprint({
+        pitch: p.pitch as number, padSize: p.padSize as number, drill: p.drill as number,
+        voltage, output, labels: p.labels as boolean, layer: ctxLayer(ctx),
+        title: (p.value as string) || `LED ${output ? 'OUT' : 'IN'}`,
+      });
+      return {
+        els: el.els, spec: el.spec,
+        title: `Адресная лента ${output ? 'DOUT' : 'DIN'} · ${voltage}`,
+        notes: [
+          'Назначение площадок слева направо: GND, DIN/DOUT, питание. Порядок контактов у разъёмов ленты не универсален — ориентируйтесь по стрелке DI и надписям +/− на самой ленте.',
+          'Для длинной ленты подавайте питание отдельными проводами подходящего сечения, соедините GND блока питания с GND контроллера; не пропускайте полный ток ленты через маленькие сигнальные площадки. DATA обычно 5 В логика, даже если некоторые ленты питаются от 12 В.',
+        ],
+      };
     },
   },
   {
@@ -1115,6 +1193,97 @@ export const FAMILIES: Family[] = [
     },
   },
   {
+    id: 'relaymod',
+    title: 'Модуль реле на стойках (1…8 каналов)',
+    hint: 'Посадочное место под готовый модуль реле: контур платы модуля, четыре отверстия под стойки M3 и ряд площадок за габаритом — к ним паяются провода от разъёма управления (GND, IN1…INn, VCC, JD-VCC).',
+    aliases: [
+      'модуль реле', 'реле модуль', 'relay module', 'relay board', 'модуль реле 4 канала',
+      'реле на стойках', 'релейный модуль', 'relay 4ch',
+    ],
+    bare: ['n'],
+    params: [
+      P_INT('n', 'Каналов (реле)', 4, {
+        min: 1, max: 8, words: ['channels'], token: 'channels',
+        hint: 'сколько реле на модуле: от него зависит число проводов IN1…INn и габарит по умолчанию; фразы «4 канала» и «каналов 4» распознаются автоматически',
+      }),
+      P_NUM('bw', 'Длина платы модуля, мм', 0, {
+        min: 0, max: 300, step: 0.1, words: ['размер', 'длина'], token: null,
+        hint: '0 — по числу каналов: 1 → 50×26, 2 → 50.5×38.5, 4 → 75×55, 8 → 138×56',
+      }),
+      P_NUM('bh', 'Ширина платы модуля, мм', 0, { min: 0, max: 300, step: 0.1, words: ['высота'], token: null }),
+      holeCount(4), holeDia(3.2),
+      P_BOOL('ring', 'Кольцо вокруг крепежа', false, {
+        words: ['кольцо'], token: 'кольцо',
+        hint: 'метка на шелкографии вокруг отверстия под стойку; меди не добавляет',
+      }),
+      P_NUM('holeInset', 'Отступ крепежа от края, мм', 3.5, {
+        min: 0.5, max: 30, step: 0.1, words: ['отступ'], token: 'отступ',
+        hint: 'у 8-канального модуля шаг крепежа 131 × 49.5 при плате 138 × 56 — это 3.5 и 3.25 мм от края',
+      }),
+      P_BOOL('wires', 'Площадки под провода', true, { words: ['провода', 'провод', 'wires'], token: 'провода' }),
+      P_BOOL('jd', 'Площадки JD-VCC (питание реле)', true, {
+        words: ['jdvcc', 'развязка', 'изоляция'], token: 'jd',
+        hint: 'отдельное питание катушек: снимите джампер JD-VCC/VCC на модуле',
+      }),
+      pitch(2.54), padSize(1.8), drill(1.0),
+      P_BOOL('relays', 'Корпуса реле на шелкографии', true, { words: ['корпуса'], token: null }),
+      P_BOOL('labels', 'Подписи', true, { words: ['подписи', 'имена'], token: 'подписи' }),
+      silkOn(), valueP(),
+    ],
+    build(p, ctx) {
+      const ch = Math.max(1, Math.min(8, Math.round(p.n as number) || 4));
+      const el = relayModuleFootprint({
+        ch,
+        w: (p.bw as number) || 0, h: (p.bh as number) || 0,
+        holes: p.holes as number,
+        holeD: (p.holes as number) > 0 ? (p.holeD as number) : 0,
+        holeInset: p.holeInset as number, ring: p.ring as boolean,
+        wires: p.wires as boolean, jd: p.jd as boolean,
+        wirePitch: p.pitch as number, padSize: p.padSize as number, drill: p.drill as number,
+        relays: p.relays as boolean, labels: p.labels as boolean, silk: p.silk as boolean,
+        layer: ctxLayer(ctx),
+        title: (p.value as string) || `RELAY ${ch}CH`,
+      });
+      const tab = RELAY_MOD_SIZE[ch] ?? RELAY_MOD_SIZE[4];
+      const sized = (p.bw as number) > 0 || (p.bh as number) > 0;
+      return {
+        els: el.els, spec: el.spec,
+        title: `Модуль реле ${ch} кан. ${r3(el.spec.w ?? tab.w)}×${r3(el.spec.h ?? tab.h)}`,
+        notes: [
+          'Модуль ставят на стойки, а к плате идут провода: на плате только контур, крепёж и площадки под провода.',
+          sized
+            ? 'Габарит задан вручную.'
+            : `Габарит ${tab.w}×${tab.h} мм — самый распространённый для ${ch} кан.; у клонов встречается 73…77 × 54…56 мм, сверьте со своим модулем.`,
+          'Отверстия модуля Ø3.1 мм, под стойку M3 взято 3.2 мм. Разъём управления: GND, IN1…INn, VCC; '
+            + 'JD-VCC — питание катушек (снимите джампер, чтобы развязать сигнальную и силовую землю). '
+            + 'Вход у типового модуля по низкому уровню: IN = 0 включает реле.',
+        ],
+      };
+    },
+  },
+  {
+    id: 'solenoid',
+    title: 'Драйвер DC-соленоида 12 В (MOSFET, шаблон размещения)',
+    hint: 'Макет дискретного низкобокового ключа: 2-pin управление, вход 12 В, клеммы замка, MOSFET, затворные резисторы, защитный диод и bulk-конденсатор.',
+    aliases: ['драйвер соленоида', 'соленоид 12в', 'электрозамок 12в', 'замок на соленоиде', 'solenoid driver', '12v lock driver'],
+    noNum: true,
+    bare: [],
+    params: [valueP()],
+    build(p, ctx) {
+      const el = solenoidDriverFootprint({ layer: ctxLayer(ctx), title: (p.value as string) || '12V LOCK 1-2A' });
+      return {
+        els: el.els, spec: el.spec,
+        title: 'Драйвер замка 12 В · MOSFET, 1–2 А',
+        notes: [
+          'Это только макет посадочных мест, не готовая схема и не предварительно разведённая плата. Соедините сети вручную по надписям: CTRL_IN → RG → Q1_GATE; RPD между затвором и GND; Q1_SOURCE → GND_PWR; Q1_DRAIN → LOCK_SW; LOCK+ и D1_K → +12V; D1_A → LOCK_SW; C1 между +12V и GND.',
+          'Неизолированный ключ: CTRL_GND, GND_PWR и источник 12 В должны иметь общую землю. Транзистор только коммутирует ток от внешнего БП; конденсатор сглаживает импульс, но не заменяет источник нужной мощности.',
+          'Для катушки до 2 А подбирайте logic-level MOSFET с VDS ≥40 В и запасом по току/теплу (RDS(on) указан при вашем VGS), защитный диод с запасом по импульсному току и напряжению; bulk-конденсатор обычно 470–1000 µF / 25 В рядом с входом — его ёмкость и ESR проверяйте под свой БП и замок. Не подключайте нагрузку, пока не проверены распиновка Q1 и полярность D1 по даташитам выбранных деталей.',
+          'Если на корпусе замка ток выше 2 А или указан только пусковой ток, пересчитайте MOSFET, диод, клеммы, ширину меди и охлаждение. Обычный диод свободного хода может замедлить отпускание замка.',
+        ],
+      };
+    },
+  },
+  {
     id: 'dipsw',
     title: 'DIP-переключатель',
     hint: 'N секций по два вывода, шаг 2.54, корпус-прямоугольник, номера секций.',
@@ -1217,6 +1386,19 @@ export function detectFamily(s: string): { fam: Family; preset?: Params; word: s
         value: m.title, names: `${m.left.join(',')}|${m.right.join(',')}`,
       },
     };
+  }
+  // «модуль реле 4 канала» — готовый модуль на стойках, а не одно реле и не модуль на гребёнках:
+  // слово «модуль» стоит раньше «реле», поэтому без этой ветки победило бы семейство module
+  if (/реле|relay/.test(in_) && /(модул|module|board|плат|канал|channel|\d\s*-?\s*кан|\d\s*ch\b)/.test(in_)) {
+    const cm = in_.match(/(\d{1,2})\s*-?\s*(?:кан|ch\b|channel)/)
+      ?? in_.match(/(?:канал|channel)[а-яa-z]*\s*[:=]?\s*(\d{1,2})/);
+    const ch = cm ? Math.max(1, Math.min(8, parseInt(cm[1], 10))) : 4;
+    return { fam: byId('relaymod'), word: 'реле', preset: { n: ch } };
+  }
+  // Латиница WS281x / SK6812 / NeoPixel и русские склонения «адресной ленты».
+  if (/(?:ws281[1235]b?|sk6812|neopixel|addressable)/.test(in_)
+      || (/адрес{1,2}н/.test(in_) && /лент/.test(in_))) {
+    return { fam: byId('ledstrip'), word: 'адресная лента' };
   }
   // «shield под Mega» — это шилд, а не сама плата: у шилда габарит платы Mega
   if (/mega|мега/.test(in_) && /shield|шилд|щит/.test(in_)) {
@@ -1377,6 +1559,14 @@ export function generate(query: string): GenResult {
     if (v !== undefined) set(d.key, clampP(d, v));
   }
 
+  // Варианты «4 канала», «каналов 4» и «4-канальный»; снимаем только выражение
+  // числа каналов, чтобы следующее «2 отверстия» не переехало в число каналов.
+  if (fam.id === 'relaymod') {
+    const cm = sc2.take(new RegExp(String.raw`(?:^|[^0-9a-zа-я])${NUMRE}\s*-?\s*канал[а-я]*`))
+      ?? sc2.take(new RegExp(String.raw`канал[а-я]*\s*[:=]?\s*${NUMRE}`));
+    const nDef = fam.params.find((d) => d.key === 'n');
+    if (cm && nDef && !said.has('n')) set('n', clampP(nDef, parseInt(cm[1], 10)));
+  }
   // «Ø8», «диаметр 8 мм»
   const dia = sc2.take(new RegExp(String.raw`(?:ø|диаметр|dia)\s*[:=]?\s*${NUMRE}\s*(?:мм|mm)?`, 'i'));
   if (dia) {
@@ -1391,6 +1581,7 @@ export function generate(query: string): GenResult {
   if (dims) {
     const a = r3(dims[0]), b = r3(dims[1]);
     if (fam.id === 'board') { set('bw', a); set('bh', b); }
+    else if (fam.id === 'relaymod') { set('bw', a); set('bh', b); }
     else if (fam.id === 'module') { set('bodyW', a); set('bodyH', b); }
     else if (fam.id === 'tact') { set('px', a); set('py', b); set('body', Math.max(a, b)); }
     else if (fam.id === 'qfn' || fam.id === 'qfp') { set('body', a); }
@@ -1663,6 +1854,15 @@ export const EXAMPLES: { query: string; note: string }[] = [
   { query: 'arduino nano', note: '2×15 с именами выводов' },
   { query: 'arduino mega 2560', note: 'посадочное место платы Mega: D0…D53, A0…A15, ICSP, крепёж' },
   { query: 'arduino uno shield', note: 'разъёмы шилда Uno R3' },
+  { query: 'реле 5 выводов', note: 'катушка + группа контактов' },
+  { query: 'модуль реле 4 канала', note: 'на стойках, проводами к плате: контур, 4 отверстия, площадки GND/IN1…IN4/VCC/JD-VCC' },
+  { query: 'dht11 модуль', note: '3 провода DATA/VCC/GND; «голый сенсор» — 4 площадки VCC/DATA/NC/GND' },
+  { query: 'подключение адресной ленты ws2812b', note: 'GND, DIN, +5V; для выхода — «DOUT», питание длинной ленты отдельно' },
+  { query: 'тактовая кнопка 6x6', note: 'обычная четырёхвыводная тактовая кнопка' },
+  { query: 'драйвер соленоида 12в', note: 'неизолированный low-side MOSFET, flyback-диод, резисторы и bulk-конденсатор; разводить вручную' },
+  { query: 'dht11 модуль', note: '3 провода DATA/VCC/GND; «голый сенсор» — 4 площадки VCC/DATA/NC/GND' },
+  { query: 'подключение адресной ленты ws2812b', note: 'GND, DIN, +5V; для выхода — «DOUT», питание длинной ленты отдельно' },
+  { query: 'тактовая кнопка 6x6', note: 'обычная четырёхвыводная тактовая кнопка' },
   { query: 'esp32 devkit', note: '2×19, крепёж, габарит' },
   { query: 'плата 60x40, 4 отверстия m3, отступ 3.5', note: 'контур + крепёж' },
   { query: 'крепёжное отверстие m3 x4 шаг 20', note: '4 отверстия в ряд' },
