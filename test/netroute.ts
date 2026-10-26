@@ -248,3 +248,51 @@ console.log('NETROUTE OK');
   assert(anyOrder.missing === 0, 'любой порядок тоже должен сходиться');
   console.log('NETS: rip-up frees the narrow gap, ripped group goes over the top', `(${Date.now() - t0} мс)`);
 }
+
+// Односторонняя плата (1 слой меди): медь только на K2, переходов-«мостов» нет —
+// даже когда настройки трассировки разрешают и верх, и переходы.
+{
+  const d = M.newBoard(50, 40, 'Односторонняя', 1);
+  assert.equal(M.boardLayers(d), 1);
+  assert.equal(M.isSingleSided(d), true);
+  assert.equal(M.boardLayers(M.newBoard(50, 40)), 2, 'плата без поля layers считается двусторонней');
+  d.entities.push(pad('a', 8, 12), pad('b', 40, 12), pad('c', 40, 28));
+  d.nets = [net('bus', ['a', 'b', 'c'])];
+  const r = routeNets(d, O);
+  assert.deepEqual(r.errors, []);
+  assert.equal(r.missing, 0);
+  assert.equal(r.vias, 0, 'односторонняя плата: переходов быть не должно');
+  assert(r.ents.length > 0);
+  assert(r.ents.every((e) => e.kind === 'track' && e.layer === 'k2'), 'вся новая медь — на K2');
+  check(d, r.ents);
+  console.log('NETS: single-sided board routes on K2 without bridges');
+}
+
+// Та же плата со стенкой: без моста связь честно остаётся неразведённой.
+{
+  const d = M.newBoard(50, 40, 'Односторонняя', 1);
+  d.entities.push(pad('a', 8, 12), pad('b', 40, 12),
+    { id: 'wall', kind: 'track', w: 1, layer: 'k2', pts: [{ x: 25, y: 0 }, { x: 25, y: 40 }] });
+  d.nets = [net('blocked', ['a', 'b'])];
+  const r = routeNets(d, O);              // O разрешает верхний слой и переходы
+  assert.equal(r.vias, 0, 'на односторонней плате мост не ставится даже под давлением настроек');
+  assert.equal(r.missing, 1);
+  assert(r.unresolved.some((n) => n.name === 'blocked'), 'неразведённая связь видна в отчёте');
+  console.log('NETS: single-sided board reports an unroutable net instead of drilling a bridge');
+}
+
+// «Без мостов» на двусторонней плате: запрет держится и при перекладке чужой меди.
+{
+  const d = M.newBoard(60, 30);
+  d.entities.push(pad('a', 10, 15), pad('b', 50, 15), pad('c', 25, 15), pad('e', 35, 15),
+    { id: 'wall1', kind: 'track', w: 0.4, layer: 'k2', pts: [{ x: 30, y: 0 }, { x: 30, y: 14.25 }] },
+    { id: 'wall2', kind: 'track', w: 0.4, layer: 'k2', pts: [{ x: 30, y: 15.75 }, { x: 30, y: 30 }] });
+  d.nets = [net('sig', ['a', 'b']), net('other', ['c', 'e'])];
+  const noBridges: RouteOpts = { ...O, allowVias: false, noBridges: true };
+  const r = routeNets(d, noBridges, () => {}, 'few-vias');
+  assert.equal(r.vias, 0, 'без мостов: ни одного перехода, в том числе после перекладки');
+  assert(r.ents.every((e) => e.kind === 'track' && e.layer === 'k2'), 'без мостов медь остаётся в одном слое');
+  const withBridges = routeNets(d, O, () => {}, 'few-vias');
+  assert(withBridges.vias > 0, 'контроль: с переходами та же плата мосты ставит');
+  console.log('NETS: «без мостов» удерживает трассировку в одном слое и при перекладке');
+}

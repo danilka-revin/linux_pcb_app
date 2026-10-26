@@ -5,6 +5,14 @@ import { dimGeom, dimSegments } from './dim';
 
 export type LayerId = 'k1' | 'k2' | 's1' | 's2' | 'outline';
 
+/**
+ * Сколько слоёв меди у платы.
+ * `1` — односторонняя плата (ЛУТ/фоторезист/односторонний ЧПУ): вся медь живёт
+ * на K2 (сторона пайки), верхний слой K1 не используется, переходов-«мостов» нет.
+ * `2` — обычная двусторонняя плата (по умолчанию).
+ */
+export type CopperLayers = 1 | 2;
+
 export interface Pt {
   x: number;
   y: number;
@@ -218,6 +226,8 @@ export interface Doc {
   name: string;
   w: number; // ширина рабочего поля / платы без замкнутого контура, мм
   h: number; // высота рабочего поля / платы без замкнутого контура, мм
+  /** число слоёв меди: 1 — односторонняя плата, 2 (и старые проекты без поля) — двусторонняя */
+  layers?: CopperLayers;
   entities: Entity[];
   nets?: Net[]; // сохраняются в проекте JSON, не в Sprint-Layout
   diffPairs?: DifferentialPair[]; // правила пар хранятся в проекте JSON, не в Sprint-Layout
@@ -235,14 +245,25 @@ export const LAYERS: { id: LayerId; ru: string; short: string; color: string }[]
   { id: 'outline', ru: 'Контур платы', short: 'Контур', color: '#e9ecf1' },
 ];
 
-export function newBoard(w = 100, h = 80, name = 'Плата'): Doc {
-  return {
+export function newBoard(w = 100, h = 80, name = 'Плата', layers: CopperLayers = 2): Doc {
+  const doc: Doc = {
     name, w, h,
     entities: [
       { id: uid(), kind: 'rect', x: 0, y: 0, w, h, filled: false, th: 0.2, layer: 'outline' },
     ],
   };
+  if (layers === 1) doc.layers = 1;
+  return doc;
 }
+
+/**
+ * Число слоёв меди платы. Поле `layers` появилось позже формата проекта,
+ * поэтому его отсутствие (старые JSON, .lay6, .lmk) читается как двусторонняя плата.
+ */
+export const boardLayers = (d: Pick<Doc, 'layers'>): CopperLayers => (d.layers === 1 ? 1 : 2);
+
+/** Односторонняя плата: медь только на K2, верхний слой и переходы-«мосты» не используются. */
+export const isSingleSided = (d: Pick<Doc, 'layers'>): boolean => boardLayers(d) === 1;
 
 export const cloneDoc = (d: Doc): Doc => {
   const sc = (globalThis as any).structuredClone as (<T>(v: T) => T) | undefined;

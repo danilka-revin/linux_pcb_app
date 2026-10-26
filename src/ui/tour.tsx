@@ -497,7 +497,7 @@ export const TOURS: Tour[] = [
           </>
         ),
         demo: <DemoGenExamples />,
-        tip: 'Генератор знает 21 семейство корпусов — от 0201 до Arduino Mega.',
+        tip: 'Генератор знает 22 семейства корпусов — от 0201 до Arduino Mega 2560.',
       },
       {
         title: 'Где найти генератор',

@@ -195,10 +195,10 @@ export const TECH_PRESETS: PatchPreset<Defs>[] = [
     },
   },
   {
-    id: 'lut', name: 'ЛУТ (утюг)', hint: 'Толстые дорожки и большие зазоры — переживут перенос тонера',
+    id: 'lut', name: 'ЛУТ (утюг)', hint: 'Односторонняя: толстые дорожки, большие зазоры, без переходов-«мостов»',
     patch: {
       trackW: 0.8, padSize: 2.0, padDrill: 0.8, viaSize: 2.0, viaDrill: 0.8, drcClear: 0.4,
-      rtW: 0.8, rtClear: 0.45, rtHoleClear: 0.6, rtStep: 0.635, rtAllowTop: false, rtViaCost: 8,
+      rtW: 0.8, rtClear: 0.45, rtHoleClear: 0.6, rtStep: 0.635, rtAllowTop: false, rtNoBridges: true, rtViaCost: 8,
     },
   },
   {
@@ -212,7 +212,7 @@ export const TECH_PRESETS: PatchPreset<Defs>[] = [
     id: 'cnc', name: 'Фрезеровка ЧПУ', hint: 'Односторонняя, зазор не меньше ширины гравера; перемычки — площадками',
     patch: {
       trackW: 0.6, padSize: 2.0, padDrill: 0.9, viaSize: 1.8, viaDrill: 0.8, drcClear: 0.35,
-      rtW: 0.6, rtClear: 0.35, rtHoleClear: 0.5, rtStep: 0.635, rtAllowTop: false, rtAutoPad: true, rtViaCost: 8,
+      rtW: 0.6, rtClear: 0.35, rtHoleClear: 0.5, rtStep: 0.635, rtAllowTop: false, rtNoBridges: true, rtAutoPad: true, rtViaCost: 8,
     },
   },
   {
@@ -309,6 +309,7 @@ export const BOARD_SIZE_PRESETS: { id: string; name: string; w: number; h: numbe
   { id: 'sq50', name: '50 × 50', w: 50, h: 50 },
   { id: 'sq100', name: '100 × 100', w: 100, h: 100 },
   { id: 'shield', name: 'Arduino Shield', w: 68.6, h: 53.3 },
+  { id: 'mega', name: 'Arduino Mega 2560', w: 101.52, h: 53.34 },
   { id: 'small', name: 'Модуль 30 × 20', w: 30, h: 20 },
 ];
 

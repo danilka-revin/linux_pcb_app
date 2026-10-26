@@ -14,9 +14,10 @@
 // Эвристика: несколько порядков цепей, сначала все связи без переходов,
 // затем двухслойные обходы. Критерий: недостающие связи → переходы → длина.
 import type { Doc, Entity, Net, Pt } from './model';
+import { boardLayers } from './model';
 import { expandDoc } from './expand';
 import {
-  autoroute, copperShapes, endpointOf, netOf, shapeShapeDist,
+  autoroute, copperShapes, endpointOf, netOf, routeOptsForLayers, shapeShapeDist,
   type RouteEnd, type RouteOpts, type RouteResult, type Shape,
 } from './autoroute';
 
@@ -308,7 +309,9 @@ function tryRipUp(run: Run, ctx: Ctx, net: Net, o: RouteOpts, pairs: PairCand[],
   const drop = new Set(foreign.map((e) => e.id));
   const kept = run.entities.filter((e) => !drop.has(e.id));
   for (const { a, b } of pairs.slice(0, 3)) {
-    const r = autoroute(kept, ctx.doc.w, ctx.doc.h, a, b, { ...o, allowVias: true }, net.pads);
+    // «без мостов» — переходы запрещены и здесь: перекладка не имеет права
+    // просверлить то, чего пользователь просил не делать
+    const r = autoroute(kept, ctx.doc.w, ctx.doc.h, a, b, { ...o, allowVias: !o.noBridges }, net.pads);
     if (!r.ok || r.drc !== 0) continue;
     const hit = foreign.filter((e) => touches(r.ents, e, o));
     if (!hit.length || hit.length > 6) continue;   // слишком много снимать — не трогаем
@@ -381,6 +384,8 @@ function attempt(ctx: Ctx, order: Net[], initial: Map<string, string>, ends: Map
 
 export function routeNets(doc: Doc, opts: RouteOpts, progress: (text: string) => void = () => {}, strategy?: RouteStrategy, flags: NetRouteFlags = {}): NetRouteResult {
   const empty = (): NetRouteResult => ({ ents: [], vias: 0, length: 0, missing: 0, unresolved: [], errors: [], attempts: 0, rips: 0 });
+  // Число слоёв платы важнее настроек: односторонняя плата разводится по K2 без мостов.
+  const layerOpts = routeOptsForLayers(opts, boardLayers(doc));
   const nets = (doc.nets ?? []).map((n) => ({ ...n, pads: [...new Set(n.pads)] }));
   const flat = expandDoc(doc.entities);
   const ends = new Map<string, RouteEnd>();
@@ -404,7 +409,7 @@ export function routeNets(doc: Doc, opts: RouteOpts, progress: (text: string) =>
   };
   // Сначала самые широкие дорожки: им труднее найти проход между чужой медью.
   // При одинаковой ширине порядок тот же, что раньше — по размаху группы.
-  const width = new Map(nets.map((n) => [n.id, netRouteOpts(n, opts).trackW]));
+  const width = new Map(nets.map((n) => [n.id, netRouteOpts(n, layerOpts).trackW]));
   const base = [...nets].sort((a, b) => (width.get(b.id)! - width.get(a.id)!) || (span(a) - span(b)));
   const orders = strategy
     ? [strategy === 'long-first' ? [...base].reverse() : base]
@@ -412,11 +417,11 @@ export function routeNets(doc: Doc, opts: RouteOpts, progress: (text: string) =>
   // Переходы в пакетном режиме сильно «дороже» длины: сначала на слоях контактов,
   // без переходов. Стратегия «короче дорожки» равноправна слоям. Зазор — самый
   // строгий из настроек и правил групп: одна группа не «подлезает» под чужое правило.
-  const strictClear = Math.max(opts.clearance, ...nets.map((n) => num(n.rules?.clear, 0.05, 3) ?? 0));
+  const strictClear = Math.max(layerOpts.clearance, ...nets.map((n) => num(n.rules?.clear, 0.05, 3) ?? 0));
   const tuned: RouteOpts = {
-    ...opts,
+    ...layerOpts,
     clearance: strictClear,
-    ...(strategy === 'short' ? { topMul: 1 } : { viaCost: Math.max(opts.viaCost, (doc.w + doc.h) * 2) }),
+    ...(strategy === 'short' ? { topMul: 1 } : { viaCost: Math.max(layerOpts.viaCost, (doc.w + doc.h) * 2) }),
   };
   const ctx: Ctx = { doc, nets, opts: tuned, strategy, progress, rips: flags.rips !== false };
   const seen = new Set<string>();

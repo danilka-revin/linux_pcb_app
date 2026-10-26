@@ -1,7 +1,8 @@
 // Диалоги приложения.
 import { useState } from 'react';
-import { Modal, NI, TI } from './widgets';
+import { Modal, NI, SI, TI } from './widgets';
 import { ACCENT_PRESETS, THEME_BASE, type CustomColors } from './palette';
+import type { CopperLayers } from '../pcb/model';
 import type { ThemeId } from '../pcb/render';
 import type { PanelizeOptions } from '../pcb/panelize';
 
@@ -15,14 +16,15 @@ export interface ExportPngOpts {
 export function NewBoardDialog({
   onOk, onClose, defaults,
 }: {
-  onOk: (name: string, w: number, h: number) => void;
+  onOk: (name: string, w: number, h: number, layers: CopperLayers) => void;
   onClose: () => void;
   /** начальные значения — настройки «Новая плата» (окно настроек) */
-  defaults?: { name: string; w: number; h: number };
+  defaults?: { name: string; w: number; h: number; layers?: CopperLayers };
 }) {
   const [name, setName] = useState(defaults?.name ?? 'Плата');
   const [w, setW] = useState(defaults?.w ?? 100);
   const [h, setH] = useState(defaults?.h ?? 80);
+  const [layers, setLayers] = useState<CopperLayers>(defaults?.layers ?? 2);
   return (
     <Modal
       title="Новая плата"
@@ -30,14 +32,22 @@ export function NewBoardDialog({
       foot={
         <>
           <button className="btn" onClick={onClose}>Отмена</button>
-          <button className="btn primary" onClick={() => onOk(name || 'Плата', w, h)}>Создать</button>
+          <button className="btn primary" onClick={() => onOk(name || 'Плата', w, h, layers)}>Создать</button>
         </>
       }
     >
       <TI label="Название" value={name} on={setName} />
       <NI label="Ширина, мм" value={w} min={5} max={500} on={setW} />
       <NI label="Высота, мм" value={h} min={5} max={500} on={setH} />
-      <p>На плате будет создан прямоугольный контур заданного размера. Начало координат — левый нижний угол.</p>
+      <SI label="Слоёв меди" value={String(layers)}
+        options={[['1', '1 — односторонняя'], ['2', '2 — двусторонняя']]}
+        on={(v) => setLayers(v === '1' ? 1 : 2)} />
+      <p>
+        На плате будет создан прямоугольный контур заданного размера. Начало координат — левый нижний угол.
+        {layers === 1
+          ? ' Односторонняя плата: медь только на K2, автотрассировка без переходов-«мостов», в Gerber не попадёт слой K1.'
+          : ' Двусторонняя плата: слои K1 и K2 соединяются переходными отверстиями.'}
+      </p>
     </Modal>
   );
 }
@@ -300,11 +310,13 @@ export function AboutDialog({ version, productVersion, onClose }: { version: str
         <li>Дорожки с углами 45°/90°/свободно, автопереходы при смене слоя (клавиша L)</li>
         <li>Площадки (круг/квадрат/восьмиугольник) с металлизацией, SMD-площадки, переходы, отверстия</li>
         <li>Линии, прямоугольники, окружности, залитые полигоны (земля), текст на шелкографии</li>
-        <li>2 слоя меди + 2 шелкографии + контур, вид снизу (зеркально)</li>
+        <li>2 слоя меди + 2 шелкографии + контур, вид снизу (зеркально); односторонняя
+          плата (1 слой меди) — без верхнего слоя и без переходов-«мостов»</li>
         <li>Генератор деталей: пишешь строкой «dip 8 шаг 2.54 2 крепёжных отверстия m3 подписи» —
           посадочное место собирается само: выводы, корпуса, шелкография, крепёж, номинал.
-          21 семейство: DIP, SOIC/TSSOP, QFN/QFP, SOT, чип-корпусы 0201…2512, выводные резисторы
-          и конденсаторы, электролиты, кварцы, кнопки, клеммники, линейки, TO-220/247, Arduino/ESP32</li>
+          22 семейства: DIP, SOIC/TSSOP, QFN/QFP, SOT, чип-корпусы 0201…2512, выводные резисторы
+          и конденсаторы, электролиты, кварцы, кнопки, клеммники, линейки, TO-220/247,
+          Arduino/ESP32, посадочное место Arduino Mega 2560</li>
         <li>Своя библиотека: деталь (или выделенное с платы) сохраняется в папку с вложенными
           папками, ставится кликом, правится через свою строку описания; резервная копия — JSON</li>
         <li>Сетка: 92 готовых шага от 0.02 до 50.8 мм (метрика, mil, монтаж) и любое своё значение,

@@ -1,6 +1,6 @@
 // Боковые панели: слои и свойства выделенного.
 import { type ReactNode } from 'react';
-import { LAYERS, fmt, type Doc, type Entity, type Group, type LayerId, type PadShape } from '../pcb/model';
+import { LAYERS, fmt, type CopperLayers, type Doc, type Entity, type Group, type LayerId, type PadShape } from '../pcb/model';
 import { groupCountLabel } from '../pcb/group';
 import type { GridStyle, GridUnit } from '../pcb/grid';
 import { fmtGridFull, GRID_STEPS_MM, gridPresets, isPresetStep, gridSummary } from '../pcb/grid';
@@ -93,6 +93,8 @@ export interface Defs {
   rtViaCost: number;    // цена перехода, мм
   rtTopMul: number;     // штраф длины на верхнем слое
   rtAllowTop: boolean;
+  /** без переходов-«мостов»: дорожки не уходят на другой слой и не сверлят плату */
+  rtNoBridges: boolean;
   rtAngle: '45' | '90';
   rtAutoPad: boolean;   // в пустом месте ставить площадку (под джампер)
 }
@@ -107,6 +109,7 @@ export const plural = (n: number, forms: [string, string, string]): string => {
 // ---------- панель слоёв ----------
 export function LayersPanel({
   activeCu, setActiveCu, hidden, toggleHidden, locked, toggleLocked, unlockAll, counts,
+  layers = 2, setLayers,
 }: {
   activeCu: 'k1' | 'k2';
   setActiveCu: (l: 'k1' | 'k2') => void;
@@ -116,24 +119,42 @@ export function LayersPanel({
   toggleLocked: (l: LayerId) => void;
   unlockAll: () => void;
   counts: Record<string, number>;
+  /** сколько слоёв меди у платы: 1 — односторонняя (медь только на K2) */
+  layers?: CopperLayers;
+  setLayers?: (l: CopperLayers) => void;
 }) {
+  const single = layers === 1;
   return (
     <div>
       <h3>Слои</h3>
+      {setLayers && (
+        <>
+          <SI label="Слоёв меди" value={String(layers)}
+            options={[['1', '1 — односторонняя'], ['2', '2 — двусторонняя']]}
+            on={(v) => setLayers(v === '1' ? 1 : 2)} />
+          <div className="hint" style={{ padding: '0 12px 6px' }}>
+            {single
+              ? 'Односторонняя плата: вся медь на K2 (сторона пайки), K1 не используется, автотрассировка идёт без переходов-«мостов». Так делают ЛУТ, фоторезист и одностороннюю фрезеровку.'
+              : 'Двусторонняя плата: дорожки на K1 и K2, слои соединяют переходные отверстия.'}
+          </div>
+        </>
+      )}
       {LAYERS.map((l) => {
         const isCu = l.id === 'k1' || l.id === 'k2';
         const active = isCu && activeCu === l.id;
+        const unused = single && l.id === 'k1';
         return (
           <div
             key={l.id}
             className={'layer' + (active ? ' active' : '') + (locked.has(l.id) ? ' is-locked' : '')}
             data-learn={'layer-' + l.id}
             onClick={() => { if (isCu) setActiveCu(l.id as 'k1' | 'k2'); }}
-            title={isCu ? 'Сделать активным слоем меди' : undefined}
+            title={unused ? 'Односторонняя плата: верхний слой не используется' : isCu ? 'Сделать активным слоем меди' : undefined}
+            style={unused ? { opacity: 0.45 } : undefined}
           >
             <span className="sw" style={{ background: l.color }} />
             <span className="nm">
-              {l.short} <small>{l.ru} · {counts[l.id] ?? 0}</small>
+              {l.short} <small>{unused ? 'не используется' : `${l.ru} · ${counts[l.id] ?? 0}`}</small>
             </span>
             <button
               type="button"
@@ -343,7 +364,7 @@ function entityEditor(
 export function PropsPanel({
   tool, defs, setDefs, activeCu, setActiveCu,
   selEnts, patchEnt, doRotate, doMirror, doDuplicate, doDelete,
-  doc, setDocSize,
+  doc, setDocSize, setBoardLayers,
   placeName, placeRot, placeSide, setPlaceRot, setPlaceSide, cancelPlace,
   textRot, setTextRot, routeInfo, routeGroups, onSaveSel,
   selGroup, onGroup, onUngroup, onRenameGroup,
@@ -359,6 +380,8 @@ export function PropsPanel({
   doRotate: () => void; doMirror: () => void; doDuplicate: () => void; doDelete: () => void;
   doc: Doc;
   setDocSize: (w: number, h: number) => void;
+  /** 1 — односторонняя плата (медь только на K2), 2 — двусторонняя */
+  setBoardLayers?: (l: CopperLayers) => void;
   /** что ставим: название детали из генератора или из библиотеки */
   placeName?: string | null;
   onSaveSel?: () => void;
@@ -527,11 +550,24 @@ export function PropsPanel({
             В площадки-«пяточки» вход только по K2 (сторона пайки), к SMD — по слою
             самой площадки, к переходам — с любого слоя.
           </div>
-          <label className="chk" title="Разрешить уходить на верх (K1) через переходные отверстия">
-            <input type="checkbox" checked={defs.rtAllowTop} onChange={(e) => setDefs({ rtAllowTop: e.target.checked })} />
-            Разрешить верх (K1) и переходы
+          <label className="chk" title="Дорожки идут по одному слою и не сверлят переходы — для односторонних плат (ЛУТ, фоторезист, ЧПУ с одной стороны)">
+            <input type="checkbox" checked={defs.rtNoBridges} onChange={(e) => setDefs({ rtNoBridges: e.target.checked })} />
+            Без мостов (переходов)
           </label>
-          {defs.rtAllowTop && (<>
+          {defs.rtNoBridges && (
+            <div className="hint" style={{ padding: '4px 2px' }}>
+              Переходные отверстия не ставятся вообще: ни при прямом поиске, ни при перекладке
+              чужих дорожек. Дорожка не сменит слой, поэтому связь без прохода в одном слое
+              останется неразведённой — это честный результат, а не лишний мост.
+              {defs.rtAllowTop && ' Верх (K1) при этом доступен только SMD-площадкам, которые на нём и стоят.'}
+            </div>
+          )}
+          <label className="chk" title="Разрешить уходить на верх (K1) через переходные отверстия">
+            <input type="checkbox" checked={defs.rtAllowTop}
+              onChange={(e) => setDefs({ rtAllowTop: e.target.checked })} />
+            Разрешить верх (K1){defs.rtNoBridges ? '' : ' и переходы'}
+          </label>
+          {defs.rtAllowTop && !defs.rtNoBridges && (<>
             <NI label="Переход: площадка, мм" value={defs.viaSize} min={0.3} on={(v) => setDefs({ viaSize: v })} />
             <NI label="Переход: сверло, мм" value={defs.viaDrill} min={0.1} on={(v) => setDefs({ viaDrill: v })} />
             <NI label="Цена перехода (мм пути)" value={defs.rtViaCost} min={0} on={(v) => setDefs({ rtViaCost: v })} />
@@ -759,6 +795,16 @@ export function PropsPanel({
           <TI label="Название" value={doc.name} on={() => undefined} />
           <NI label="Ширина, мм" value={doc.w} min={5} on={(v) => setDocSize(v, doc.h)} />
           <NI label="Высота, мм" value={doc.h} min={5} on={(v) => setDocSize(doc.w, v)} />
+          {setBoardLayers && (<>
+            <SI label="Слоёв меди" value={String(doc.layers === 1 ? 1 : 2)}
+              options={[['1', '1 — односторонняя'], ['2', '2 — двусторонняя']]}
+              on={(v) => setBoardLayers(v === '1' ? 1 : 2)} />
+            <div className="hint" style={{ padding: '4px 2px' }}>
+              {doc.layers === 1
+                ? 'Односторонняя плата: медь только на K2, верхний слой K1 не используется, переходов-«мостов» нет. Подходит для ЛУТ, фоторезиста и односторонней фрезеровки.'
+                : 'Двусторонняя плата: медь на K1 и K2, слои соединяются переходами.'}
+            </div>
+          </>)}
           <div className="hint">
             Клик — выбрать элемент. Двигайте выделенное мышью или стрелками
             (шаг = сетка, <span className="kbd">Shift</span> ×10, <span className="kbd">Alt</span> ÷10).

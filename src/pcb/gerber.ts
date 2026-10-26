@@ -1,6 +1,7 @@
 // Экспорт Gerber RS-274X (слои меди, шелкография, контур) и Excellon (сверловка).
 
 import type { Doc, Entity, LayerId, Pt } from './model';
+import { isSingleSided } from './model';
 import { expandDoc } from './expand';
 import { textPolylines } from './strokefont';
 import { dimArrows, dimGeom, dimSegments } from './dim';
@@ -227,8 +228,12 @@ export function productionFiles(doc: Doc): { name: string; data: string }[] {
     entities: [...doc.entities, { id: 'psbees-panel-rail', kind: 'rect' as const,
       ...doc.panelInfo.railBounds, filled: false, th: 0.1, layer: 'outline' as const }],
   } : doc;
-  const files = [
-    { name: `${base}_K1_verh.gtl`, data: gerberLayer(doc, 'k1', 'Top copper (K1)') },
+  // Односторонняя плата: файла верхней меди нет вовсе — пустой или «только пятачки»
+  // слой K1 завод понял бы как второй слой и сделал бы плату двусторонней.
+  const files: { name: string; data: string }[] = [
+    ...(isSingleSided(doc) ? [] : [
+      { name: `${base}_K1_verh.gtl`, data: gerberLayer(doc, 'k1', 'Top copper (K1)') },
+    ]),
     { name: `${base}_K2_niz.gbl`, data: gerberLayer(doc, 'k2', 'Bottom copper (K2)') },
     { name: `${base}_SH1_verh.gto`, data: gerberLayer(doc, 's1', 'Top silkscreen (S1)') },
     { name: `${base}_SH2_niz.gbo`, data: gerberLayer(doc, 's2', 'Bottom silkscreen (S2)') },

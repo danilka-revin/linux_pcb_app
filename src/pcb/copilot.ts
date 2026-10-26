@@ -19,7 +19,7 @@
 import * as M from './model';
 import type { Comp, Doc, Entity, Pt } from './model';
 import { generate } from './gen';
-import { expandComp, libElsToEnts } from './expand';
+import { expandComp, expandDoc, libElsToEnts } from './expand';
 import { nextReference } from './component-data';
 import { pruneGroups } from './group';
 
@@ -65,6 +65,7 @@ export type CopilotCmd =
   | { t: 'track'; pts: Pt[]; width: number | null; layer: 'k1' | 'k2' | null }
   | { t: 'text'; text: string; size: number | null; anchor: CopilotAnchor; bottom: boolean }
   | { t: 'board'; w: number; h: number }
+  | { t: 'layers'; n: M.CopperLayers }
   | { t: 'corners'; d: number; margin: number }
   | { t: 'selectAll' }
   | { t: 'clearSel' }
@@ -267,6 +268,7 @@ function parseClause(raw: string): CopilotCmd | null {
     mRotate(s) ??
     mMirror(s) ??
     mMove(s) ??
+    mLayers(s) ??
     mBoard(s) ??
     mCorners(s) ??
     mText(s, raw) ??
@@ -283,6 +285,7 @@ export const COPILOT_HELP = [
   '• «поставь 4 светодиода 5мм в ряд через 5 мм» — детали строкой генератора;',
   '• «разъём 2x5 справа», «dip 8 в центре», «сетка 2x3 резистора 0805»;',
   '• «соедини их», «соедини катоды», «соедини D1.2 с R2.1»;',
+  '• «сделай плату односторонней» / «верни два слоя» — число слоёв меди;',
   '• «дорожка от 10 20 до 30 40», «текст „Плата v1“ снизу»;',
   '• «плата 60x40», «отверстия м3 по углам»;',
   '• «удали выделенное», «продублируй», «поверни на 90», «сдвинь влево на 2»;',
@@ -375,6 +378,14 @@ function mMove(s: string): CopilotCmd | null {
 }
 
 // ------------------------------------------------------------- плата
+
+/** «односторонняя плата» / «1 слой меди» / «сделай двусторонней» */
+function mLayers(s: string): CopilotCmd | null {
+  const one = /односторонн|один слой|1\s*слой|однослойн|single\s*side/.test(s);
+  const two = /двусторонн|два слоя|2\s*слоя|двухслойн|double\s*side/.test(s);
+  if (one === two) return null;   // ни того, ни другого — либо противоречие
+  return { t: 'layers', n: one ? 1 : 2 };
+}
 
 function mBoard(s: string): CopilotCmd | null {
   if (!/плата|размер|габарит|сделай|новая|основание/.test(s)) return null;
@@ -1083,6 +1094,26 @@ export function execCopilot(doc: Doc, cmds: CopilotCmd[], ctx: CopilotCtx): Copi
         }
         changed = true;
         say(true, `📐 Размер платы: ${M.fmt(cmd.w)} × ${M.fmt(cmd.h)} мм.`);
+        break;
+      }
+      case 'layers': {
+        if (M.boardLayers(d) === cmd.n) {
+          say(true, cmd.n === 1 ? '➕ Плата уже односторонняя: медь на K2.' : '➕ Плата уже двусторонняя.');
+          break;
+        }
+        if (cmd.n === 1) {
+          const onTop = expandDoc(d.entities)
+            .filter((e) => (e.kind === 'track' || e.kind === 'smd' || e.kind === 'poly') && e.layer === 'k1').length;
+          d.layers = 1;
+          changed = true;
+          say(true, onTop
+            ? `➕ Плата односторонняя: медь только на K2, без переходов. На K1 осталось элементов: ${onTop} — перенеси их на K2 (список в DRC).`
+            : '➕ Плата односторонняя: медь только на K2, трассировка без переходов-«мостов».');
+        } else {
+          delete d.layers;
+          changed = true;
+          say(true, '➕ Плата двусторонняя: K1 и переходы снова доступны.');
+        }
         break;
       }
       case 'corners': {
