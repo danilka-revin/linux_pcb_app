@@ -36,6 +36,11 @@ assert(Math.abs(inch[0].diameter - .7874) < .001 && Math.abs(inch[0].x - 25.4) <
 const files = productionFiles(doc);
 assert.equal(files.length, 6);
 assert(files.some((f) => f.name.endsWith('.xln')));
+// Односторонняя плата: слоя K1 в производственном пакете нет вовсе.
+const single = productionFiles({ ...doc, layers: 1 as const });
+assert.equal(single.length, 5, 'у односторонней платы пять файлов: без верхней меди');
+assert(!single.some((f) => /\.gtl$/i.test(f.name)), 'нет Gerber верхней меди');
+assert(single.some((f) => /\.gbl$/i.test(f.name)), 'нижняя медь на месте');
 const panel = { ...doc, panelInfo: { cols: 2, rows: 1, stepX: 25, stepY: 10, railBounds: { x: -5, y: -5, w: 55, h: 20 }, toolingHoles: [], fiducials: [], tabs: [], vCuts: [{ x1: 20, y1: 0, x2: 20, y2: 10 }] } };
 const panelFiles = productionFiles(panel);
 assert.equal(panelFiles.length, 7);

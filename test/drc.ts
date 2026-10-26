@@ -36,4 +36,23 @@ const panel = panelizeDoc(base(), { cols: 2, rows: 1, stepX: 32, stepY: 20, brea
 const panelDrc = runBoardDrc(panel);
 assert(panelDrc.some((x) => x.rule === 'outline-open' && x.severity === 'warning'));
 assert(!panelDrc.some((x) => x.rule === 'outline-missing'), 'intentional breakaway tabs are not misreported as a missing board outline');
+// Односторонняя плата: медь на K1 — ошибка, переход — лишнее отверстие.
+{
+  const single = { ...base(), layers: 1 as const, entities: [
+    { id: 'top', kind: 'track' as const, pts: [{ x: 5, y: 5 }, { x: 10, y: 5 }], w: .5, layer: 'k1' as const },
+    { id: 'smd', kind: 'smd' as const, x: 15, y: 15, w: 1.2, h: 1.2, rot: 0, layer: 'k1' as const },
+    { id: 'br', kind: 'via' as const, x: 20, y: 10, size: 1.4, drill: .7 },
+    { id: 'bot', kind: 'track' as const, pts: [{ x: 5, y: 15 }, { x: 10, y: 15 }], w: .5, layer: 'k2' as const },
+  ] };
+  const v = runBoardDrc(single, rules);
+  const copper = v.filter((x) => x.rule === 'single-side-copper');
+  assert.equal(copper.length, 2, 'дорожка и SMD на K1 — два нарушения');
+  assert(copper.every((x) => x.severity === 'error' && x.layer === 'K1'));
+  assert(v.some((x) => x.rule === 'single-side-via' && x.severity === 'warning'), 'переход на одном слое — предупреждение');
+  assert(!v.some((x) => x.rule === 'single-side-copper' && x.entities?.includes('bot')), 'медь на K2 законна');
+  const two = runBoardDrc({ ...single, layers: 2 }, rules);
+  assert(!two.some((x) => x.rule.startsWith('single-side')), 'на двусторонней плате правил одного слоя нет');
+  console.log('DRC: single-sided board flags top copper and stray bridges');
+}
+
 console.log('DRC: copper, track width, edge, annular ring, drill, connectivity and outline checks OK');

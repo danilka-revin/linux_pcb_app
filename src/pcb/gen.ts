@@ -25,7 +25,7 @@
 import {
   bboxOf as fpBBox,
   boardFootprint, chipSmdFootprint, crystalFootprint, dipFootprint, dipSwitchFootprint,
-  electroFootprint, fiducialFootprint, holeFootprint, minCopperPitch, moduleFootprint,
+  electroFootprint, fiducialFootprint, holeFootprint, megaFootprint, minCopperPitch, moduleFootprint,
   packFootprint, padFootprint, quadFootprint, relayFootprint, rowFootprint, r3, shieldFootprint,
   soicFootprint, sotFootprint, tactFootprint, terminalFootprint, twoLeadFootprint,
   type FpSpec, type LibEl, type LibLayer, type Polarity,
@@ -932,6 +932,42 @@ export const FAMILIES: Family[] = [
     },
   },
   {
+    id: 'mega',
+    title: 'Arduino Mega 2560 — посадочное место платы',
+    hint: 'Разъёмы самой платы Mega 2560 R3: цифровые D0…D53, аналог A0…A15, питание, ICSP 2×3, шесть крепёжных отверстий и контур 101.52 × 53.34 мм.',
+    aliases: ['arduino mega', 'arduino mega 2560', 'mega 2560', 'mega2560', 'мега 2560', 'ардуино мега'],
+    weak: ['mega', 'мега'],
+    noNum: true,
+    bare: ['padSize', 'holeD'],
+    params: [
+      P_NUM('w', 'Длина платы, мм', 101.52, { min: 50, max: 300, step: 0.01, words: ['размер', 'длина'], token: null, hint: 'меняется только контур: разъёмы остаются на штатных местах' }),
+      P_NUM('h', 'Ширина платы, мм', 53.34, { min: 20, max: 300, step: 0.01, words: ['высота', 'ширина'], token: null }),
+      P_BOOL('holes', 'Крепёжные отверстия', true, { words: ['крепёжные', 'крепёж', 'отверстия'], token: 'крепёж' }),
+      holeDia(3.2),
+      P_BOOL('icsp', 'Гнездо ICSP 2×3', true, { words: ['icsp', 'программатор', 'spi'], token: 'icsp' }),
+      padSize(1.8), drill(1.0),
+      labelsEvery(1, ['подписи', 'имена']), silkOn(), valueP(),
+    ],
+    build(p, ctx) {
+      const el = megaFootprint({
+        w: p.w as number, h: p.h as number,
+        holeD: p.holes ? (p.holeD as number) : 0,
+        icsp: p.icsp as boolean,
+        padSize: p.padSize as number, drill: p.drill as number,
+        labels: (p.labels as number) !== 0, layer: ctxLayer(ctx),
+        title: (p.value as string) || 'MEGA 2560',
+      });
+      return {
+        els: el.els, spec: el.spec,
+        title: `Arduino Mega 2560 ${r3(p.w as number)}×${r3(p.h as number)}`,
+        notes: [
+          'Посадочное место самой платы Mega 2560 R3, а не шилда под неё.',
+          'Имена выводов и координаты — по оригинальной плате; у клонов сверьтесь с разводкой.',
+        ],
+      };
+    },
+  },
+  {
     id: 'board',
     title: 'Плата / основание с крепежом',
     hint: 'Контур заданного размера, крепёжные отверстия по углам (голые или под стойку), метки совмещения, подпись размеров.',
@@ -1181,6 +1217,10 @@ export function detectFamily(s: string): { fam: Family; preset?: Params; word: s
         value: m.title, names: `${m.left.join(',')}|${m.right.join(',')}`,
       },
     };
+  }
+  // «shield под Mega» — это шилд, а не сама плата: у шилда габарит платы Mega
+  if (/mega|мега/.test(in_) && /shield|шилд|щит/.test(in_)) {
+    return { fam: byId('shield'), word: 'shield', preset: { value: 'MEGA SHIELD', w: 101.52, h: 53.34 } };
   }
   // самое раннее слово важнее длинного: «dip 16 … панелька» → dip, а не row
   const score = (pick: (f: Family) => string[]): { fam: Family; len: number; pos: number; word: string } | null => {
@@ -1621,6 +1661,8 @@ export const EXAMPLES: { query: string; note: string }[] = [
   { query: 'to-220, отверстие под винт', note: '3 вывода + крепёж' },
   { query: 'sot-23', note: '3 планарных вывода' },
   { query: 'arduino nano', note: '2×15 с именами выводов' },
+  { query: 'arduino mega 2560', note: 'посадочное место платы Mega: D0…D53, A0…A15, ICSP, крепёж' },
+  { query: 'arduino uno shield', note: 'разъёмы шилда Uno R3' },
   { query: 'esp32 devkit', note: '2×19, крепёж, габарит' },
   { query: 'плата 60x40, 4 отверстия m3, отступ 3.5', note: 'контур + крепёж' },
   { query: 'крепёжное отверстие m3 x4 шаг 20', note: '4 отверстия в ряд' },

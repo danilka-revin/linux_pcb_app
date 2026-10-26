@@ -33,7 +33,7 @@ import {
   type GridConf,
 } from './pcb/grid';
 import { productionFiles } from './pcb/gerber';
-import { autoroute, clearanceAt, pickEndpoint, endpointOf, type RouteEnd } from './pcb/autoroute';
+import { autoroute, clearanceAt, pickEndpoint, endpointOf, routeOptsForLayers, type RouteEnd, type RouteOpts } from './pcb/autoroute';
 import {
   deleteNode, insertNode, joinTrackPts, moveTrackNode, nearestOnPts, nodeAction, nodeUnder,
   pickSolderPair, splitTrackAt, trackEndsNear,
@@ -377,6 +377,7 @@ const DEFAULT_DEFS: Defs = {
   rtViaCost: 8,
   rtTopMul: 1.5,
   rtAllowTop: true,
+  rtNoBridges: false,
   rtAngle: '45',
   rtAutoPad: true,
 };
@@ -1405,6 +1406,53 @@ export default function App({ cloudUser, onLogout }: { cloudUser?: CloudUser; on
     commit(nd, `Размер платы: ${M.fmt(w)} × ${M.fmt(h)} мм`);
   }, [doc, commit]);
 
+  /**
+   * Число слоёв меди платы. Односторонняя плата (1 слой) — вся медь на K2, верхний
+   * слой не используется, переходов-«мостов» нет: так делают ЛУТ, фоторезист и
+   * одностороннюю фрезеровку. Медь, уже нарисованную на K1, не удаляем — её
+   * показывает DRC, чтобы пользователь перенёс дорожки осознанно.
+   */
+  const setBoardLayers = useCallback((layers: M.CopperLayers) => {
+    if (M.boardLayers(doc) === layers) return;
+    const nd = M.cloneDoc(doc);
+    if (layers === 1) nd.layers = 1; else delete nd.layers;
+    const onTop = layers === 1
+      ? expandDoc(nd.entities).filter((e) => (e.kind === 'track' || e.kind === 'smd' || e.kind === 'poly') && e.layer === 'k1').length
+      : 0;
+    commit(nd, layers === 1 ? 'Плата односторонняя: 1 слой меди' : 'Плата двусторонняя: 2 слоя меди');
+    setActiveCu('k2');
+    setTrackMsg({
+      msg: layers === 1
+        ? (onTop
+          ? `Односторонняя плата. На верхнем слое K1 осталось элементов: ${onTop} — перенесите их на K2, список покажет DRC.`
+          : 'Односторонняя плата: медь только на K2, автотрассировка без переходов-«мостов».')
+        : 'Плата снова двусторонняя: верхний слой K1 и переходы доступны.',
+      ok: layers === 1 ? onTop === 0 : true,
+    });
+  }, [doc, commit]);
+
+  /**
+   * Смена активного слоя меди. На односторонней плате K1 недоступен: иначе рисунок
+   * уехал бы на сторону, которую никто не травит.
+   */
+  const pickCuLayer = useCallback((l: 'k1' | 'k2') => {
+    if (l === 'k1' && M.isSingleSided(docRef.current)) {
+      setActiveCu('k2');
+      setTrackMsg({ msg: 'Односторонняя плата: медь только на K2. Второй слой включается в панели «Слои».', ok: false });
+      return;
+    }
+    setActiveCu(l);
+  }, []);
+
+  /** Параметры трассировки: общие настройки → запрет мостов → число слоёв платы. */
+  const routeOptsNow = useCallback((): RouteOpts => routeOptsForLayers({
+    trackW: defs.rtW, clearance: defs.rtClear, holeClear: defs.rtHoleClear,
+    viaSize: defs.viaSize, viaDrill: defs.viaDrill, step: defs.rtStep,
+    viaCost: defs.rtViaCost, topMul: defs.rtTopMul,
+    allowVias: !defs.rtNoBridges, noBridges: defs.rtNoBridges,
+    allowTop: defs.rtAllowTop, angle: defs.rtAngle,
+  }, M.boardLayers(doc)), [defs, doc]);
+
   // ---------------- буфер обмена ----------------
   const copySel = useCallback(() => {
     const ids = unlockedSelection(selRef.current);
@@ -1924,9 +1972,9 @@ export default function App({ cloudUser, onLogout }: { cloudUser?: CloudUser; on
     setTimeout(() => fit(result.doc), 50);
   }, [doc, commit, fit]);
 
-  const newBoardDlg = useCallback((name: string, w: number, h: number) => {
+  const newBoardDlg = useCallback((name: string, w: number, h: number, layers: M.CopperLayers = 2) => {
     if (!prepareReplace()) return;
-    const next = M.newBoard(w, h, name);
+    const next = M.newBoard(w, h, name, layers);
     if (cloudUser) { resetHistory(next, 'Создана плата'); setDoc(next); rememberDraft(cloudUser.id, next); }
     else commit(next, 'Создана плата');
     resetBoardViewFlags();
@@ -2353,17 +2401,12 @@ export default function App({ cloudUser, onLogout }: { cloudUser?: CloudUser; on
         if (r.errors.length) { setRouteMsg({ msg: r.errors.join('\n'), ok: false }); return; }
         setRouteVariants({ snapshot, variants: r.variants });
       };
-      worker.postMessage({ doc: snapshot, opts: {
-        trackW: defs.rtW, clearance: defs.rtClear, holeClear: defs.rtHoleClear,
-        viaSize: defs.viaSize, viaDrill: defs.viaDrill, step: defs.rtStep,
-        viaCost: defs.rtViaCost, topMul: defs.rtTopMul,
-        allowTop: defs.rtAllowTop, angle: defs.rtAngle,
-      } });
+      worker.postMessage({ doc: snapshot, opts: routeOptsNow() });
     } catch {
       routeWorker.current?.terminate(); routeWorker.current = null; setRouting(null);
       setRouteMsg({ msg: 'Не удалось запустить фоновую трассировку. Плата не изменена.', ok: false });
     }
-  }, [doc, defs]);
+  }, [doc, routeOptsNow]);
   const applyRouteVariant = (r: NetRouteVariant) => {
     if (!routeVariants) return;
     const { snapshot } = routeVariants;
@@ -2412,11 +2455,7 @@ export default function App({ cloudUser, onLogout }: { cloudUser?: CloudUser; on
       setRouteMsg({ msg: `Первый контакт (${end.kind === 'smd' ? 'SMD' : end.tht ? 'PTH' : 'переход'}, ${end.layers.join('/').toUpperCase()}): ` + M.fmt(end.x) + '; ' + M.fmt(end.y) + ' — выберите вторую', ok: null });
       return;
     }
-    const r = autoroute(base.entities, base.w, base.h, routeA, end, {
-      trackW: defs.rtW, clearance: defs.rtClear, holeClear: defs.rtHoleClear, viaSize: defs.viaSize, viaDrill: defs.viaDrill,
-      step: defs.rtStep, viaCost: defs.rtViaCost, topMul: defs.rtTopMul,
-      allowTop: defs.rtAllowTop, angle: defs.rtAngle,
-    });
+    const r = autoroute(base.entities, base.w, base.h, routeA, end, routeOptsNow());
     if (!r.ok) {
       if (newPad) commit(base, 'Добавлена площадка под дорожку');
       setRouteMsg({ msg: r.msg, ok: false });
@@ -2429,7 +2468,7 @@ export default function App({ cloudUser, onLogout }: { cloudUser?: CloudUser; on
     setSel(new Set(r.ents.map((x) => x.id)));
     setRouteMsg({ msg: r.msg, ok: r.drc === 0 });
     setRouteA(null);
-  }, [view.s, doc, defs, routeA, commit, routeMode, activeNet]);
+  }, [view.s, doc, defs, routeA, commit, routeMode, activeNet, routeOptsNow]);
 
   const onPointerDown = (e: React.PointerEvent<HTMLCanvasElement>) => {
     const { px, py } = getPos(e);
@@ -2546,6 +2585,10 @@ export default function App({ cloudUser, onLogout }: { cloudUser?: CloudUser; on
         addEnts([{ id: M.uid(), kind: 'smd', x: sp.x, y: sp.y, w: defs.smdW, h: defs.smdH, rot: 0, layer: activeCu }]);
         break;
       case 'via':
+        if (M.isSingleSided(doc)) {
+          setTrackMsg({ msg: 'Односторонняя плата: переходы-«мосты» не нужны — медь и так на K2.', ok: false });
+          break;
+        }
         addEnts([{ id: M.uid(), kind: 'via', x: sp.x, y: sp.y, size: defs.viaSize, drill: defs.viaDrill }]);
         break;
       case 'hole':
@@ -2945,6 +2988,10 @@ export default function App({ cloudUser, onLogout }: { cloudUser?: CloudUser; on
       case 'view.mirrorView': setView((v) => ({ ...v, mir: !v.mir })); return;
       case 'view.layer': {
         const other: 'k1' | 'k2' = activeCu === 'k1' ? 'k2' : 'k1';
+        if (other === 'k1' && M.isSingleSided(doc)) {
+          setTrackMsg({ msg: 'Односторонняя плата: медь только на K2, менять слой некуда.', ok: false });
+          return;
+        }
         if (draft?.t === 'track') {
           // точка смены слоя на текущей позиции курсора
           setDraft((d2) => {
@@ -4146,11 +4193,11 @@ export default function App({ cloudUser, onLogout }: { cloudUser?: CloudUser; on
           <button type="button" className={'tb-btn cu' + (activeCu === 'k1' ? ' active' : '')}
             data-learn="cu-k1"
             style={{ borderColor: COLORS.k1, color: activeCu === 'k1' ? 'var(--text)' : COLORS.k1 }}
-            title="Активный слой: верхняя медь (L)" onClick={() => setActiveCu('k1')}>K1</button>
+            title="Активный слой: верхняя медь (L)" onClick={() => pickCuLayer('k1')}>K1</button>
           <button type="button" className={'tb-btn cu' + (activeCu === 'k2' ? ' active' : '')}
             data-learn="cu-k2"
             style={{ borderColor: COLORS.k2, color: activeCu === 'k2' ? 'var(--text)' : COLORS.k2 }}
-            title="Активный слой: нижняя медь (L)" onClick={() => setActiveCu('k2')}>K2</button>
+            title="Активный слой: нижняя медь (L)" onClick={() => pickCuLayer('k2')}>K2</button>
         </div>
       ),
       view: (
@@ -4289,10 +4336,11 @@ export default function App({ cloudUser, onLogout }: { cloudUser?: CloudUser; on
     const renderLayersPane = () => (
       <>
         <LayersPanel
-          activeCu={activeCu} setActiveCu={setActiveCu}
+          activeCu={activeCu} setActiveCu={pickCuLayer}
           hidden={hidden} toggleHidden={toggleHidden}
           locked={lockedLayers} toggleLocked={toggleLayerLocked} unlockAll={unlockAllLayers}
           counts={counts}
+          layers={M.boardLayers(doc)} setLayers={setBoardLayers}
         />
         <div style={{ flex: 1 }} />
         <div className="hint" style={{ padding: '0 12px 10px' }}>
@@ -4480,7 +4528,9 @@ export default function App({ cloudUser, onLogout }: { cloudUser?: CloudUser; on
           {routeMode === 'nets' && <NetsPanel nets={doc.nets ?? []} active={activeNet} setActive={setActiveNet}
             ends={netGeometry.ends} comp={netGeometry.comp} info={routeMsg} onChange={changeNets} onRoute={routeAll}
             lengths={netLen} lenInfo={lenInfo} onLengthen={lengthenNetApp} onAlignBus={alignBusApp}
-            defaults={{ w: defs.rtW, clear: defs.rtClear, viaSize: defs.viaSize, viaDrill: defs.viaDrill, allowTop: defs.rtAllowTop }}
+            defaults={{ w: defs.rtW, clear: defs.rtClear, viaSize: defs.viaSize, viaDrill: defs.viaDrill,
+              // на односторонней плате верхнего слоя нет, поэтому личное правило группы его не вернёт
+              allowTop: defs.rtAllowTop && !M.isSingleSided(doc) }}
             onNew={() => {
               const id = M.uid();
               const used = new Set((doc.nets ?? []).map((n) => n.name));
@@ -4503,7 +4553,7 @@ export default function App({ cloudUser, onLogout }: { cloudUser?: CloudUser; on
           activeCu={activeCu} setActiveCu={setActiveCu}
           selEnts={selEnts} patchEnt={patchEnt}
           doRotate={rotateSel} doMirror={mirrorSel} doDuplicate={duplicateSel} doDelete={deleteSel}
-          doc={doc} setDocSize={setDocSize}
+          doc={doc} setDocSize={setDocSize} setBoardLayers={setBoardLayers}
           placeName={place?.name ?? null} placeRot={placeRot} placeSide={placeSide}
           setPlaceRot={setPlaceRot} setPlaceSide={setPlaceSide} cancelPlace={() => setPlace(null)}
           onSaveSel={selEnts.length ? saveSelFromProps : undefined}
@@ -4548,7 +4598,7 @@ export default function App({ cloudUser, onLogout }: { cloudUser?: CloudUser; on
   ), [
     sidesConf, tool, routeMode, activeNet, doc, netGeometry, routeMsg, routeA, defs, activeCu,
     selEnts, place, placeRot, placeSide, view.s, changeNets, routeAll, patchEnt, rotateSel,
-    mirrorSel, duplicateSel, deleteSel, setDocSize, setDefs, saveSelFromProps,
+    mirrorSel, duplicateSel, deleteSel, setDocSize, setBoardLayers, setDefs, saveSelFromProps,
     selGroup, canGroupSel, groupSel, ungroupSel, renameGroupCb,
     editEnt, editNode, trackMsg, patchEditNode, deleteEditNode, branchFromSelectedNode, boardClearance, commit, size,
     netLen, lenInfo, lengthenNetApp, alignBusApp,
@@ -4861,7 +4911,7 @@ export default function App({ cloudUser, onLogout }: { cloudUser?: CloudUser; on
         ents={preview.ents} bl={preview.bl}
       />}
       {dialog === 'new' && <NewBoardDialog
-        defaults={{ name: prefs.newName, w: prefs.newW, h: prefs.newH }}
+        defaults={{ name: prefs.newName, w: prefs.newW, h: prefs.newH, layers: M.boardLayers(doc) }}
         onOk={newBoardDlg} onClose={() => setDialog(null)} />}
       {dialog === 'history' && <HistoryDialog
         rows={historyRows(past.current, future.current)}

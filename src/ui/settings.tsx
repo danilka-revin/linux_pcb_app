@@ -1264,7 +1264,17 @@ export function SettingsWindow(props: SettingsWindowProps) {
                 />
               </Row>
               <Check
-                label="Разрешить трассировку по верхнему слою"
+                label="Без мостов (переходных отверстий)"
+                value={defs.rtNoBridges}
+                onChange={(v) => setDefs({ rtNoBridges: v })}
+              />
+              <p className="set-note">
+                Дорожки прокладываются в одном слое и не сверлят переходы — даже когда
+                перекладывают чужую дорожку. Связь без прохода в одном слое остаётся
+                неразведённой. На односторонней плате (1 слой меди) мосты запрещены всегда.
+              </p>
+              <Check
+                label={defs.rtNoBridges ? 'Разрешить верхний слой (без переходов — только для SMD на K1)' : 'Разрешить трассировку по верхнему слою'}
                 value={defs.rtAllowTop}
                 onChange={(v) => setDefs({ rtAllowTop: v })}
               />

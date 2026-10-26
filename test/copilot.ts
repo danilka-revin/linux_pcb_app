@@ -181,6 +181,14 @@ const tracksOf = (d: M.Doc): M.Track[] => d.entities.filter((e): e is M.Track =>
   const tr = run(doc, 'дорожка от 10 20 до 30 40');
   const trs = tracksOf(tr.doc);
   ok(trs.length === 1 && trs[0].pts.length === 2 && trs[0].layer === 'k1', 'дорожка по координатам');
+
+  // число слоёв меди словами
+  const one = run(doc, 'сделай плату односторонней');
+  ok(one.doc.layers === 1 && M.isSingleSided(one.doc), 'односторонняя плата помощником');
+  ok(!!one.lines.some((l) => l.ok && /односторонн/i.test(l.text)), 'помощник объяснил, что сделал');
+  ok(M.boardLayers(run(doc, 'верни два слоя').doc) === 2, 'возврат к двум слоям');
+  ok(parseCopilot('плата 60x40, один слой').some((c) => c.t === 'layers'), '«один слой» — отдельная команда');
+  ok(parseCopilot('плата 60x40').every((c) => c.t !== 'layers'), 'размер платы не путается со слоями');
 }
 
 // ---------------------------------------------------------------- правка

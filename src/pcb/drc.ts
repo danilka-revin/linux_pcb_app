@@ -2,6 +2,7 @@
 // Это не замена электрической симуляции и не сертифицированный CAM; правила
 // видны пользователю, а каждый результат привязан к координате на плате.
 import type { Doc, Entity, Pt } from './model';
+import { isSingleSided } from './model';
 import { expandDoc } from './expand';
 import { boardShape, insideBoard } from './board-shape';
 import { copperShapes, shapeDist, shapeShapeDist, type Shape } from './autoroute';
@@ -75,6 +76,27 @@ const shapePoints = (s: Shape): Pt[] => {
 };
 const shapeCenter = (s: Shape): Pt => ({ x: (s.bb[0] + s.bb[2]) / 2, y: (s.bb[1] + s.bb[3]) / 2 });
 
+/** Медь верхнего слоя: у односторонней платы этого слоя просто нет. */
+const isTopCopper = (e: Entity): boolean => {
+  switch (e.kind) {
+    case 'track': case 'smd': case 'poly': return e.layer === 'k1';
+    case 'rect': return e.filled && e.layer === 'k1';
+    default: return false;
+  }
+};
+
+/** Куда прыгнуть курсором при показе нарушения на меди верхнего слоя. */
+const copperPoint = (e: Entity): Pt => {
+  switch (e.kind) {
+    case 'track': return e.pts.length >= 2 ? midpoint(e.pts[0], e.pts[1]) : { x: 0, y: 0 };
+    case 'poly': return e.pts[0] ?? { x: 0, y: 0 };
+    case 'rect': return { x: e.x + e.w / 2, y: e.y + e.h / 2 };
+    case 'line': return { x: (e.x1 + e.x2) / 2, y: (e.y1 + e.y2) / 2 };
+    case 'dim': return { x: (e.x1 + e.x2) / 2, y: (e.y1 + e.y2) / 2 };
+    default: return { x: e.x, y: e.y };
+  }
+};
+
 function push(out: DrcViolation[], item: Omit<DrcViolation, 'id'>): void {
   const ids = (item.entities ?? []).slice().sort().join('|');
   const id = `${item.rule}:${ids}:${item.x.toFixed(3)},${item.y.toFixed(3)}`;
@@ -106,6 +128,7 @@ export function runBoardDrc(doc: Doc, rawRules: Partial<DrcRules> = {}): DrcViol
   const out: DrcViolation[] = [];
   const flat = expandDoc(doc.entities);
   const board = boardShape(doc, flat);
+  const singleSided = isSingleSided(doc);
 
   // Breakaway tabs deliberately leave panel contours open; this is an expected
   // manufacturing profile, not a missing board outline. The open-chain warning
@@ -123,6 +146,18 @@ export function runBoardDrc(doc: Doc, rawRules: Partial<DrcRules> = {}): DrcViol
   });
 
   for (const e of flat) {
+    // Односторонняя плата: медь на K1 травить нечем — это ошибка, а не предупреждение.
+    if (singleSided && isTopCopper(e)) push(out, {
+      rule: 'single-side-copper', severity: 'error',
+      message: 'Односторонняя плата: медь на верхнем слое K1. Перенесите её на K2 или переключите плату на два слоя.',
+      x: copperPoint(e).x, y: copperPoint(e).y, entities: [e.id], layer: 'K1',
+    });
+    // Переход на одном слое ничего не соединяет: лишняя металлизация и сверло.
+    if (singleSided && e.kind === 'via') push(out, {
+      rule: 'single-side-via', severity: 'warning',
+      message: 'Односторонняя плата: переход-«мост» ничего не соединяет — удалите его или сделайте плату двусторонней.',
+      x: e.x, y: e.y, entities: [e.id],
+    });
     if (e.kind === 'track' && e.w < rules.minTrackWidth - 1e-8) push(out, {
       rule: 'track-width', severity: 'error', message: `Дорожка уже минимума: ${e.w.toFixed(3)} мм < ${rules.minTrackWidth.toFixed(3)} мм.`,
       x: e.pts[0]?.x ?? 0, y: e.pts[0]?.y ?? 0, actual: e.w, required: rules.minTrackWidth,

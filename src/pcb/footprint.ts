@@ -1256,3 +1256,142 @@ export function shieldFootprint(o: {
     spec: { pins, pitch: 2.54, holes, labels: o.labels === false ? 0 : pins, w: r3(bw), h: r3(bh) },
   };
 }
+
+/**
+ * Крепёжные отверстия Arduino Mega 2560 R3 (мм от левого нижнего угла платы,
+ * ось Y вверх). Четыре из них совпадают с отверстиями Uno/Duemilanove — поэтому
+ * старые шилды встают на Mega без переделок.
+ */
+const MEGA_HOLES: [number, number][] = [
+  [13.97, 2.54], [15.24, 50.8], [66.04, 7.62], [66.04, 35.56], [90.17, 50.8], [96.52, 2.54],
+];
+
+export interface MegaOpts {
+  /** длина платы, мм (по умолчанию 101.52 — как у Mega 2560 R3) */
+  w?: number;
+  /** ширина платы, мм (по умолчанию 53.34) */
+  h?: number;
+  /** диаметр крепёжных отверстий, мм; 0 — без крепежа */
+  holeD?: number;
+  /** гнездо ICSP 2×3 */
+  icsp?: boolean;
+  padSize?: number;
+  drill?: number;
+  /** подписи выводов */
+  labels?: boolean;
+  layer?: LibLayer;
+  title?: string;
+}
+
+/**
+ * Arduino Mega 2560 R3 — посадочное место САМОЙ платы (не шилда под неё).
+ *
+ * Пять гребёнок: цифровые D0…D21 и два 5V по длинной стороне, питание и
+ * аналог A0…A15 по другой, два параллельных ряда D22…D53 с парой GND по правому
+ * краю; плюс ICSP 2×3, шесть крепёжных отверстий и контур 101.52 × 53.34 мм.
+ * Координаты считаются от левого нижнего угла (USB слева, разъём питания снизу);
+ * расстояние между D7 и D8 — 4.06 мм, как на настоящей плате.
+ *
+ * Геометрия сверена с KiCad-библиотекой Alarm-Siren/arduino-kicad-library
+ * (footprints/arduino-library.pretty/Arduino_Mega2560_R3_Shield.kicad_mod):
+ * все 98 площадок эталона — 92 сигнальных и 6 крепёжных NPTH Ø3.2 — совпадают
+ * с нашими координатами с точностью до 0.0000 мм. Разница только в начале отсчёта:
+ * у эталона оно в углу платы, у нас — в центре (поэтому здесь x − 50.76, y − 26.67).
+ */
+export function megaFootprint(o: MegaOpts): { els: LibEl[]; spec: FpSpec } {
+  const layer = o.layer ?? 's1';
+  const bw = o.w ?? 101.52, bh = o.h ?? 53.34;
+  const padSize = o.padSize ?? 1.8, drill = o.drill ?? 1.0;
+  const x = (v: number): number => v - bw / 2;
+  const y = (v: number): number => v - bh / 2;
+  const els: LibEl[] = [];
+  let pins = 0;
+  let labels = 0;
+
+  /** Горизонтальная гребёнка: `above` — подписи сверху ряда (иначе снизу). */
+  const row = (x0: number, yy: number, names: string[], above: boolean, firstSquare = true): void => {
+    const pts: LabelledPt[] = names.map((t, i) => {
+      const px = x0 + i * 2.54;
+      pins++;
+      els.push(P(x(px), y(yy), drill, padSize, firstSquare && i === 0 ? 'square' : 'round'));
+      return { x: x(px), y: y(yy), t };
+    });
+    if (o.labels === false) return;
+    labels += pts.length;
+    els.push(...rowLabels(pts, 0.75, above, padSize / 2, layer));
+  };
+  /** Вертикальный ряд (справа): подписи уводим от соседнего ряда — внутрь платы. */
+  const column = (xx: number, y0: number, names: string[], dir: 'left' | 'right', firstSquare = true): void => {
+    const pts: LabelledPt[] = names.map((t, i) => {
+      const py = y0 - i * 2.54;
+      pins++;
+      els.push(P(x(xx), y(py), drill, padSize, firstSquare && i === 0 ? 'square' : 'round'));
+      return { x: x(xx), y: y(py), t };
+    });
+    if (o.labels === false) return;
+    labels += pts.length;
+    els.push(...labelsFor(pts, dir, 0.8, padSize / 2, layer));
+  };
+
+  // --- верхняя длинная сторона: I2C/AREF, цифровые 13…0, 21…14 и два 5V ---
+  row(18.796, 50.8, ['SCL', 'SDA', 'AREF', 'GND'], false);
+  row(28.956, 50.8, ['D13', 'D12', 'D11', 'D10', 'D9', 'D8'], false);
+  row(45.72, 50.8, ['D7', 'D6', 'D5', 'D4', 'D3', 'D2', 'D1', 'D0'], false);
+  row(68.58, 50.8, ['D14', 'D15', 'D16', 'D17', 'D18', 'D19', 'D20', 'D21'], false);
+  // подписи пары 5V — вверх: снизу там гребёнки D22…D53, текст лёг бы на медь
+  row(93.98, 50.8, ['5V', '5V'], true, false);
+
+  // --- нижняя длинная сторона: питание и аналог (между A7 и A8 — разрыв) ---
+  row(27.94, 2.54, ['NC', 'IOREF', 'RST', '3V3', '5V', 'GND', 'GND', 'VIN'], true);
+  row(50.8, 2.54, ['A0', 'A1', 'A2', 'A3', 'A4', 'A5', 'A6', 'A7'], true);
+  row(73.66, 2.54, ['A8', 'A9', 'A10', 'A11', 'A12', 'A13', 'A14', 'A15'], true);
+
+  // --- правый край: два ряда цифровых 22…53 (внутри — чётные) и пара GND ---
+  const even = Array.from({ length: 16 }, (_, i) => `D${22 + i * 2}`);
+  const odd = Array.from({ length: 16 }, (_, i) => `D${23 + i * 2}`);
+  column(93.98, 48.26, [...even, 'GND'], 'left');
+  column(96.52, 48.26, [...odd, 'GND'], 'right');
+
+  // --- ICSP 2×3: MISO/5V, SCK/MOSI, RST/GND ---
+  if (o.icsp !== false) {
+    const ic: [number, number, string, 'left' | 'right'][] = [
+      [63.627, 30.48, 'MISO', 'left'], [66.167, 30.48, '5V', 'right'],
+      [63.627, 27.94, 'SCK', 'left'], [66.167, 27.94, 'MOSI', 'right'],
+      [63.627, 25.4, 'RST', 'left'], [66.167, 25.4, 'GND', 'right'],
+    ];
+    const pts: LabelledPt[] = [];
+    for (const [px, py, t, dir] of ic) {
+      pins++;
+      els.push(P(x(px), y(py), drill, padSize));
+      pts.push({ x: x(px), y: y(py), t: dir === 'left' ? t : '' });
+      if (dir === 'right' && o.labels !== false) {
+        labels++;
+        els.push(...labelsFor([{ x: x(px), y: y(py), t }], 'right', 0.7, padSize / 2, layer));
+      }
+    }
+    if (o.labels !== false) {
+      const left = pts.filter((p) => p.t);
+      labels += left.length;
+      els.push(...labelsFor(left, 'left', 0.7, padSize / 2, layer));
+    }
+  }
+
+  // --- крепёж и контур ---
+  let holes = 0;
+  if (o.holeD && o.holeD > 0) {
+    for (const [px, py] of MEGA_HOLES) {
+      els.push({ kind: 'hole', x: x(px), y: y(py), d: o.holeD });
+      holes++;
+    }
+  }
+  els.push(SR(x(0), y(0), bw, bh, 0.25, layer));
+  if (o.title) els.push(lc(0, -0.5, o.title, 1.0, 0, layer));
+
+  return {
+    els,
+    spec: {
+      pins, pitch: 2.54, holes, labels: o.labels === false ? 0 : labels,
+      w: r3(bw), h: r3(bh),
+    },
+  };
+}
