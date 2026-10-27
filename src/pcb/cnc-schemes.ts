@@ -265,7 +265,7 @@ export function outlineScheme(doc: Doc, s: CncSettings): BuiltScheme {
   const depths = cncDepths(s.outlineDepth, s.outlineStep, s.outlinePasses).map(num);
   const svg = `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 320 182" class="scheme-svg-root" role="img" aria-label="Схема вырезания контура">${arrDefs(arr)}
     ${T(130, 12, 'Сверху: фреза идёт снаружи платы')}
-    ${G('board', R(70, 36, 120, 80, 'sch-board', 2) + T(130, 80, `плата ${num(doc.w)} × ${num(doc.h)}`, 'sch-copper-text'))}
+    ${G('board', R(70, 36, 120, 80, 'sch-board', 2) + T(130, 80, 'замкнутый контур', 'sch-copper-text'))}
     ${G('outlined', R(70 - o, 36 - o, 120 + o * 2, 80 + o * 2, 'sch-path', 6) + C(130, 36 - o, cutR, 'sch-tool') +
       L(130 + cutR, 36 - o, 156, 22, 'sch-dim') + T(158, 24, `Ø ${num(s.outlineDiameter)} мм`, 'sch-text', 'start'))}
     ${G('outlinestep', T(258, 44, 'проходы по Z:', 'sch-text') +
@@ -276,11 +276,11 @@ export function outlineScheme(doc: Doc, s: CncSettings): BuiltScheme {
   </svg>`;
   return {
     id: 'out',
-    title: '5. Вырез прямоугольного контура',
+    title: '5. Вырез фигурного контура',
     svg,
-    caption: 'Контур вырезается последним файлом, по ступеням Z, вокруг платы.',
+    caption: 'Внутренние замкнутые контуры вырезаются первыми, внешний контур платы — последним, по ступеням Z.',
     parts: [
-      { id: 'outlined', label: 'диаметр фрезы', hint: `Фреза Ø${num(s.outlineDiameter)} мм идёт по контуру на полдиаметра СНАРУЖИ от платы — плата получается точно ${num(doc.w)} × ${num(doc.h)} мм.` },
+      { id: 'outlined', label: 'диаметр фрезы', hint: `На внешнем контуре центр фрезы Ø${num(s.outlineDiameter)} мм идёт на полдиаметра СНАРУЖИ; у внутренних вырезов компенсация направлена внутрь материала.` },
       { id: 'outlinestep', label: 'ступени Z', hint: `Глубина ${num(s.outlineDepth)} мм набирается ступенями по ${num(s.outlinePasses ? s.outlineDepth / s.outlinePasses : s.outlineStep)} мм — всего ${depths.length} проход(а/ов).` },
       { id: 'tabs', label: 'без перемычек', hint: 'Вырез идёт без удерживающих перемычек: в конце плата может оторваться. Надёжно закрепите заготовку до конца обработки.' },
     ],

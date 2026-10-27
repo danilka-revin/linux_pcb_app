@@ -5,6 +5,7 @@
 import * as Clipper from 'clipper-lib';
 import type { Doc, Entity, Pt } from './model';
 import { expandDoc } from './expand';
+import { boardShape } from './board-shape';
 import { textPolylines } from './strokefont';
 import type { ZipFile } from './zip';
 import { cncDepths, cncRange, cncOriginRef, CNC_ORIGIN_LABEL, validateCncSettings, type CncBoardAnalysis, type CncSettings, type CncSide } from './cnc-settings';
@@ -367,26 +368,52 @@ function drillProgram(holes: Pt[], diameter: number, doc: Doc, s: CncSettings): 
   return [...out, ...gcodeEnd(s.safeZ)].join('\n');
 }
 
-function outlineProgram(doc: Doc, s: CncSettings): { code: string; passes: number } {
-  const outlines = doc.entities.filter((e) => 'layer' in e && e.layer === 'outline');
-  if (outlines.length && (outlines.length !== 1 || outlines[0].kind !== 'rect' ||
-    Math.abs(outlines[0].x) > 0.0001 || Math.abs(outlines[0].y) > 0.0001 ||
-    Math.abs(outlines[0].w - doc.w) > 0.0001 || Math.abs(outlines[0].h - doc.h) > 0.0001))
-    throw new Error('Вырезание поддерживает только один прямоугольный контур платы. Для сложной формы используйте Gerber и проверенный CAM.');
-  const path = rect(0, 0, doc.w, doc.h, 'outline');
+function outlineProgram(doc: Doc, s: CncSettings, flat: Entity[]): { code: string; passes: number } {
+  const outlines = flat.filter((e) => 'layer' in e && e.layer === 'outline');
+  const shape = boardShape(doc, flat);
+  if (shape.openChains) {
+    throw new Error(`Контур платы содержит ${shape.openChains} незамкнутых или неоднозначных цепочек. Замкните все линии контура перед вырезанием.`);
+  }
+  if (shape.fallback && outlines.length) {
+    throw new Error('Не найден замкнутый контур платы. Замкните линии или исправьте размеры прямоугольника.');
+  }
+
+  // Offset все внешние контуры наружу на радиус фрезы, а отверстия — внутрь.
+  // Clipper использует направление обхода: внешние пути положительные, вырезы отрицательные.
+  const source: Clipper.Paths = [];
+  for (const region of shape.regions) {
+    source.push(polygon(region.outer, 'outline outer'));
+    for (const hole of region.holes) {
+      const path = polygon(hole, 'outline hole');
+      if (Clipper.Clipper.Orientation(path)) path.reverse();
+      source.push(path);
+    }
+  }
   const off = new Clipper.ClipperOffset(2, ARC_TOLERANCE);
-  off.AddPath(path, Clipper.JoinType.jtMiter, Clipper.EndType.etClosedPolygon);
-  const result: Clipper.Paths = [];
-  off.Execute(result, mm(s.outlineDiameter / 2));
-  if (result.length !== 1) throw new Error('Не удалось построить траекторию контура платы.');
-  const loops = transformed(result, 'top', doc, s);
+  off.AddPaths(source, Clipper.JoinType.jtMiter, Clipper.EndType.etClosedPolygon);
+  // PolyTree keeps the nesting of islands/holes. Cut deepest contours first and
+  // each outer board perimeter last, so internal pieces are released before the board.
+  const tree = new Clipper.PolyTree();
+  off.Execute(tree, mm(s.outlineDiameter / 2));
+  const ordered: Clipper.Paths = [];
+  const visit = (node: Clipper.PolyNode): void => {
+    for (const child of node.Childs()) {
+      visit(child);
+      const path = child.Contour();
+      if (!child.IsOpen && path.length >= 3) ordered.push(path);
+    }
+  };
+  visit(tree);
+  if (!ordered.length) throw new Error('Не удалось построить траектории контура. Проверьте ширину перемычек и диаметр фрезы.');
+  const loops = transformed(ordered, 'top', doc, s);
   const depths = cncDepths(s.outlineDepth, s.outlineStep, s.outlinePasses);
   const out = gcodeStart('OUTLINE LAST - NO TABS - SECURE BOARD', s.outlineRpm, s.safeZ);
-  const loop = loops[0];
-  for (const depth of depths) {
-    out.push(`G0 X${N(loop[0].x)} Y${N(loop[0].y)}`, `G1 Z-${N(depth)} F${N(s.isolationPlunge)}`, `G1 F${N(s.outlineFeed)}`);
-    for (let i = 1; i < loop.length; i++) out.push(`G1 X${N(loop[i].x)} Y${N(loop[i].y)}`);
-    out.push(`G1 X${N(loop[0].x)} Y${N(loop[0].y)}`, `G0 Z${N(s.safeZ)}`);
+  for (const loop of loops) {
+    for (const depth of depths) {
+      out.push(`G0 X${N(loop[0].x)} Y${N(loop[0].y)}`, `G1 Z-${N(depth)} F${N(s.isolationPlunge)}`, `G1 F${N(s.outlineFeed)}`);
+      for (let i = 1; i < loop.length; i++) out.push(`G1 X${N(loop[i].x)} Y${N(loop[i].y)}`);
+      out.push(`G1 X${N(loop[0].x)} Y${N(loop[0].y)}`, `G0 Z${N(s.safeZ)}`);
+    }
   }
   return { code: [...out, ...gcodeEnd(s.safeZ)].join('\n'), passes: depths.length };
 }
@@ -394,17 +421,18 @@ function outlineProgram(doc: Doc, s: CncSettings): { code: string; passes: numbe
 function setupText(doc: Doc, s: CncSettings, job: CncJob): string {
   const originLabel = (CNC_ORIGIN_LABEL as any)[s.origin] ?? s.origin;
   const ref = cncOriginRef(doc, s.origin ?? 'bottom-left');
-  const minX = s.originX - ref.x;
-  const minY = s.originY - ref.y;
-  const maxX = s.originX + doc.w - ref.x;
-  const maxY = s.originY + doc.h - ref.y;
-  const stockW = Math.max(maxX, 0) - Math.min(minX, 0) + 2 * 2; // +2мм запас для примера, реальный размер ниже
+  const shapeBounds = boardShape(doc).bounds;
+  const toolR = s.cutOutline ? s.outlineDiameter / 2 : 0;
+  const minX = s.originX + shapeBounds[0] - ref.x - toolR;
+  const minY = s.originY + shapeBounds[1] - ref.y - toolR;
+  const maxX = s.originX + shapeBounds[2] - ref.x + toolR;
+  const maxY = s.originY + shapeBounds[3] - ref.y + toolR;
   return [
     `PSBees - инструкции для ЧПУ: ${doc.name.replace(/[\r\n]/g, ' ')}`,
-    `Плата: ${N(doc.w)} x ${N(doc.h)} мм. Ноль: ${originLabel} (${s.origin}) в точке платы (${N(ref.x)}, ${N(ref.y)}).`,
-    `Координата нуля в G-code: X${N(s.originX)} Y${N(s.originY)} — это выбранная точка платы.`,
-    `Плата в G-code занимает X от ${N(minX)} до ${N(maxX)} мм, Y от ${N(minY)} до ${N(maxY)} мм.`,
-    `Заготовка должна покрывать этот диапазон с запасом. Рекомендуемый минимум с полями ${N(s.originX)}: ширина ≥ ${N(doc.w + 2 * Math.abs(s.originX - ref.x))} мм (пример), высота аналогично.`,
+    `Рабочее поле: ${N(doc.w)} x ${N(doc.h)} мм. Внешний габарит контура: X ${N(shapeBounds[0])}…${N(shapeBounds[2])}, Y ${N(shapeBounds[1])}…${N(shapeBounds[3])} мм.`,
+    `Ноль: ${originLabel} (${s.origin}) в точке рабочего поля (${N(ref.x)}, ${N(ref.y)}); координата G-code X${N(s.originX)} Y${N(s.originY)}.`,
+    `Траектория внешнего контура ${s.cutOutline ? `с компенсацией Ø${N(s.outlineDiameter)} мм` : '(вырез отключён)'} занимает примерно X ${N(minX)}…${N(maxX)}, Y ${N(minY)}…${N(maxY)} мм.`,
+    `Заготовка должна покрывать диапазон траектории с запасом; учитывайте форму, зажимы и отсутствие удерживающих перемычек.`,
     `Рабочий ноль G-code (X0 Y0) — ${originLabel} платы. Верх: X=${N(s.originX)}+(x-${N(ref.x)}), Y=${N(s.originY)}+(y-${N(ref.y)}).`,
     `Низ после переворота (зеркало X): X=${N(s.originX)}+(${N(doc.w)}-x-${N(ref.x)}), Y=${N(s.originY)}+(y-${N(ref.y)}).`,
     `Сохраняйте ту же привязку X/Y в станке и положении платы при перевороте; Z0 заново от поверхности каждой стороны/после смены инструмента.`,
@@ -480,7 +508,7 @@ export function buildCncJob(doc: Doc, s: CncSettings, onProgress: CncProgressFn 
 
   let outlinePasses = 0;
   if (s.cutOutline) {
-    const outline = outlineProgram(doc, s);
+    const outline = outlineProgram(doc, s, entities);
     outlinePasses = outline.passes;
     files.push({ name: '99_kontur_poslednim.nc', data: outline.code });
     tickGcode();
