@@ -105,8 +105,11 @@ export function CncDialog({ doc, onClose }: { doc: Doc; onClose: () => void }) {
             aria-selected={operation === op} className={'btn' + (operation === op ? ' primary' : '')} onClick={() => setOperation(op)}>
             {['Медь', 'Отверстия', 'Контур'][i]}</button>)}
         </div>
-        {operation === 'outline' && <label className="chk cnc-outline-toggle"><input type="checkbox" checked={settings.cutOutline}
-          onChange={e => change('cutOutline', e.target.checked)} />Вырезать контур</label>}
+        {operation === 'outline' && <>
+          <label className="chk cnc-outline-toggle"><input type="checkbox" checked={settings.cutOutline}
+            onChange={e => change('cutOutline', e.target.checked)} />Вырезать контур</label>
+          <p className="hint">Поддерживаются замкнутые круги, прямоугольники и линии; внутренние вырезы режутся раньше внешнего контура.</p>
+        </>}
         <fieldset className="cnc-operation" disabled={operation === 'outline' && !settings.cutOutline}>
           <div className="cnc-pass-card">
             <label htmlFor="cnc-pass-count">Проходов по глубине</label>

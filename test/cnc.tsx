@@ -196,8 +196,34 @@ assert(outline.includes('G1 Z-0.6') && outline.includes('G1 Z-1.2') && outline.i
 assert(outline.includes('X4.5') && outline.includes('Y4.5'), 'outline center outside board by half of 1mm bit');
 assert(!outline.includes('G1 Z-2.4'));
 const odd: Doc = { ...doc, entities: [...doc.entities, { kind: 'circle', id: 'extra', x: 25, y: 15, r: 4, w: .2, layer: 'outline' }] };
-assert.throws(() => buildCncJob(odd, settings({ cutOutline: true })), /только один прямоугольный контур/);
+const nestedCut = buildCncJob(odd, settings({ cutOutline: true, outlinePasses: 1 }));
+const nestedGcode = text(nestedCut.files.find((f) => f.name === '99_kontur_poslednim.nc')!);
+const nestedStarts = [...nestedGcode.matchAll(/G0 X(-?[\d.]+) Y(-?[\d.]+)/g)];
+assert.equal(nestedStarts.length, 2, 'outer contour and interior circular cutout both get toolpaths');
+assert(Math.abs(Number(nestedStarts[0][1]) - 30) < 15, 'inner cutout is cut first');
+close(Math.hypot(Number(nestedStarts[0][1]) - 30, Number(nestedStarts[0][2]) - 20), 3.5, .02,
+  'toolpath for an inner hole offsets toward material by half the cutter diameter');
+assert(Math.abs(Number(nestedStarts[1][1]) - 30) > 15, 'outer perimeter is cut last');
 assert(!buildCncJob(odd, settings()).files.some((f) => f.name.includes('kontur')), 'Gerber custom outline unaffected if cut disabled');
+
+// A closed, non-rectangular polygon made from outline-layer lines is cut with a
+// tool-radius offset; open line chains fail explicitly instead of making a bogus edge.
+const customOutline = newBoard(40, 30);
+customOutline.entities = customOutline.entities.filter((e) => !('layer' in e && e.layer === 'outline'));
+const vertices = [{ x: 5, y: 10 }, { x: 25, y: 5 }, { x: 35, y: 12 }, { x: 28, y: 25 }, { x: 10, y: 22 }];
+for (let i = 0; i < vertices.length; i++) {
+  const a = vertices[i], b = vertices[(i + 1) % vertices.length];
+  customOutline.entities.push({ kind: 'line', id: `outline-${i}`, x1: a.x, y1: a.y, x2: b.x, y2: b.y, w: .2, layer: 'outline' });
+}
+const customCut = buildCncJob(customOutline, settings({ cutOutline: true, outlinePasses: 1, originX: 5, originY: 5 }));
+const customGcode = text(customCut.files.find((f) => f.name === '99_kontur_poslednim.nc')!);
+const customXY = [...customGcode.matchAll(/G[01] X(-?[\d.]+) Y(-?[\d.]+)/g)].map((m) => [Number(m[1]), Number(m[2])]);
+assert(customXY.length >= vertices.length + 1, 'arbitrary polygon produces a closed G-code loop');
+assert(Math.min(...customXY.map(([x]) => x)) < 9.5 && Math.min(...customXY.map(([x]) => x)) > 9.0,
+  'freeform outer offset keeps cutter outside the polygon without rectangular-only coordinates');
+const openOutline = newBoard(40, 30);
+openOutline.entities = [{ kind: 'line', id: 'open-outline', x1: 5, y1: 5, x2: 20, y2: 5, w: .2, layer: 'outline' }];
+assert.throws(() => buildCncJob(openOutline, settings({ cutOutline: true })), /незамкнутых или неоднозначных/);
 
 // Валидация: никаких файлов с NaN, недостающими нулями, дублирующимися разными
 // свёрлами в одной точке или дорогой фрезой, выходящей за заготовку.
