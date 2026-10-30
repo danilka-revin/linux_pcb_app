@@ -25,9 +25,11 @@
 import {
   bboxOf as fpBBox,
   boardFootprint, chipSmdFootprint, crystalFootprint, dipFootprint, dipSwitchFootprint,
-  dhtFootprint, electroFootprint, fiducialFootprint, holeFootprint, ledStripFootprint,
+  dhtFootprint, electroFootprint, fiducialFootprint, gy87Footprint, GY87_I2C_PINS, GY87_PINS,
+  holeFootprint, ledStripFootprint,
   megaFootprint, minCopperPitch, moduleFootprint,
-  packFootprint, padFootprint, quadFootprint, RELAY_MOD_SIZE, relayFootprint, relayModuleFootprint,
+  packFootprint, padFootprint, quadFootprint, rc522Footprint,
+  RELAY_MOD_SIZE, relayFootprint, relayModuleFootprint,
   rowFootprint, r3, shieldFootprint, solenoidDriverFootprint,
   soicFootprint, sotFootprint, tactFootprint, terminalFootprint, twoLeadFootprint,
   type FpSpec, type LibEl, type LibLayer, type Polarity,
@@ -1303,6 +1305,105 @@ export const FAMILIES: Family[] = [
       return { els: el.els, spec: el.spec, title: `DIP-переключатель ${p.n}` };
     },
   },
+  {
+    id: 'rfid',
+    title: 'RFID RC522 (SPI) — посадочное место',
+    hint: 'Готовый модуль RC522 40×60 мм: контур платы, четыре отверстия под винт M2 и восемь площадок под шлейф или провода — SDA(SS), SCK, MOSI, MISO, IRQ, GND, RST, 3.3V. Можно попросить двухрядное гнездо IDC 2×4.',
+    aliases: [
+      'rc522', 'rfid rc522', 'модуль rfid rc522', 'модуль rfid', 'модуль rc522',
+      'модуль mfrc522', 'mfrc522', 'rfid', 'rc-522', 'считыватель rfid',
+      'rfid spi', 'rfid модуль', 'mf rc522', 'rfid-модуль',
+    ],
+    noNum: true,
+    bare: [],
+    params: [
+      P_ENUM('conn', 'Подключение', 'row', [
+        ['row', 'Ряд площадок (шлейф/провода)'],
+        ['idc', 'Гнездо IDC 2×4'],
+      ], {
+        words: ['idc', 'гнездо', 'двухрядный'], token: 'разъём',
+        hint: 'ряд — площадки под шлейф или провода; IDC — двухрядное гнездо под 8-жильный шлейф с разъёмом',
+      }),
+      pitch(2.54), padSize(1.8), drill(1.0),
+      bodyW(40), bodyH(60),
+      holeCount(4), holeDia(2.2),
+      P_BOOL('ring', 'Кольцо вокруг крепежа', false, { words: ['кольцо'], token: 'кольцо' }),
+      labelsEvery(1, ['подписи', 'имена']), silkOn(), valueP(),
+    ],
+    build(p, ctx) {
+      const conn = (p.conn === 'idc' ? 'idc' : 'row') as 'row' | 'idc';
+      const el = rc522Footprint({
+        w: p.bodyW as number, h: p.bodyH as number, conn,
+        pitch: p.pitch as number, padSize: p.padSize as number, drill: p.drill as number,
+        holes: p.holes as number,
+        holeD: (p.holes as number) > 0 ? (p.holeD as number) : 0,
+        ring: p.ring as boolean, labels: (p.labels as number) !== 0, silk: p.silk as boolean,
+        title: (p.value as string) || 'RFID RC522',
+        layer: ctxLayer(ctx),
+      });
+      return {
+        els: el.els, spec: el.spec,
+        title: `RFID RC522 · ${conn === 'idc' ? 'IDC 2×4' : 'шлейф 8'} · ${r3(p.bodyW as number)}×${r3(p.bodyH as number)}`,
+        notes: [
+          'Порядок выводов — как у типовой синей платы RC522: SDA (SS), SCK, MOSI, MISO, IRQ, GND, RST, 3.3V; у клонов сверьтесь с надписями у разъёма и при необходимости переверните деталь.',
+          'Питание только 3.3 В: 5 В на VCC выводит модуль из строя, линии SPI тоже 3.3 В — с 5-вольтовым контроллером нужен преобразователь уровней.',
+          'Площадки вынесены за край контура: шлейф или провода паяются, когда модуль уже надет. IRQ можно не подключать — карта опрашивается по SPI.',
+        ],
+      };
+    },
+  },
+  {
+    id: 'gy87',
+    title: 'GY-87 (I2C) — IMU, компас и барометр',
+    hint: 'Готовый модуль GY-87 (MPU6050 + HMC5883L + BMP180) 22×17 мм: четыре площадки I2C — VCC, GND, SCL, SDA, по желанию весь ряд из восьми выводов с контуром платы.',
+    aliases: [
+      'gy-87', 'gy87', 'модуль gy-87', 'модуль gy87', 'gy-87 модуль', 'модуль imu',
+      '10dof', '10 dof', 'mpu6050', 'mpu-6050', 'модуль mpu6050', 'imu', 'imu модуль',
+      'гироскоп модуль', 'gy 87',
+    ],
+    noNum: true,
+    bare: [],
+    params: [
+      P_INT('pins', 'Выводов в разъёме', 4, {
+        min: 4, max: 8, words: ['выводов', 'пинов'], token: 'выводов',
+        hint: '4 — только I2C (VCC, GND, SCL, SDA); 8 — весь ряд модуля (добавятся 3V3, FSYNC, INTA, DRDY)',
+      }),
+      P_ENUM('conn', 'Подключение', 'row', [
+        ['row', 'Ряд площадок (провода)'],
+        ['idc', 'Гнездо IDC'],
+      ], { words: ['idc', 'гнездо', 'двухрядный'], token: 'разъём' }),
+      pitch(2.54), padSize(1.8), drill(1.0),
+      bodyW(22), bodyH(17),
+      holeCount(0), holeDia(2.2),
+      P_BOOL('ring', 'Кольцо вокруг крепежа', false, { words: ['кольцо'], token: 'кольцо' }),
+      labelsEvery(1, ['подписи', 'имена']), silkOn(), valueP(),
+    ],
+    build(p, ctx) {
+      const full = Math.round(p.pins as number) >= 8;
+      const conn = (p.conn === 'idc' ? 'idc' : 'row') as 'row' | 'idc';
+      const el = gy87Footprint({
+        w: p.bodyW as number, h: p.bodyH as number, conn,
+        names: full ? GY87_PINS : GY87_I2C_PINS,
+        pitch: p.pitch as number, padSize: p.padSize as number, drill: p.drill as number,
+        holes: p.holes as number,
+        holeD: (p.holes as number) > 0 ? (p.holeD as number) : 0,
+        ring: p.ring as boolean, labels: (p.labels as number) !== 0, silk: p.silk as boolean,
+        title: (p.value as string) || 'GY-87',
+        layer: ctxLayer(ctx),
+      });
+      return {
+        els: el.els, spec: el.spec,
+        title: `GY-87 (I2C) · ${full ? 8 : 4} выв. · ${r3(p.bodyW as number)}×${r3(p.bodyH as number)}`,
+        notes: [
+          full
+            ? 'Полный ряд модуля: VCC (5 В), 3V3, GND, SCL, SDA, FSYNC, INTA, DRDY. У части плат вместо HMC5883L стоит QMC5883L и набор выводов другой — сверьтесь с маркировкой.'
+            : 'Четыре площадки I2C: VCC, GND, SCL, SDA. Остальные выводы модуля (3V3, FSYNC, INTA, DRDY) обычно не нужны; чтобы добавить их, задайте «8 выводов».',
+          'Питание 3…5 В: на плате стоит преобразователь уровней. SDA/SCL подтянуты на модуле; при длинных проводах добавьте 4.7 кОм к 3.3 В.',
+          'Адреса на шине: MPU6050 — 0x68, HMC5883L — 0x1E (QMC5883L — 0x0D), BMP180 — 0x77. Магнитометр подключён к вспомогательной шине MPU6050.',
+        ],
+      };
+    },
+  },
 ];
 
 const byId = (id: string): Family => FAMILIES.find((f) => f.id === id)!;
@@ -1612,14 +1713,18 @@ export function generate(query: string): GenResult {
     if ('holeD' in params) set('holeD', THREAD[key] ?? r3(toNum(th[1] ?? '3')));
   }
   // «2 крепёжных отверстия», «крепёж», «без отверстий»
-  const mnt = sc2.take(/(?:по\s+|с\s+)?(\d{1,2})?\s*(?:креп[её]жн[а-яё0-9-]*\s*(?:отверст[а-яё0-9-]*)?|креп[её]ж[а-яё0-9-]*|отверстий|отверстия|отверстие|mounting\s+holes?|mounts?)/i);
-  if (mnt) {
-    const k = mnt[1] ? parseInt(mnt[1], 10) : 0;
-    if ('holes' in params) set('holes', k || (params.holes as number) || (fam.id === 'board' ? 4 : 2));
-    else if (fam.id === 'hole' && 'n' in params && k) set('n', k);
-  } else if (sc2.take(/без\s+(?:креп[её]жа|крепления|отверстий|отверстия)/i)) {
+  // «без …» проверяем первым: иначе «без крепежа» прочтётся как «крепежа» → оставить как есть
+  const noMnt = sc2.take(/без\s+(?:креп[её]ж[а-яё0-9-]*|креплени[а-яё0-9-]*|отверсти[а-яё0-9-]*|mounting)/i);
+  if (noMnt) {
     if ('holes' in params) set('holes', 0);
     if ('bolt' in params) set('bolt', false);
+  } else {
+    const mnt = sc2.take(/(?:по\s+|с\s+)?(\d{1,2})?\s*(?:креп[её]жн[а-яё0-9-]*\s*(?:отверст[а-яё0-9-]*)?|креп[её]ж[а-яё0-9-]*|отверстий|отверстия|отверстие|mounting\s+holes?|mounts?)/i);
+    if (mnt) {
+      const k = mnt[1] ? parseInt(mnt[1], 10) : 0;
+      if ('holes' in params) set('holes', k || (params.holes as number) || (fam.id === 'board' ? 4 : 2));
+      else if (fam.id === 'hole' && 'n' in params && k) set('n', k);
+    }
   }
   // «широкий/узкий»
   const wide = sc2.take(/(?<![0-9a-zа-я])(широкий|wide|600\s*mil|300\s*mil)(?![0-9a-zа-я])/i);
@@ -1870,6 +1975,10 @@ export const EXAMPLES: { query: string; note: string }[] = [
   { query: 'кварц 3225', note: 'SMD 3.2×2.5, 4 площадки' },
   { query: 'реле 5 выводов', note: 'A/K/COM/NO/NC' },
   { query: 'dip switch 8', note: 'переключатель, 8 секций' },
+  { query: 'rfid rc522', note: 'RC522: 8 площадок SPI под шлейф, контур 40×60, 4 отверстия M2' },
+  { query: 'rc522 гнездо idc', note: 'двухрядное гнездо IDC 2×4 под 8-жильный шлейф' },
+  { query: 'gy-87', note: 'GY-87: 4 площадки I2C VCC/GND/SCL/SDA, плата 22×17' },
+  { query: 'gy-87 8 выводов', note: 'полный ряд модуля: 3V3, FSYNC, INTA, DRDY' },
 ];
 
 /** Справка «что можно писать» — для кнопки со списком примеров */

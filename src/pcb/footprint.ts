@@ -1448,6 +1448,141 @@ export function relayModuleFootprint(o: RelayModOpts): { els: LibEl[]; spec: FpS
   };
 }
 
+// ---------------------------------------------------------------- модули на шлейфе
+
+export interface CableModuleOpts {
+  /** габарит платы модуля, мм (X × Y) */
+  w?: number;
+  h?: number;
+  /** имена выводов разъёма — слева направо */
+  names?: string[];
+  /** «row» — один ряд площадок под шлейф/провода, «idc» — гнездо IDC 2×N/2 */
+  conn?: 'row' | 'idc';
+  pitch?: number;
+  padSize?: number;
+  drill?: number;
+  /** крепёж модуля: 0…4 отверстия под винт/стойку */
+  holes?: number;
+  /** Ø отверстий крепежа; 0 — без крепежа */
+  holeD?: number;
+  holeInset?: number;
+  /** кольцо шелкографии вокруг крепежа */
+  ring?: boolean;
+  labels?: boolean;
+  /** контур платы модуля на шелкографии */
+  silk?: boolean;
+  /** подписать габарит модуля */
+  dim?: boolean;
+  /** насколько ряд площадок вынесен за край контура, мм */
+  overhang?: number;
+  layer?: LibLayer;
+  title?: string;
+}
+
+/**
+ * Посадочное место под готовый модуль, который соединяют с платой шлейфом
+ * или проводами (RFID RC522, GY-87 и подобные).
+ *
+ * На плате остаются только: контур платы модуля (по нему видно, что окажется
+ * сверху), отверстия под винты/стойки и ряд площадок за краем контура — к ним
+ * паяется шлейф или провода, когда модуль уже надет. Порядок площадок задаётся
+ * именами выводов; для двухрядного гнезда IDC (`conn: 'idc'`) выводы идут
+ * «зигзагом»: 1, 3, 5… сверху, 2, 4, 6… снизу.
+ */
+export function cableModuleFootprint(o: CableModuleOpts = {}): { els: LibEl[]; spec: FpSpec } {
+  const layer = o.layer ?? 's1';
+  const w = o.w ?? 40;
+  const h = o.h ?? 60;
+  const names = o.names ?? [];
+  const n = names.length;
+  const idc = o.conn === 'idc';
+  const pitch = o.pitch ?? 2.54;
+  const padSize = o.padSize ?? 1.8;
+  const drill = o.drill ?? 1.0;
+  const holeD = o.holeD ?? 0;
+  const els: LibEl[] = [];
+  let holes = 0;
+  let labels = 0;
+
+  // контур платы модуля: видно, какое место он займёт над платой
+  if (o.silk !== false) els.push(SR(-w / 2, -h / 2, w, h, silkTh(), layer));
+
+  // крепёж под винты/стойки — как у самого модуля
+  const count = Math.max(0, Math.min(4, Math.round(o.holes ?? 0)));
+  if (holeD > 0 && count > 0) {
+    const inset = o.holeInset ?? Math.min(3, Math.min(w, h) * 0.18);
+    for (const [x, y] of holeCorners(count, w / 2, h / 2, inset)) {
+      holes++;
+      els.push({ kind: 'hole', x, y, d: holeD });
+      if (o.ring) els.push(SC(x, y, holeD / 2 + 1.0, silkTh(), layer));
+    }
+  }
+
+  // ряд(ы) площадок — за краем контура: шлейф паяется при надетом модуле
+  if (n > 0) {
+    const y1 = -h / 2 - (o.overhang ?? 2.2);
+    const cols = idc ? Math.ceil(n / 2) : n;
+    const x0 = -((cols - 1) * pitch) / 2;
+    const upper: LabelledPt[] = [];
+    const lower: LabelledPt[] = [];
+    for (let i = 0; i < n; i++) {
+      const row = idc ? i % 2 : 0;
+      const col = idc ? Math.floor(i / 2) : i;
+      const x = x0 + col * pitch;
+      const y = y1 - row * pitch;
+      els.push(P(x, y, drill, padSize, i === 0 ? 'square' : 'round'));
+      (row === 0 ? upper : lower).push({ x, y, t: names[i] });
+    }
+    if (o.labels !== false) {
+      const size = pitch < 2 ? 0.62 : 0.8;
+      // подписи повёрнуты на 90°: при шаге 2.54 мм вдоль ряда текст не влезает
+      if (idc) {
+        // подписи верхнего ряда — внутри контура: между ним и площадками текст не влезает
+        const topY = -h / 2 + 0.25;
+        for (const pt of upper) els.push(LT(pt.x + size / 2, topY, pt.t, size, thFor(size), 90, layer));
+        els.push(...rowLabels(lower, size, false, padSize / 2, layer));
+      } else {
+        els.push(...rowLabels(upper, size, false, padSize / 2, layer));
+      }
+      labels = upper.length + (idc ? lower.length : 0);
+    }
+  }
+
+  if (o.dim !== false) els.push(lc(0, h / 2 + 0.9, `${r3(w)} x ${r3(h)} мм`, 1.0, 0, layer));
+  if (o.title) els.push(lc(0, h / 2 + 2.5, o.title, 1.1, 0, layer));
+  return {
+    els,
+    spec: { pins: n, pitch: n > 1 ? r3(pitch) : undefined, holes, labels, w: r3(w), h: r3(h) },
+  };
+}
+
+/** Выводы модуля RFID RC522 (SPI) — как на типовой синей плате, слева направо */
+export const RC522_PINS = ['SDA', 'SCK', 'MOSI', 'MISO', 'IRQ', 'GND', 'RST', '3.3V'];
+
+/** Посадочное место под RFID RC522: плата 40×60 мм, 8 выводов SPI, 4 отверстия M2 */
+export function rc522Footprint(o: CableModuleOpts = {}): { els: LibEl[]; spec: FpSpec } {
+  const { title, ...rest } = o;
+  return cableModuleFootprint({
+    w: 40, h: 60, names: RC522_PINS, holes: 4, holeD: 2.2, holeInset: 2.5,
+    ...rest, title: title ?? 'RFID RC522',
+  });
+}
+
+/** Полный ряд выводов GY-87 — как на плате: VCC(5 В), 3V3, GND, SCL, SDA, FSYNC, INTA, DRDY */
+export const GY87_PINS = ['VCC', '3V3', 'GND', 'SCL', 'SDA', 'FSYNC', 'INTA', 'DRDY'];
+
+/** Только шина I2C: питание и две линии — так модуль подключают чаще всего */
+export const GY87_I2C_PINS = ['VCC', 'GND', 'SCL', 'SDA'];
+
+/** Посадочное место под GY-87 (MPU6050 + HMC5883L + BMP180): плата 22×17 мм, I2C */
+export function gy87Footprint(o: CableModuleOpts = {}): { els: LibEl[]; spec: FpSpec } {
+  const { title, ...rest } = o;
+  return cableModuleFootprint({
+    w: 22, h: 17, names: GY87_I2C_PINS, holes: 0, holeD: 2.2,
+    ...rest, title: title ?? 'GY-87',
+  });
+}
+
 /** DIP-переключатель: n секций по 2 вывода */
 export function dipSwitchFootprint(o: { n?: number; pitch?: number; rowW?: number; padSize?: number; layer?: LibLayer }): { els: LibEl[]; spec: FpSpec } {
   const layer = o.layer ?? 's1';
