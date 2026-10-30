@@ -125,6 +125,9 @@ const EXTRA: Record<string, string[]> = {
   dht: ['dht11 модуль', 'dht11 голый сенсор', 'dht22', 'dht11 20x16'],
   ledstrip: ['подключение адресной ленты ws2812b', 'ws2815 12v', 'адресной ленты выход dout'],
   solenoid: ['драйвер соленоида 12в', 'электрозамок 12в'],
+  rfid: ['rc522', 'rfid rc522', 'модуль rfid rc522 spi', 'rc522 гнездо idc', 'rc522 без подписей',
+    'rc522 2 отверстия m2', 'rc522 40x60', 'rc522 без крепежа'],
+  gy87: ['gy-87', 'gy87', 'mpu6050', 'gy-87 8 выводов', 'gy-87 2 отверстия', 'gy-87 idc', 'gy-87 22x17'],
   board: ['плата 60x40 4 m3', 'плата 100x80, отступ 4'],
   hole: ['крепёжное отверстие m3 x4 шаг 20', '2 отверстия 3.2'],
   pad: ['тестпоинт 1.8/1.0', 'площадка 2.5/1.0'],
@@ -265,6 +268,17 @@ expect('dht11 модуль', { family: 'dht', bare: false, pitch: 2.54, specPins
 expect('dht11 голый сенсор', { family: 'dht', bare: true, specPins: 4 });
 expect('dht22', { family: 'dht', specPins: 3 });
 expect('dht11 20x16', { family: 'dht', bodyW: 20, bodyH: 16 });
+expect('rfid rc522', { family: 'rfid', conn: 'row', bodyW: 40, bodyH: 60, specPins: 8, specHoles: 4 });
+expect('rc522', { family: 'rfid', specPins: 8 });
+expect('rc522 гнездо idc', { family: 'rfid', conn: 'idc', specPins: 8 });
+expect('rc522 без подписей', { family: 'rfid', labels: 0 });
+expect('rc522 без крепежа', { family: 'rfid', holes: 0, specHoles: 0 });
+expect('rc522 40x60 2 отверстия m2', { family: 'rfid', bodyW: 40, bodyH: 60, holes: 2, holeD: 2.2 });
+expect('gy-87', { family: 'gy87', pins: 4, bodyW: 22, bodyH: 17, specPins: 4, specHoles: 0 });
+expect('gy87', { family: 'gy87', specPins: 4 });
+expect('mpu6050', { family: 'gy87', specPins: 4 });
+expect('gy-87 8 выводов', { family: 'gy87', pins: 8, specPins: 8 });
+expect('gy-87 2 отверстия', { family: 'gy87', specHoles: 2 });
 expect('подключение адресной ленты ws2812b', { family: 'ledstrip', voltage: '5V', output: false, specPins: 3 });
 expect('ws2815 12v', { family: 'ledstrip', voltage: '12V', specPins: 3 });
 expect('адресной ленты выход dout', { family: 'ledstrip', output: true });
@@ -304,6 +318,39 @@ expect('драйвер соленоида 12в', { family: 'solenoid', specPins:
     fail('LED strip: нужны 3 площадки GND/DIN/5V');
   }
   console.log('GEN: DHT11 module/bare и адресная лента — проверены площадки и метки');
+}
+{
+  // RFID RC522 (SPI) и GY-87 (I2C): имена площадок, контур и крепёж модулей
+  const texts = (r: GenResult): string[] => r.els.filter((e): e is TextEl => e.kind === 'text').map((e) => e.text);
+  const pads = (r: GenResult): Extract<LibEl, { kind: 'pad' }>[] =>
+    r.els.filter((e): e is Extract<LibEl, { kind: 'pad' }> => e.kind === 'pad');
+  const rc = generate('rfid rc522');
+  const rcNames = ['SDA', 'SCK', 'MOSI', 'MISO', 'IRQ', 'GND', 'RST', '3.3V'];
+  if (!rc.ok || pads(rc).length !== 8 || !rcNames.every((t) => texts(rc).includes(t))) {
+    fail(`RC522: нужны 8 подписанных площадок SPI (${rcNames.join('/')})`);
+  }
+  if (rc.spec?.w !== 40 || rc.spec?.h !== 60 || rc.spec?.holes !== 4) {
+    fail('RC522: контур 40×60 и четыре крепёжных отверстия');
+  }
+  // площадки — за краем контура, чтобы шлейф паялся при надетом модуле
+  if (rc.ok && pads(rc).some((p) => p.y > -60 / 2)) fail('RC522: площадки должны быть вынесены за контур модуля');
+  const idc = generate('rc522 гнездо idc');
+  if (idc.ok) {
+    const rows = new Set(pads(idc).map((p) => r3(p.y)));
+    if (pads(idc).length !== 8 || rows.size !== 2) fail('RC522 IDC: нужны 8 площадок в два ряда');
+  } else fail('RC522 IDC: не собралось');
+  const gy = generate('gy-87');
+  const gyNames = ['VCC', 'GND', 'SCL', 'SDA'];
+  if (!gy.ok || pads(gy).length !== 4 || !gyNames.every((t) => texts(gy).includes(t))) {
+    fail('GY-87: нужны 4 площадки I2C VCC/GND/SCL/SDA');
+  }
+  if (gy.spec?.w !== 22 || gy.spec?.h !== 17) fail('GY-87: габарит платы 22×17');
+  const gyFull = generate('gy-87 8 выводов');
+  if (!gyFull.ok || pads(gyFull).length !== 8
+      || !['3V3', 'FSYNC', 'INTA', 'DRDY'].every((t) => texts(gyFull).includes(t))) {
+    fail('GY-87: вариант «8 выводов» должен добавлять 3V3/FSYNC/INTA/DRDY');
+  }
+  console.log('GEN: RC522 (SPI) и GY-87 (I2C) — проверены площадки, контуры 40×60 / 22×17 и крепёж');
 }
 expect('to220', { family: 'pack', specHoles: 1 });
 expect('sot-23', { family: 'sot', pins: 3, specSmd: 3 });
